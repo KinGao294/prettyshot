@@ -42,3 +42,8 @@
 ## 已知取舍
 - 捕获期间全局 Esc 被 PrettyShot 占用（通常 < 1s；HUD 显示期间也占用，效果与 HUD 自身的 Esc 相同）。
 - 若 HUD 已完成选区、结果尚未交给 Coordinator 的极短窗口内再按热键，会按「取消」处理并丢弃该截图（符合用户最后一次意图）。
+
+## HEAD / PR
+- **HEAD**: `6bc9455` (`docs: FIX_NOTES for PR #1 must-fix, update DEVIATIONS`) · parents include `b629ba1` (cancel + focus) and `5e07681` (redaction preview)
+- **PR**: https://github.com/KinGao294/prettyshot/pull/1 — still **draft**, not merged
+- **Branch**: `feat/v0.1-mac-mvp` (pushed)
