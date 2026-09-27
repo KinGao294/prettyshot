@@ -44,6 +44,7 @@
 - 若 HUD 已完成选区、结果尚未交给 Coordinator 的极短窗口内再按热键，会按「取消」处理并丢弃该截图（符合用户最后一次意图）。
 
 ## HEAD / PR
-- **HEAD**: `6bc9455` (`docs: FIX_NOTES for PR #1 must-fix, update DEVIATIONS`) · parents include `b629ba1` (cancel + focus) and `5e07681` (redaction preview)
+- **HEAD**:  (this tip; must-fix logic landed in b629ba1..6bc9455)
+- Must-fix / risk commits: `b629ba1` (cancel + focus), `5e07681` (redaction preview), `6bc9455` (FIX_NOTES + DEVIATIONS)
 - **PR**: https://github.com/KinGao294/prettyshot/pull/1 — still **draft**, not merged
 - **Branch**: `feat/v0.1-mac-mvp` (pushed)
