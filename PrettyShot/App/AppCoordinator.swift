@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 
 /// Central wiring: capture → Quick Overlay → editor / save / pin, plus History, Settings and Permission windows.
@@ -20,6 +21,8 @@ final class AppCoordinator: ObservableObject {
     private var historyWindow: NSWindow?
     private var settingsWindow: NSWindow?
     private var permissionWindow: NSWindow?
+    /// Frontmost app before the capture HUD took focus; re-activated after Copy / Dismiss so ⌘V lands there.
+    private var appBeforeCapture: NSRunningApplication?
 
     static var isRunningTests: Bool {
         ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
@@ -64,6 +67,9 @@ final class AppCoordinator: ObservableObject {
             return
         }
 
+        let frontmost = NSWorkspace.shared.frontmostApplication
+        appBeforeCapture = frontmost?.processIdentifier == ProcessInfo.processInfo.processIdentifier ? nil : frontmost
+
         let session = CaptureSession(mode: mode, service: captureService)
         captureSession = session
         Task { @MainActor in
@@ -87,7 +93,7 @@ final class AppCoordinator: ObservableObject {
                 ToastPresenter.shared.show("无法写入历史，已直接复制到剪贴板：\(error.localizedDescription)", style: .error, duration: 4)
             }
         case .cancelled:
-            break
+            restoreFocus()
         case .failed(let error):
             if case .permissionDenied = error {
                 permissions.refresh()
@@ -107,14 +113,18 @@ final class AppCoordinator: ObservableObject {
             image: ImageCodec.nsImage(image, scale: scale),
             fileURL: dragURL,
             actions: QuickOverlayActions(
-                copy: { [weak self] in self?.copy(image: image, scale: scale) ?? false },
+                copy: { [weak self] in
+                    guard let self, self.copy(image: image, scale: scale) else { return false }
+                    self.restoreFocus()
+                    return true
+                },
                 annotate: { [weak self] in
                     self?.overlay.hide()
                     self?.openEditor(image: image, scale: scale, mode: item.mode, historyID: item.id)
                 },
                 save: { [weak self] in self?.save(image: image) },
                 pin: { [weak self] in self?.pins.pin(image: image, scale: scale) },
-                dismiss: {}
+                dismiss: { [weak self] in self?.restoreFocus() }
             )
         )
     }
@@ -132,6 +142,10 @@ final class AppCoordinator: ObservableObject {
             }
         }
         return target
+    }
+
+    private func restoreFocus() {
+        _ = appBeforeCapture?.activate(options: [])
     }
 
     // MARK: - Actions

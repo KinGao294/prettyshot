@@ -57,11 +57,38 @@ struct EditorView: View {
 
             Spacer(minLength: 12)
 
-            colorPicker
-            strokePicker
+            HStack(spacing: 12) {
+                colorPicker
+                strokePicker
+                divider
+                historyControls
+            }
 
-            divider
+            HStack(spacing: 12) {
+                if doc.cropRect != nil {
+                    Button("重置裁剪") { doc.resetCrop() }
+                        .buttonStyle(LightButtonStyle())
+                }
+                Button {
+                    withAnimation(.easeOut(duration: 0.2)) { showDrawer.toggle() }
+                } label: {
+                    Image(systemName: "sidebar.right")
+                        .foregroundStyle(showDrawer ? Palette.bloomDeep : Palette.charcoal)
+                }
+                .buttonStyle(.borderless)
+                .help("背景抽屉")
+                divider
+                outputControls
+            }
+        }
+        .foregroundStyle(Palette.charcoal)
+        .padding(.horizontal, 16)
+        .frame(height: 56)
+        .background(Palette.ivory)
+    }
 
+    private var historyControls: some View {
+        HStack(spacing: 10) {
             Button { doc.undo() } label: { Image(systemName: "arrow.uturn.backward") }
                 .buttonStyle(.borderless)
                 .disabled(!doc.canUndo)
@@ -72,23 +99,11 @@ struct EditorView: View {
                 .disabled(!doc.canRedo)
                 .keyboardShortcut("z", modifiers: [.command, .shift])
                 .help("重做 ⇧⌘Z")
+        }
+    }
 
-            if doc.cropRect != nil {
-                Button("重置裁剪") { doc.resetCrop() }
-                    .buttonStyle(LightButtonStyle())
-            }
-
-            Button {
-                withAnimation(.easeOut(duration: 0.2)) { showDrawer.toggle() }
-            } label: {
-                Image(systemName: "sidebar.right")
-                    .foregroundStyle(showDrawer ? Palette.bloomDeep : Palette.charcoal)
-            }
-            .buttonStyle(.borderless)
-            .help("背景抽屉")
-
-            divider
-
+    private var outputControls: some View {
+        HStack(spacing: 10) {
             Button { actions.pin(doc) } label: { Image(systemName: "pin") }
                 .buttonStyle(.borderless)
                 .help("Pin 到桌面浮窗")
@@ -103,10 +118,6 @@ struct EditorView: View {
                 .keyboardShortcut(typing ? nil : KeyboardShortcut("c", modifiers: .command))
                 .help("复制到剪贴板 ⌘C")
         }
-        .foregroundStyle(Palette.charcoal)
-        .padding(.horizontal, 16)
-        .frame(height: 56)
-        .background(Palette.ivory)
     }
 
     private var divider: some View {
@@ -175,7 +186,10 @@ struct EditorView: View {
     private func copy() {
         guard actions.copy(doc) else { return }
         copied = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { copied = false }
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_600_000_000)
+            copied = false
+        }
     }
 }
 

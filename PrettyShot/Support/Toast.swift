@@ -27,10 +27,10 @@ final class ToastPresenter {
     }
 
     private var panel: NSPanel?
-    private var hideWork: DispatchWorkItem?
+    private var hideTask: Task<Void, Never>?
 
     func show(_ message: String, style: Style = .info, duration: TimeInterval = 2.2) {
-        hideWork?.cancel()
+        hideTask?.cancel()
         panel?.orderOut(nil)
 
         let view = ToastView(message: message, style: style) { [weak self] in self?.hide() }
@@ -53,17 +53,19 @@ final class ToastPresenter {
 
         let screen = NSScreen.underMouse
         let visible = screen.visibleFrame
-        panel.setFrameOrigin(NSPoint(x: visible.midX - size.width / 2, y: visible.maxY - size.height - 24))
+        panel.setFrameOrigin(NSPoint(x: visible.midX - size.width / 2, y: visible.minY + 24)) // bottom-centre, as in the prototype
         panel.orderFrontRegardless()
         self.panel = panel
 
-        let work = DispatchWorkItem { [weak self] in self?.hide() }
-        hideWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + duration, execute: work)
+        hideTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(duration * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            self?.hide()
+        }
     }
 
     func hide() {
-        hideWork?.cancel()
+        hideTask?.cancel()
         panel?.orderOut(nil)
         panel = nil
     }

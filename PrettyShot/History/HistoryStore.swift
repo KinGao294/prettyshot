@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import Foundation
 
 struct HistoryItem: Codable, Identifiable, Hashable {
@@ -122,9 +123,9 @@ final class HistoryStore: ObservableObject {
     func thumbnail(for item: HistoryItem, maxPixelSize: Int = 480) async -> NSImage? {
         let key = item.id.uuidString as NSString
         if let cached = thumbnails.object(forKey: key) { return cached }
-        let url = url(for: item)
+        let fileURL = url(for: item)
         let cgImage = await Task.detached(priority: .utility) {
-            ImageCodec.thumbnail(at: url, maxPixelSize: maxPixelSize)
+            ImageCodec.thumbnail(at: fileURL, maxPixelSize: maxPixelSize)
         }.value
         guard let cgImage else { return nil }
         let image = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))

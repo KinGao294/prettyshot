@@ -69,7 +69,7 @@ final class CaptureSession {
             }
             view.onCancel = { [weak self] in self?.finish(.cancelled) }
 
-            let window = CaptureOverlayWindow(frame: snapshot.screen.frame, content: view)
+            let window = CaptureOverlayWindow.make(frame: snapshot.screen.frame, content: view)
             overlays.append(window)
             window.orderFrontRegardless()
             if NSMouseInRect(mouse, snapshot.screen.frame, false) { keyWindow = window }
@@ -141,18 +141,19 @@ enum CaptureGeometry {
 // MARK: - Overlay window
 
 final class CaptureOverlayWindow: NSWindow {
-    init(frame: CGRect, content: NSView) {
-        super.init(contentRect: frame, styleMask: [.borderless], backing: .buffered, defer: false)
-        setFrame(frame, display: false)
-        level = .screenSaver
-        isOpaque = true
-        backgroundColor = .black
-        hasShadow = false
-        acceptsMouseMovedEvents = true
-        isReleasedWhenClosed = false
-        animationBehavior = .none
-        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
-        contentView = content
+    static func make(frame: CGRect, content: NSView) -> CaptureOverlayWindow {
+        let window = CaptureOverlayWindow(contentRect: frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.setFrame(frame, display: false)
+        window.level = .screenSaver
+        window.isOpaque = true
+        window.backgroundColor = .black
+        window.hasShadow = false
+        window.acceptsMouseMovedEvents = true
+        window.isReleasedWhenClosed = false
+        window.animationBehavior = .none
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+        window.contentView = content
+        return window
     }
 
     override var canBecomeKey: Bool { true }
@@ -173,6 +174,8 @@ final class CaptureSelectionView: NSView {
     private let model: CaptureHUDModel
     private var cancellable: AnyCancellable?
 
+    /// Local copy of the HUD mode (the publisher fires on willSet, so read the value it delivers).
+    private var mode: CaptureMode
     private var dragStart: NSPoint?
     private var selection: NSRect?
     private var hoveredIndex: Int?
@@ -187,6 +190,7 @@ final class CaptureSelectionView: NSView {
         self.model = model
         let origin = snapshot.screen.frame.origin
         self.localFrames = windows.map { $0.frame.offsetBy(dx: -origin.x, dy: -origin.y) }
+        self.mode = model.mode
         super.init(frame: NSRect(origin: .zero, size: snapshot.screen.frame.size))
 
         let bar = NSHostingView(rootView: CaptureModeBar(model: model) { [weak self] mode in
@@ -209,9 +213,8 @@ final class CaptureSelectionView: NSView {
             userInfo: nil
         ))
 
-        // $mode publishes on willSet; hop once so we read the new value.
-        cancellable = model.$mode.dropFirst().sink { [weak self] _ in
-            DispatchQueue.main.async { self?.modeDidChange() }
+        cancellable = model.$mode.dropFirst().sink { [weak self] newMode in
+            self?.modeDidChange(to: newMode)
         }
     }
 
@@ -230,10 +233,11 @@ final class CaptureSelectionView: NSView {
     }
 
     override func resetCursorRects() {
-        addCursorRect(bounds, cursor: model.mode == .region ? .crosshair : .pointingHand)
+        addCursorRect(bounds, cursor: mode == .region ? .crosshair : .pointingHand)
     }
 
-    private func modeDidChange() {
+    private func modeDidChange(to newMode: CaptureMode) {
+        mode = newMode
         selection = nil
         dragStart = nil
         window?.invalidateCursorRects(for: self)
@@ -263,14 +267,14 @@ final class CaptureSelectionView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
-        guard model.mode == .region else { return }
+        guard mode == .region else { return }
         dragStart = convert(event.locationInWindow, from: nil)
         selection = nil
         needsDisplay = true
     }
 
     override func mouseDragged(with event: NSEvent) {
-        guard model.mode == .region, let start = dragStart else { return }
+        guard mode == .region, let start = dragStart else { return }
         let point = convert(event.locationInWindow, from: nil)
         let rect = NSRect(
             x: min(start.x, point.x), y: min(start.y, point.y),
@@ -281,7 +285,7 @@ final class CaptureSelectionView: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
-        switch model.mode {
+        switch mode {
         case .region:
             defer { dragStart = nil }
             if let selection, selection.width >= 4, selection.height >= 4 {
@@ -298,7 +302,7 @@ final class CaptureSelectionView: NSView {
     }
 
     private func updateHover(at point: NSPoint) {
-        guard model.mode == .window else {
+        guard mode == .window else {
             if hoveredIndex != nil { hoveredIndex = nil; needsDisplay = true }
             return
         }
@@ -317,7 +321,7 @@ final class CaptureSelectionView: NSView {
         context.draw(snapshot.image, in: bounds)
 
         let highlight: NSRect? = {
-            switch model.mode {
+            switch mode {
             case .region: return selection
             case .window: return hoveredIndex.map { localFrames[$0].intersection(bounds) }
             case .fullscreen: return nil
@@ -333,7 +337,7 @@ final class CaptureSelectionView: NSView {
         dim.fill()
 
         if let highlight {
-            if model.mode == .window {
+            if mode == .window {
                 rose.withAlphaComponent(0.14).setFill()
                 NSBezierPath(rect: highlight).fill()
             }
@@ -342,7 +346,7 @@ final class CaptureSelectionView: NSView {
             rose.setStroke()
             border.stroke()
 
-            if model.mode == .region {
+            if mode == .region {
                 drawHandles(around: highlight)
             }
             drawSizeLabel(for: highlight)
@@ -369,7 +373,7 @@ final class CaptureSelectionView: NSView {
     private func drawSizeLabel(for rect: NSRect) {
         let scale = snapshot.scale
         var text = "\(Int((rect.width * scale).rounded())) × \(Int((rect.height * scale).rounded()))"
-        if model.mode == .window, let index = hoveredIndex {
+        if mode == .window, let index = hoveredIndex {
             let name = windows[index].appName
             if !name.isEmpty { text = "\(name) · \(text)" }
         }
@@ -379,7 +383,7 @@ final class CaptureSelectionView: NSView {
 
     private func drawHint() {
         let text: String
-        switch model.mode {
+        switch mode {
         case .region: text = "拖拽选择区域 · Esc 取消"
         case .window: text = "点击选择窗口 · Esc 取消"
         case .fullscreen: text = "点击捕获全屏 · Esc 取消"

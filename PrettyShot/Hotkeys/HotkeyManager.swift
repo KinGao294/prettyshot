@@ -1,5 +1,6 @@
 import AppKit
 import Carbon.HIToolbox
+import Combine
 
 /// Global hotkeys via Carbon `RegisterEventHotKey` — works without Accessibility permission and
 /// fails loudly (eventHotKeyExistsErr) when another app already owns a combo, which we surface in Settings.

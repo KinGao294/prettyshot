@@ -186,6 +186,9 @@ struct QuickOverlayView: View {
     private func copy() {
         guard actions.copy() else { return }
         copied = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { copied = false }
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_600_000_000)
+            copied = false
+        }
     }
 }

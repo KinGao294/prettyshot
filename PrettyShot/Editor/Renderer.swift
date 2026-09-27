@@ -49,7 +49,7 @@ enum Renderer {
     /// Draws the composite. `overlay` (editor chrome: drafts, selection, crop mask) runs last,
     /// in image-pixel coordinates.
     static func draw(_ input: RenderInput, in context: CGContext, overlay: ((CGContext) -> Void)? = nil) {
-        let layout = layout(for: input)
+        let layout = Renderer.layout(for: input)
         let canvas = CGRect(origin: .zero, size: layout.canvasSize)
 
         context.saveGState()
@@ -101,7 +101,7 @@ enum Renderer {
 
     /// Renders to a new sRGB bitmap at output resolution.
     static func render(_ input: RenderInput) -> CGImage? {
-        let layout = layout(for: input)
+        let layout = Renderer.layout(for: input)
         let width = Int(layout.canvasSize.width.rounded(.up))
         let height = Int(layout.canvasSize.height.rounded(.up))
         guard width > 0, height > 0,

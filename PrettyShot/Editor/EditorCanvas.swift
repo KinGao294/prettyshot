@@ -160,6 +160,10 @@ private struct PendingTextField: View {
         .focused($focused)
         .onSubmit { doc.commitPendingText() }
         .onExitCommand { doc.cancelPendingText() }
-        .onAppear { DispatchQueue.main.async { focused = true } }
+        .task {
+            // Focus after the field is in the window, otherwise AppKit drops the request.
+            try? await Task.sleep(nanoseconds: 30_000_000)
+            focused = true
+        }
     }
 }

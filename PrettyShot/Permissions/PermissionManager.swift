@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import CoreGraphics
 
 /// Screen Recording (TCC) state. PrettyShot never shows a silent black frame:

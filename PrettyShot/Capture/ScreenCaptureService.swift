@@ -77,7 +77,7 @@ final class ScreenCaptureService {
     func snapshotAllScreens(content: SCShareableContent) async throws -> [ScreenSnapshot] {
         var snapshots: [ScreenSnapshot] = []
         for screen in NSScreen.screens {
-            guard let display = display(for: screen, in: content) else { continue }
+            guard let display = self.display(for: screen, in: content) else { continue }
             let image = try await captureDisplay(display, content: content)
             snapshots.append(ScreenSnapshot(screen: screen, image: image))
         }
@@ -86,7 +86,7 @@ final class ScreenCaptureService {
     }
 
     func captureScreen(_ screen: NSScreen, content: SCShareableContent) async throws -> CaptureResult {
-        guard let display = display(for: screen, in: content) ?? content.displays.first else {
+        guard let display = self.display(for: screen, in: content) ?? content.displays.first else {
             throw CaptureError.noDisplay
         }
         let image = try await captureDisplay(display, content: content)

@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 
 /// Keeps every floating pin alive and offers menu-level controls (so click-through pins can be rescued).
