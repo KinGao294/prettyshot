@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Central wiring: capture → Quick Overlay → editor / save / pin, plus History, Settings and Permission windows.
 @MainActor
