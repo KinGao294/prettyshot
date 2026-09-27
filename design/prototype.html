@@ -1,0 +1,915 @@
+<!DOCTYPE html>
+<html lang="zh-Hans">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>PrettyShot v0.1 — Design Prototype · Paper Bloom</title>
+<style>
+  :root {
+    --bloom: #E8A0A8;
+    --bloom-deep: #D48993;
+    --mint: #7EB8A8;
+    --ivory: #F5F2EC;
+    --canvas: #ECE8E1;
+    --rail: #F7F4EE;
+    --charcoal: #2C2A28;
+    --chrome: #1C1C1E;
+    --chrome88: rgba(28,28,30,0.88);
+    --border-light: #E2DDD4;
+    --muted: #8A857C;
+    --radius: 14px;
+    --shadow: 0 18px 48px rgba(28,28,30,0.22);
+    --font: "SF Pro Text", "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: var(--font);
+    background: linear-gradient(160deg, #1a1816 0%, #2c2824 40%, #1e1c1a 100%);
+    color: var(--charcoal);
+    display: flex;
+    min-height: 100vh;
+    overflow: hidden;
+  }
+
+  /* —— App shell —— */
+  .shell {
+    display: grid;
+    grid-template-columns: 220px 1fr;
+    width: min(1280px, 100vw - 32px);
+    height: min(820px, 100vh - 32px);
+    margin: auto;
+    background: var(--canvas);
+    border-radius: 16px;
+    box-shadow: var(--shadow), 0 0 0 1px rgba(255,255,255,0.06);
+    overflow: hidden;
+  }
+
+  /* Left nav */
+  .nav {
+    background: #1C1C1E;
+    color: var(--ivory);
+    padding: 20px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    border-right: 1px solid rgba(255,255,255,0.06);
+  }
+  .brand {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 10px 20px;
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+    margin-bottom: 12px;
+  }
+  .brand svg { flex-shrink: 0; }
+  .brand-text { font-weight: 600; font-size: 15px; letter-spacing: 0.02em; }
+  .brand-sub { font-size: 10px; color: rgba(245,242,236,0.45); margin-top: 2px; letter-spacing: 0.04em; text-transform: uppercase; }
+  .nav button {
+    appearance: none; border: none; background: transparent;
+    color: rgba(245,242,236,0.72);
+    text-align: left; padding: 10px 12px; border-radius: 10px;
+    font: inherit; font-size: 13px; cursor: pointer;
+    display: flex; align-items: center; gap: 8px;
+    transition: background .15s, color .15s;
+  }
+  .nav button:hover { background: rgba(255,255,255,0.06); color: var(--ivory); }
+  .nav button.active {
+    background: rgba(232,160,168,0.18);
+    color: var(--bloom);
+    box-shadow: inset 0 0 0 1px rgba(232,160,168,0.35);
+  }
+  .nav-id { font-size: 10px; opacity: 0.5; font-variant-numeric: tabular-nums; min-width: 18px; }
+  .nav-foot {
+    margin-top: auto; padding: 12px 10px;
+    font-size: 11px; color: rgba(245,242,236,0.35); line-height: 1.45;
+  }
+  .nav-foot strong { color: var(--bloom); font-weight: 500; }
+
+  /* Stage */
+  .stage {
+    position: relative;
+    background: var(--canvas);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  .stage-bar {
+    height: 40px; flex-shrink: 0;
+    background: var(--rail);
+    border-bottom: 1px solid var(--border-light);
+    display: flex; align-items: center; gap: 8px;
+    padding: 0 16px;
+  }
+  .traffic { display: flex; gap: 6px; }
+  .traffic i { width: 10px; height: 10px; border-radius: 50%; display: block; }
+  .traffic .r { background: #FF5F57; }
+  .traffic .y { background: #FEBC2E; }
+  .traffic .g { background: #28C840; }
+  .stage-title { font-size: 12px; color: var(--muted); margin-left: 8px; }
+  .stage-badge {
+    margin-left: auto; font-size: 10px; padding: 3px 8px; border-radius: 999px;
+    background: rgba(232,160,168,0.2); color: #a86a72; font-weight: 500;
+  }
+  .viewport {
+    flex: 1; position: relative; overflow: hidden;
+    background:
+      radial-gradient(ellipse at 20% 0%, rgba(232,160,168,0.12), transparent 50%),
+      radial-gradient(ellipse at 80% 100%, rgba(126,184,168,0.1), transparent 45%),
+      var(--canvas);
+  }
+  .frame { display: none; position: absolute; inset: 0; }
+  .frame.active { display: block; animation: fadeIn .25s ease; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
+  /* Shared UI bits */
+  .glass {
+    background: var(--chrome88);
+    backdrop-filter: blur(24px) saturate(1.2);
+    -webkit-backdrop-filter: blur(24px) saturate(1.2);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow), inset 0 0 0 1px rgba(255,255,255,0.1);
+    color: var(--ivory);
+  }
+  .btn {
+    appearance: none; border: none; cursor: pointer; font: inherit;
+    border-radius: 10px; padding: 8px 14px; font-size: 13px; font-weight: 500;
+    transition: transform .12s, background .15s, box-shadow .15s;
+  }
+  .btn:active { transform: scale(0.97); }
+  .btn-primary {
+    background: var(--bloom); color: #2C1A1C;
+    box-shadow: 0 4px 14px rgba(232,160,168,0.35);
+  }
+  .btn-primary:hover { background: var(--bloom-deep); }
+  .btn-primary.success { background: var(--mint); color: #0F221C; box-shadow: 0 4px 14px rgba(126,184,168,0.35); }
+  .btn-ghost {
+    background: rgba(255,255,255,0.08); color: var(--ivory);
+  }
+  .btn-ghost:hover { background: rgba(255,255,255,0.14); }
+  .btn-light {
+    background: #fff; color: var(--charcoal); border: 1px solid var(--border-light);
+  }
+  .btn-light:hover { background: var(--rail); }
+  .hint-key {
+    font-size: 11px; color: rgba(245,242,236,0.4);
+    font-variant-numeric: tabular-nums; letter-spacing: 0.02em;
+  }
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 6px 12px; border-radius: 999px; font-size: 12px;
+    background: rgba(255,255,255,0.08); color: var(--ivory); cursor: pointer;
+    border: 1px solid transparent;
+  }
+  .chip.active { background: rgba(232,160,168,0.22); border-color: rgba(232,160,168,0.45); color: #F8D0D5; }
+
+  /* Fake desktop wallpaper for capture contexts */
+  .desk {
+    position: absolute; inset: 0;
+    background:
+      linear-gradient(135deg, #3a3540 0%, #2a2830 40%, #1e2430 100%);
+  }
+  .desk::before {
+    content: ""; position: absolute; inset: 0;
+    background:
+      radial-gradient(circle at 70% 30%, rgba(232,160,168,0.25), transparent 40%),
+      radial-gradient(circle at 20% 80%, rgba(126,184,168,0.2), transparent 35%);
+    opacity: 0.7;
+  }
+  .fake-win {
+    position: absolute; left: 12%; top: 14%; width: 58%; height: 52%;
+    background: #F7F4EE; border-radius: 10px;
+    box-shadow: 0 20px 50px rgba(0,0,0,0.35);
+    border: 1px solid rgba(255,255,255,0.5);
+    overflow: hidden;
+  }
+  .fake-win .tb {
+    height: 28px; background: #EDE8E0; display: flex; align-items: center; gap: 5px; padding: 0 10px;
+    border-bottom: 1px solid #E2DDD4;
+  }
+  .fake-win .tb i { width: 8px; height: 8px; border-radius: 50%; }
+  .fake-win .body { padding: 16px; font-size: 12px; color: #5a564e; line-height: 1.5; }
+  .fake-win .body .bars { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+  .fake-win .body .bars span {
+    display: block; height: 8px; border-radius: 4px; background: #E2DDD4;
+  }
+
+  /* ——— F1 Popover ——— */
+  #f1 .menubar {
+    position: absolute; top: 0; left: 0; right: 0; height: 28px;
+    background: rgba(40,38,36,0.85); backdrop-filter: blur(12px);
+    display: flex; align-items: center; padding: 0 14px; gap: 16px;
+    color: rgba(245,242,236,0.85); font-size: 12px; z-index: 2;
+  }
+  #f1 .menubar .app-name { font-weight: 600; }
+  #f1 .menubar .spacer { flex: 1; }
+  #f1 .menubar .ps-icon {
+    width: 18px; height: 18px; border-radius: 4px;
+    background: rgba(232,160,168,0.25); display: grid; place-items: center;
+    cursor: pointer; box-shadow: 0 0 0 2px rgba(232,160,168,0.4);
+  }
+  #f1 .desk { top: 28px; }
+  #f1 .popover {
+    position: absolute; top: 40px; right: 48px; width: 292px;
+    padding: 8px; z-index: 5;
+  }
+  #f1 .popover .sec { padding: 4px 0; }
+  #f1 .popover .row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 9px 10px; border-radius: 8px; cursor: pointer;
+    font-size: 13px;
+  }
+  #f1 .popover .row:hover { background: rgba(255,255,255,0.08); }
+  #f1 .popover .row .ico {
+    width: 22px; height: 22px; border-radius: 6px;
+    background: rgba(255,255,255,0.08); display: grid; place-items: center;
+    font-size: 12px;
+  }
+  #f1 .popover .row .lbl { flex: 1; }
+  #f1 .popover .div {
+    height: 1px; background: rgba(255,255,255,0.08); margin: 4px 8px;
+  }
+  #f1 .popover .foot {
+    padding: 8px 10px 4px; font-size: 10px; color: rgba(245,242,236,0.35);
+  }
+
+  /* ——— F2 HUD ——— */
+  #f2 .desk { filter: brightness(0.45); }
+  #f2 .dim { position: absolute; inset: 0; background: rgba(0,0,0,0.45); }
+  #f2 .sel {
+    position: absolute; left: 22%; top: 24%; width: 42%; height: 38%;
+    border: 2px solid var(--bloom);
+    box-shadow: 0 0 0 9999px rgba(0,0,0,0.4);
+    border-radius: 2px;
+    cursor: crosshair;
+  }
+  #f2 .sel::after {
+    content: "842 × 512"; position: absolute; left: 0; bottom: -28px;
+    font-size: 11px; color: var(--ivory); background: var(--chrome88);
+    padding: 3px 8px; border-radius: 6px;
+  }
+  #f2 .handle {
+    position: absolute; width: 8px; height: 8px; background: var(--bloom);
+    border-radius: 1px;
+  }
+  #f2 .handle.tl { top: -4px; left: -4px; }
+  #f2 .handle.tr { top: -4px; right: -4px; }
+  #f2 .handle.bl { bottom: -4px; left: -4px; }
+  #f2 .handle.br { bottom: -4px; right: -4px; }
+  #f2 .mode-bar {
+    position: absolute; bottom: 36px; left: 50%; transform: translateX(-50%);
+    display: flex; gap: 6px; padding: 6px; z-index: 3;
+  }
+  #f2 .esc-hint {
+    position: absolute; top: 24px; left: 50%; transform: translateX(-50%);
+    font-size: 12px; color: rgba(245,242,236,0.7); z-index: 3;
+    background: var(--chrome88); padding: 6px 14px; border-radius: 999px;
+  }
+
+  /* ——— F3 Overlay ——— */
+  #f3 .desk { filter: brightness(0.55); }
+  #f3 .overlay-card {
+    position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+    width: 420px; padding: 14px; z-index: 4;
+  }
+  #f3 .thumb {
+    height: 200px; border-radius: 10px; overflow: hidden; margin-bottom: 12px;
+    background: linear-gradient(145deg, #F7F2EA, #E8DFD4);
+    position: relative; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.15);
+  }
+  #f3 .thumb .mini-win {
+    position: absolute; left: 18%; top: 16%; width: 64%; height: 68%;
+    background: #F7F4EE; border-radius: 6px; box-shadow: 0 8px 24px rgba(0,0,0,0.2);
+  }
+  #f3 .thumb .mini-win .tb { height: 16px; background: #EDE8E0; display: flex; align-items: center; gap: 3px; padding: 0 6px; }
+  #f3 .thumb .mini-win .tb i { width: 5px; height: 5px; border-radius: 50%; }
+  #f3 .actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  #f3 .actions .btn-primary { flex: 1; min-width: 100px; padding: 10px 16px; font-size: 14px; }
+  #f3 .icon-btn {
+    width: 36px; height: 36px; border-radius: 10px;
+    background: rgba(255,255,255,0.08); border: none; color: var(--ivory);
+    cursor: pointer; display: grid; place-items: center; font-size: 14px;
+  }
+  #f3 .icon-btn:hover { background: rgba(255,255,255,0.14); }
+  #f3 .icon-btn.pinned { color: var(--mint); }
+  #f3 .drag-hint {
+    margin-top: 10px; font-size: 11px; color: rgba(245,242,236,0.4);
+    display: flex; align-items: center; gap: 6px;
+  }
+  #f3 .drag-hint .grip {
+    width: 28px; height: 4px; border-radius: 2px; background: rgba(255,242,236,0.25);
+  }
+
+  /* ——— F4 Editor ——— */
+  #f4 { display: none; }
+  #f4.active { display: flex !important; flex-direction: column; }
+  #f4 .editor-body { flex: 1; display: flex; min-height: 0; }
+  #f4 .tool-rail {
+    width: 56px; background: var(--rail); border-right: 1px solid var(--border-light);
+    display: flex; flex-direction: column; align-items: center; padding: 12px 0; gap: 4px;
+  }
+  #f4 .tool {
+    width: 40px; height: 40px; border-radius: 10px; border: none;
+    background: transparent; cursor: pointer; color: var(--charcoal);
+    display: grid; place-items: center; font-size: 16px;
+  }
+  #f4 .tool:hover { background: rgba(44,42,40,0.06); }
+  #f4 .tool.active {
+    background: rgba(232,160,168,0.28);
+    box-shadow: inset 0 0 0 1.5px rgba(232,160,168,0.7);
+  }
+  #f4 .tool-sep { width: 28px; height: 1px; background: var(--border-light); margin: 6px 0; }
+  #f4 .canvas-area {
+    flex: 1; display: flex; align-items: center; justify-content: center;
+    padding: 24px; position: relative; background: var(--canvas);
+  }
+  #f4 .shot-frame {
+    width: 72%; max-width: 560px; aspect-ratio: 16/10;
+    border-radius: 12px; padding: 28px;
+    background: linear-gradient(145deg, #F7F2EA 0%, #E8DFD4 48%, #D9CFC4 100%);
+    box-shadow: 0 24px 48px rgba(44,42,40,0.18), 0 2px 0 rgba(255,255,255,0.5) inset;
+    transition: background .3s, padding .2s, border-radius .2s;
+  }
+  #f4 .shot-inner {
+    width: 100%; height: 100%; background: #fff; border-radius: 6px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.12); position: relative; overflow: hidden;
+  }
+  #f4 .shot-inner .anno {
+    position: absolute; border: 2.5px solid var(--bloom); border-radius: 4px;
+    left: 18%; top: 22%; width: 36%; height: 28%;
+  }
+  #f4 .shot-inner .arrow {
+    position: absolute; right: 18%; bottom: 24%; width: 80px; height: 2.5px;
+    background: var(--bloom); transform: rotate(-28deg); transform-origin: left center;
+  }
+  #f4 .shot-inner .arrow::after {
+    content: ""; position: absolute; right: -2px; top: -5px;
+    border: 6px solid transparent; border-left-color: var(--bloom);
+  }
+  #f4 .drawer {
+    width: 260px; background: #fff; border-left: 1px solid var(--border-light);
+    padding: 16px; overflow-y: auto; display: flex; flex-direction: column; gap: 14px;
+  }
+  #f4 .drawer h3 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 600; }
+  #f4 .presets {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+  }
+  #f4 .preset {
+    height: 48px; border-radius: 8px; cursor: pointer; border: 2px solid transparent;
+    position: relative; overflow: hidden;
+  }
+  #f4 .preset.active { border-color: var(--bloom); box-shadow: 0 0 0 1px var(--bloom); }
+  #f4 .preset span {
+    position: absolute; left: 6px; bottom: 4px; font-size: 9px; color: #fff;
+    text-shadow: 0 1px 2px rgba(0,0,0,0.5); font-weight: 500;
+  }
+  #f4 .preset.light span { color: var(--charcoal); text-shadow: none; }
+  #f4 .slider-row { display: flex; flex-direction: column; gap: 4px; }
+  #f4 .slider-row label { font-size: 11px; color: var(--muted); display: flex; justify-content: space-between; }
+  #f4 .slider-row input[type=range] { width: 100%; accent-color: var(--bloom); }
+  #f4 .top-actions {
+    display: flex; gap: 8px; padding: 10px 16px; background: var(--rail);
+    border-bottom: 1px solid var(--border-light); align-items: center;
+  }
+  #f4 .top-actions .title { font-size: 13px; font-weight: 560; flex: 1; color: var(--charcoal); }
+
+  /* ——— F5 History ——— */
+  #f5 .hist-wrap { position: absolute; inset: 24px; display: flex; flex-direction: column; gap: 16px; }
+  #f5 .hist-card {
+    background: #fff; border-radius: 14px; padding: 20px;
+    box-shadow: 0 8px 28px rgba(44,42,40,0.08); border: 1px solid var(--border-light);
+    flex: 1; display: flex; flex-direction: column; min-height: 0;
+  }
+  #f5 .tabs { display: flex; gap: 4px; margin-bottom: 16px; }
+  #f5 .tabs button {
+    appearance: none; border: none; background: transparent; padding: 6px 12px;
+    border-radius: 8px; font: inherit; font-size: 13px; cursor: pointer; color: var(--muted);
+  }
+  #f5 .tabs button.on { background: rgba(232,160,168,0.2); color: #a86a72; font-weight: 560; }
+  #f5 .empty {
+    flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 12px; color: var(--muted);
+  }
+  #f5 .empty .illus {
+    width: 88px; height: 68px; border-radius: 10px;
+    border: 2px dashed #D4CFC6; background: var(--rail);
+    display: grid; place-items: center; font-size: 28px; opacity: 0.7;
+  }
+  #f5 .empty h4 { color: var(--charcoal); font-weight: 560; font-size: 15px; }
+  #f5 .empty p { font-size: 13px; }
+  #f5 .grid {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; overflow-y: auto;
+  }
+  #f5 .shot-card {
+    border-radius: 10px; overflow: hidden; border: 1px solid var(--border-light);
+    background: var(--rail); cursor: pointer; position: relative; aspect-ratio: 4/3;
+    transition: box-shadow .15s, transform .15s;
+  }
+  #f5 .shot-card:hover { box-shadow: 0 8px 20px rgba(44,42,40,0.12); transform: translateY(-2px); }
+  #f5 .shot-card .prev {
+    height: 70%; background-size: cover; background-position: center;
+  }
+  #f5 .shot-card .meta {
+    padding: 8px 10px; font-size: 11px; color: var(--muted);
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  #f5 .shot-card .ops {
+    position: absolute; top: 6px; right: 6px; display: none; gap: 4px;
+  }
+  #f5 .shot-card:hover .ops { display: flex; }
+  #f5 .shot-card .ops button {
+    width: 26px; height: 26px; border-radius: 7px; border: none;
+    background: rgba(28,28,30,0.75); color: #fff; cursor: pointer; font-size: 11px;
+  }
+
+  /* ——— F6 Pin ——— */
+  #f6 .desk { filter: brightness(0.7); }
+  #f6 .pin-win {
+    position: absolute; left: 28%; top: 22%; width: 380px;
+    z-index: 5;
+  }
+  #f6 .pin-chrome {
+    background: var(--chrome88); backdrop-filter: blur(20px);
+    border-radius: 12px 12px 0 0; padding: 6px 10px;
+    display: flex; align-items: center; gap: 8px;
+    color: var(--ivory); font-size: 11px;
+    opacity: 0; transition: opacity .2s;
+  }
+  #f6 .pin-win:hover .pin-chrome { opacity: 1; }
+  #f6 .pin-body {
+    border-radius: 0 0 12px 12px; overflow: hidden;
+    box-shadow: 0 24px 60px rgba(0,0,0,0.4);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-top: none;
+  }
+  #f6 .pin-shot {
+    height: 220px;
+    background: linear-gradient(145deg, #F3D5D8, #E8A0A8 40%, #C9B8D4);
+    padding: 20px; transition: opacity .2s;
+  }
+  #f6 .pin-shot .inner {
+    height: 100%; background: #fff; border-radius: 6px;
+    box-shadow: 0 6px 18px rgba(0,0,0,0.15);
+  }
+  #f6 .pin-controls {
+    position: absolute; bottom: 40px; left: 50%; transform: translateX(-50%);
+    padding: 12px 16px; width: 320px; z-index: 6;
+  }
+  #f6 .pin-controls h4 { font-size: 12px; margin-bottom: 10px; color: rgba(245,242,236,0.7); font-weight: 500; }
+  #f6 .ctrl { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+  #f6 .ctrl label { font-size: 11px; color: rgba(245,242,236,0.5); display: flex; justify-content: space-between; }
+  #f6 .ctrl input { width: 100%; accent-color: var(--bloom); }
+
+  /* ——— F7 Permission ——— */
+  #f7 .perm-wrap {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    background:
+      radial-gradient(ellipse at 50% 40%, rgba(232,160,168,0.15), transparent 55%),
+      var(--canvas);
+  }
+  #f7 .perm-card {
+    width: 420px; background: #fff; border-radius: 16px; padding: 32px;
+    box-shadow: 0 20px 50px rgba(44,42,40,0.12); border: 1px solid var(--border-light);
+    text-align: center;
+  }
+  #f7 .perm-icon {
+    width: 64px; height: 64px; margin: 0 auto 16px; border-radius: 16px;
+    background: rgba(232,160,168,0.18); display: grid; place-items: center;
+  }
+  #f7 h2 { font-size: 18px; font-weight: 600; margin-bottom: 8px; color: var(--charcoal); }
+  #f7 p { font-size: 13px; color: var(--muted); line-height: 1.55; margin-bottom: 20px; }
+  #f7 .perm-actions { display: flex; flex-direction: column; gap: 8px; }
+  #f7 .note {
+    margin-top: 16px; font-size: 11px; color: #a86a72;
+    background: rgba(232,160,168,0.12); padding: 8px 12px; border-radius: 8px;
+  }
+
+  .toast {
+    position: absolute; bottom: 24px; left: 50%; transform: translateX(-50%);
+    background: #fff; color: var(--charcoal); padding: 10px 18px; border-radius: 10px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.15); font-size: 13px;
+    opacity: 0; pointer-events: none; transition: opacity .25s; z-index: 50;
+    border: 1px solid var(--border-light);
+  }
+  .toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside class="nav">
+    <div class="brand">
+      <svg width="28" height="28" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+        <rect x="2" y="2" width="28" height="28" rx="9" fill="rgba(232,160,168,0.2)"/>
+        <circle cx="16" cy="16" r="7.5" stroke="#E8A0A8" stroke-width="2" fill="none"/>
+        <circle cx="16" cy="16" r="3" fill="#E8A0A8"/>
+        <path d="M22.5 7.5c1.2-.2 2.4.6 2.6 1.8.2 1.2-.6 2.2-1.6 2.5" stroke="#F5F2EC" stroke-width="1.4" stroke-linecap="round" fill="none" opacity="0.85"/>
+      </svg>
+      <div>
+        <div class="brand-text">PrettyShot</div>
+        <div class="brand-sub">Paper Bloom · v0.1</div>
+      </div>
+    </div>
+    <button type="button" class="active" data-frame="f1"><span class="nav-id">F1</span> Menu Popover</button>
+    <button type="button" data-frame="f2"><span class="nav-id">F2</span> Capture HUD</button>
+    <button type="button" data-frame="f3"><span class="nav-id">F3</span> Quick Overlay</button>
+    <button type="button" data-frame="f4"><span class="nav-id">F4</span> Editor</button>
+    <button type="button" data-frame="f5"><span class="nav-id">F5</span> History</button>
+    <button type="button" data-frame="f6"><span class="nav-id">F6</span> Pin Window</button>
+    <button type="button" data-frame="f7"><span class="nav-id">F7</span> Permission</button>
+    <div class="nav-foot">
+      Design prototype only<br/>
+      Brand <strong>PrettyShot</strong><br/>
+      非工程实现 · 设计师
+    </div>
+  </aside>
+
+  <main class="stage">
+    <div class="stage-bar">
+      <div class="traffic"><i class="r"></i><i class="y"></i><i class="g"></i></div>
+      <span class="stage-title" id="stageTitle">F1 · Menu Bar Popover（空闲）</span>
+      <span class="stage-badge">设计稿 · 不可编译</span>
+    </div>
+    <div class="viewport">
+
+      <!-- F1 -->
+      <section class="frame active" id="f1" aria-label="Menu Popover">
+        <div class="menubar">
+          <span class="app-name">Finder</span>
+          <span>文件</span><span>编辑</span><span>显示</span>
+          <span class="spacer"></span>
+          <span style="opacity:.5">Sun 10:27</span>
+          <div class="ps-icon" title="PrettyShot">
+            <svg width="12" height="12" viewBox="0 0 32 32"><circle cx="16" cy="16" r="7" stroke="#E8A0A8" stroke-width="3" fill="none"/><circle cx="16" cy="16" r="2.5" fill="#E8A0A8"/></svg>
+          </div>
+        </div>
+        <div class="desk">
+          <div class="fake-win">
+            <div class="tb"><i style="background:#FF5F57"></i><i style="background:#FEBC2E"></i><i style="background:#28C840"></i></div>
+            <div class="body">桌面示意 · PrettyShot 菜单栏常驻
+              <div class="bars"><span style="width:90%"></span><span style="width:70%"></span><span style="width:80%"></span><span style="width:55%"></span></div>
+            </div>
+          </div>
+        </div>
+        <div class="glass popover">
+          <div class="sec">
+            <div class="row" onclick="go('f2')">
+              <div class="ico">⬚</div>
+              <span class="lbl">捕获区域</span>
+              <span class="hint-key">⌥⌘1</span>
+            </div>
+            <div class="row" onclick="go('f2')">
+              <div class="ico">▭</div>
+              <span class="lbl">捕获窗口</span>
+              <span class="hint-key">⌥⌘2</span>
+            </div>
+            <div class="row" onclick="go('f2')">
+              <div class="ico">▣</div>
+              <span class="lbl">捕获全屏</span>
+              <span class="hint-key">⌥⌘3</span>
+            </div>
+          </div>
+          <div class="div"></div>
+          <div class="sec">
+            <div class="row" onclick="go('f5')">
+              <div class="ico">◷</div>
+              <span class="lbl">历史</span>
+              <span class="hint-key">⌥⌘H</span>
+            </div>
+            <div class="row">
+              <div class="ico">⚙</div>
+              <span class="lbl">设置</span>
+              <span class="hint-key"></span>
+            </div>
+          </div>
+          <div class="foot">快捷键为设计假设 · 可在设置重映射 · 不占用 ⌘⇧3/4/5</div>
+        </div>
+      </section>
+
+      <!-- F2 -->
+      <section class="frame" id="f2" aria-label="Capture HUD">
+        <div class="desk"></div>
+        <div class="esc-hint">Esc 取消 · 拖拽选择区域</div>
+        <div class="sel">
+          <span class="handle tl"></span><span class="handle tr"></span>
+          <span class="handle bl"></span><span class="handle br"></span>
+        </div>
+        <div class="glass mode-bar">
+          <span class="chip active" data-mode="region">区域</span>
+          <span class="chip" data-mode="window">窗口</span>
+          <span class="chip" data-mode="full">全屏</span>
+        </div>
+      </section>
+
+      <!-- F3 -->
+      <section class="frame" id="f3" aria-label="Quick Overlay">
+        <div class="desk"></div>
+        <div class="glass overlay-card">
+          <div class="thumb">
+            <div class="mini-win">
+              <div class="tb"><i style="background:#FF5F57"></i><i style="background:#FEBC2E"></i><i style="background:#28C840"></i></div>
+            </div>
+          </div>
+          <div class="actions">
+            <button type="button" class="btn btn-primary" id="copyBtn" onclick="doCopy()">Copy</button>
+            <button type="button" class="btn btn-ghost" onclick="go('f4')">Annotate</button>
+            <button type="button" class="btn btn-ghost" onclick="toast('已保存到 Downloads（示意）')">Save</button>
+            <button type="button" class="icon-btn" title="Pin" id="pinBtn" onclick="togglePin()">📌</button>
+            <button type="button" class="icon-btn" title="Dismiss" onclick="toast('已关闭 Overlay')">✕</button>
+          </div>
+          <div class="drag-hint"><span class="grip"></span> 拖动手柄 · 可拖出到其它 App</div>
+        </div>
+      </section>
+
+      <!-- F4 -->
+      <section class="frame" id="f4" aria-label="Editor">
+        <div class="top-actions">
+          <span class="title">PrettyShot Editor · 标注优先 · 美化不挡路</span>
+          <button type="button" class="btn btn-light" onclick="toast('已导出 PNG（示意）')">Export</button>
+          <button type="button" class="btn btn-primary" id="edCopy" onclick="doEdCopy()">Copy</button>
+        </div>
+        <div class="editor-body">
+          <div class="tool-rail" role="toolbar" aria-label="Annotate tools">
+            <button type="button" class="tool active" title="箭头" data-tool="arrow">↗</button>
+            <button type="button" class="tool" title="矩形" data-tool="rect">▭</button>
+            <button type="button" class="tool" title="椭圆" data-tool="oval">◯</button>
+            <button type="button" class="tool" title="文字" data-tool="text">T</button>
+            <button type="button" class="tool" title="计数" data-tool="counter">①</button>
+            <div class="tool-sep"></div>
+            <button type="button" class="tool" title="裁剪" data-tool="crop">✂</button>
+            <button type="button" class="tool" title="马赛克/像素" data-tool="pixel">▦</button>
+            <button type="button" class="tool" title="模糊" data-tool="blur">◎</button>
+          </div>
+          <div class="canvas-area">
+            <div class="shot-frame" id="shotFrame">
+              <div class="shot-inner">
+                <div class="anno"></div>
+                <div class="arrow"></div>
+              </div>
+            </div>
+          </div>
+          <aside class="drawer">
+            <h3>Background · 背景</h3>
+            <div class="presets" id="presets"></div>
+            <h3>美化（次级）</h3>
+            <div class="slider-row">
+              <label>Padding <span id="padVal">28</span></label>
+              <input type="range" min="8" max="64" value="28" id="padRange" />
+            </div>
+            <div class="slider-row">
+              <label>Radius <span id="radVal">12</span></label>
+              <input type="range" min="0" max="28" value="12" id="radRange" />
+            </div>
+            <div class="slider-row">
+              <label>Shadow <span id="shVal">48</span></label>
+              <input type="range" min="0" max="80" value="48" id="shRange" />
+            </div>
+            <p style="font-size:11px;color:var(--muted);line-height:1.4">工具轨始终可达 · 背景抽屉不遮挡标注（P2）</p>
+          </aside>
+        </div>
+      </section>
+
+      <!-- F5 -->
+      <section class="frame" id="f5" aria-label="History">
+        <div class="hist-wrap">
+          <div class="hist-card">
+            <div class="tabs">
+              <button type="button" class="on" id="tabFilled" onclick="showHist('filled')">有内容</button>
+              <button type="button" id="tabEmpty" onclick="showHist('empty')">空态</button>
+            </div>
+            <div id="histFilled">
+              <div class="grid" id="histGrid"></div>
+            </div>
+            <div id="histEmpty" style="display:none" class="empty">
+              <div class="illus">◌</div>
+              <h4>还没有截图</h4>
+              <p>捕获一张，开始你的纸感光晕</p>
+              <button type="button" class="btn btn-primary" style="margin-top:8px" onclick="go('f2')">捕获区域 · ⌥⌘1</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- F6 -->
+      <section class="frame" id="f6" aria-label="Pin Window">
+        <div class="desk">
+          <div class="fake-win" style="opacity:.5;left:8%;top:50%;width:40%;height:35%"></div>
+        </div>
+        <div class="pin-win" id="pinWin">
+          <div class="pin-chrome">
+            <span style="color:var(--mint)">●</span> PrettyShot Pin
+            <span style="margin-left:auto;opacity:.5">⌥⌘P · 最近一张</span>
+          </div>
+          <div class="pin-body">
+            <div class="pin-shot" id="pinShot"><div class="inner"></div></div>
+          </div>
+        </div>
+        <div class="glass pin-controls">
+          <h4>Pin 控制</h4>
+          <div class="ctrl">
+            <label>透明度 <span id="opVal">100%</span></label>
+            <input type="range" min="30" max="100" value="100" id="opRange" />
+          </div>
+          <div class="ctrl">
+            <label>尺寸 <span id="szVal">100%</span></label>
+            <input type="range" min="50" max="140" value="100" id="szRange" />
+          </div>
+        </div>
+      </section>
+
+      <!-- F7 -->
+      <section class="frame" id="f7" aria-label="Permission Denied">
+        <div class="perm-wrap">
+          <div class="perm-card">
+            <div class="perm-icon">
+              <svg width="32" height="32" viewBox="0 0 32 32" fill="none">
+                <circle cx="16" cy="16" r="10" stroke="#E8A0A8" stroke-width="2"/>
+                <path d="M16 10v8M16 21.5v.5" stroke="#E8A0A8" stroke-width="2.2" stroke-linecap="round"/>
+              </svg>
+            </div>
+            <h2>需要屏幕录制权限</h2>
+            <p>
+              PrettyShot 需要「屏幕录制」权限才能捕获屏幕内容。<br/>
+              本轮 MVP <strong>不会</strong>上传到云端。授权失败时我们会清楚说明原因——不会静默黑屏。
+            </p>
+            <div class="perm-actions">
+              <button type="button" class="btn btn-primary" onclick="toast('示意：打开 系统设置 › 隐私与安全性 › 屏幕录制')">打开系统设置</button>
+              <button type="button" class="btn btn-light" onclick="toast('稍后再说')">稍后再说</button>
+            </div>
+            <div class="note">P3 · 权限失败必须可读 · AC-M7</div>
+          </div>
+        </div>
+      </section>
+
+      <div class="toast" id="toast"></div>
+    </div>
+  </main>
+</div>
+
+<script>
+const TITLES = {
+  f1: 'F1 · Menu Bar Popover（空闲）',
+  f2: 'F2 · Capture HUD（区域选择）',
+  f3: 'F3 · Quick Access Overlay',
+  f4: 'F4 · Editor（标注 + 背景）',
+  f5: 'F5 · History Panel',
+  f6: 'F6 · Pin Window',
+  f7: 'F7 · Permission Denied'
+};
+
+const PRESETS = [
+  { key:'paper-mist', name:'Paper Mist', cls:'light', css:'linear-gradient(145deg,#F7F2EA 0%,#E8DFD4 48%,#D9CFC4 100%)' },
+  { key:'ink-wash', name:'Ink Wash', css:'linear-gradient(160deg,#2A2E35 0%,#4A5560 45%,#8A9AA8 100%)' },
+  { key:'soft-bloom', name:'Soft Bloom', css:'linear-gradient(135deg,#F3D5D8 0%,#E8A0A8 40%,#C9B8D4 100%)' },
+  { key:'moss-quiet', name:'Moss Quiet', css:'linear-gradient(150deg,#1E2E28 0%,#3D5A4C 50%,#7EB8A8 100%)' },
+  { key:'dusk-lilac', name:'Dusk Lilac', css:'linear-gradient(140deg,#2B2438 0%,#6B5B7A 50%,#C4B0D4 100%)' },
+  { key:'ceramic-white', name:'Ceramic White', cls:'light', css:'linear-gradient(180deg,#FFFFFF 0%,#F5F2EC 60%,#E8E2D8 100%)' },
+  { key:'night-ink', name:'Night Ink', css:'linear-gradient(160deg,#0E0F12 0%,#1C1C1E 55%,#3A3A3C 100%)' },
+  { key:'citrus-fog', name:'Citrus Fog', cls:'light', css:'linear-gradient(145deg,#F6E7C8 0%,#E8C99A 45%,#D4B48A 100%)' }
+];
+
+function go(id) {
+  document.querySelectorAll('.frame').forEach(f => f.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+  document.querySelectorAll('.nav button[data-frame]').forEach(b => {
+    b.classList.toggle('active', b.dataset.frame === id);
+  });
+  document.getElementById('stageTitle').textContent = TITLES[id] || id;
+}
+
+document.querySelectorAll('.nav button[data-frame]').forEach(b => {
+  b.addEventListener('click', () => go(b.dataset.frame));
+});
+
+/* F2 mode chips */
+document.querySelectorAll('#f2 .chip').forEach(c => {
+  c.addEventListener('click', () => {
+    document.querySelectorAll('#f2 .chip').forEach(x => x.classList.remove('active'));
+    c.classList.add('active');
+  });
+});
+
+/* F3 copy */
+function doCopy() {
+  const btn = document.getElementById('copyBtn');
+  btn.classList.add('success');
+  btn.textContent = '已复制';
+  toast('已复制到剪贴板 · ≤3 步完成');
+  setTimeout(() => { btn.classList.remove('success'); btn.textContent = 'Copy'; }, 1600);
+}
+function togglePin() {
+  const b = document.getElementById('pinBtn');
+  b.classList.toggle('pinned');
+  toast(b.classList.contains('pinned') ? '已 Pin 到浮窗' : '已取消 Pin');
+}
+function doEdCopy() {
+  const btn = document.getElementById('edCopy');
+  btn.classList.add('success');
+  btn.textContent = '已复制';
+  toast('编辑结果已复制');
+  setTimeout(() => { btn.classList.remove('success'); btn.textContent = 'Copy'; }, 1600);
+}
+
+function toast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(toast._tm);
+  toast._tm = setTimeout(() => t.classList.remove('show'), 2200);
+}
+
+/* F4 presets + tools + sliders */
+(function initEditor() {
+  const box = document.getElementById('presets');
+  const frame = document.getElementById('shotFrame');
+  PRESETS.forEach((p, i) => {
+    const el = document.createElement('div');
+    el.className = 'preset' + (p.cls ? ' ' + p.cls : '') + (i === 0 ? ' active' : '');
+    el.style.background = p.css;
+    el.innerHTML = '<span>' + p.name + '</span>';
+    el.title = p.key;
+    el.addEventListener('click', () => {
+      box.querySelectorAll('.preset').forEach(x => x.classList.remove('active'));
+      el.classList.add('active');
+      frame.style.background = p.css;
+    });
+    box.appendChild(el);
+  });
+  document.querySelectorAll('#f4 .tool').forEach(t => {
+    t.addEventListener('click', () => {
+      document.querySelectorAll('#f4 .tool').forEach(x => x.classList.remove('active'));
+      t.classList.add('active');
+      toast('工具：' + t.title);
+    });
+  });
+  const pad = document.getElementById('padRange');
+  const rad = document.getElementById('radRange');
+  const sh = document.getElementById('shRange');
+  function syncBeautify() {
+    document.getElementById('padVal').textContent = pad.value;
+    document.getElementById('radVal').textContent = rad.value;
+    document.getElementById('shVal').textContent = sh.value;
+    frame.style.padding = pad.value + 'px';
+    frame.style.borderRadius = rad.value + 'px';
+    frame.style.boxShadow = '0 ' + (sh.value/2) + 'px ' + sh.value + 'px rgba(44,42,40,0.18)';
+  }
+  pad.addEventListener('input', syncBeautify);
+  rad.addEventListener('input', syncBeautify);
+  sh.addEventListener('input', syncBeautify);
+})();
+
+/* F5 history grid */
+(function initHist() {
+  const grads = PRESETS.map(p => p.css);
+  const grid = document.getElementById('histGrid');
+  for (let i = 0; i < 6; i++) {
+    const card = document.createElement('div');
+    card.className = 'shot-card';
+    card.innerHTML =
+      '<div class="prev" style="background:' + grads[i % grads.length] + '"></div>' +
+      '<div class="meta"><span>Shot 0' + (i+1) + '</span><span>今天</span></div>' +
+      '<div class="ops">' +
+        '<button type="button" title="重开" onclick="event.stopPropagation();go(\'f4\')">✎</button>' +
+        '<button type="button" title="Pin" onclick="event.stopPropagation();go(\'f6\')">📌</button>' +
+        '<button type="button" title="删除" onclick="event.stopPropagation();toast(\'已删除（示意）\')">🗑</button>' +
+      '</div>';
+    card.addEventListener('click', () => go('f4'));
+    grid.appendChild(card);
+  }
+})();
+
+function showHist(mode) {
+  document.getElementById('histFilled').style.display = mode === 'filled' ? 'block' : 'none';
+  document.getElementById('histEmpty').style.display = mode === 'empty' ? 'flex' : 'none';
+  document.getElementById('tabFilled').classList.toggle('on', mode === 'filled');
+  document.getElementById('tabEmpty').classList.toggle('on', mode === 'empty');
+}
+
+/* F6 pin controls */
+(function initPin() {
+  const op = document.getElementById('opRange');
+  const sz = document.getElementById('szRange');
+  const shot = document.getElementById('pinShot');
+  const win = document.getElementById('pinWin');
+  op.addEventListener('input', () => {
+    document.getElementById('opVal').textContent = op.value + '%';
+    shot.style.opacity = op.value / 100;
+  });
+  sz.addEventListener('input', () => {
+    document.getElementById('szVal').textContent = sz.value + '%';
+    win.style.transform = 'scale(' + (sz.value / 100) + ')';
+    win.style.transformOrigin = 'top left';
+  });
+})();
+
+/* Hash deep-link for design captures: #f3 */
+(function(){
+  const h = (location.hash || '').replace(/^#/, '');
+  if (h && TITLES[h]) go(h);
+  window.addEventListener('hashchange', () => {
+    const id = (location.hash || '').replace(/^#/, '');
+    if (id && TITLES[id]) go(id);
+  });
+})();
+
+</script>
+</body>
+</html>
