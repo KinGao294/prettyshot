@@ -68,6 +68,9 @@ final class EditorDocument: ObservableObject {
     private var redoStack: [Snapshot] = []
     private var interaction: Interaction = .none
     private var toolBeforeCrop: EditorTool = .arrow
+    /// True while `redactedBase` is a low-res preview (a redaction is being dragged); full bake on pointer-up.
+    private(set) var redactionPreviewActive = false
+    private lazy var redactionPreviewSource = Redactor.previewSource(for: original)
     private static let undoLimit = 100
 
     init(image: CGImage, scale: CGFloat, mode: CaptureMode, background: BackgroundStyle, sourceHistoryID: UUID?) {
@@ -104,12 +107,14 @@ final class EditorDocument: ObservableObject {
             crop: forCropEditing ? imageBounds : effectiveCrop,
             annotations: vectorAnnotations.filter { !hidden.contains($0.id) },
             background: forCropEditing ? BackgroundStyle(presetKey: nil, padding: 0, radius: 0, shadow: 0) : background,
-            scale: scale
+            scale: scale,
+            baseSize: imageBounds.size
         )
     }
 
     func exportImage() -> CGImage? {
         commitPendingText()
+        bakeRedactionsIfPreview()
         return Renderer.render(renderInput(forCropEditing: false))
     }
 
@@ -285,7 +290,10 @@ final class EditorDocument: ObservableObject {
     }
 
     func pointerUp(at point: CGPoint) {
-        defer { interaction = .none }
+        defer {
+            interaction = .none
+            bakeRedactionsIfPreview()
+        }
         switch interaction {
         case .drawing:
             if var finished = draft {
@@ -327,6 +335,19 @@ final class EditorDocument: ObservableObject {
         let old = oldValue.filter { $0.kind.isRedaction }
         let new = redactions
         guard old != new else { return }
-        redactedBase = Redactor.apply(new, to: original, scale: scale)
+        // Dragging a redaction re-bakes on every mouse event: use a downscaled source until pointer-up.
+        if case .moving(let moving, _, _) = interaction, moving.kind.isRedaction, let preview = redactionPreviewSource {
+            redactedBase = Redactor.apply(new, to: preview.image, scale: scale, geometryScale: preview.factor)
+            redactionPreviewActive = true
+        } else {
+            redactedBase = Redactor.apply(new, to: original, scale: scale)
+            redactionPreviewActive = false
+        }
+    }
+
+    private func bakeRedactionsIfPreview() {
+        guard redactionPreviewActive else { return }
+        redactedBase = Redactor.apply(redactions, to: original, scale: scale)
+        redactionPreviewActive = false
     }
 }

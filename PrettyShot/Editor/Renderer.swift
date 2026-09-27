@@ -14,6 +14,8 @@ struct RenderInput {
     var background: BackgroundStyle
     /// Pixels per point, so padding/radius/shadow look the same on Retina and non-Retina captures.
     var scale: CGFloat
+    /// Size `base` is drawn at, in image pixels. Set when `base` is a downscaled preview (redaction drag).
+    var baseSize: CGSize? = nil
 }
 
 struct RenderLayout: Equatable {
@@ -130,9 +132,8 @@ enum Renderer {
         context.addPath(clip)
         context.clip()
         let origin = layout.canvasPoint(fromImage: .zero)
-        drawImage(input.base, in: CGRect(x: origin.x, y: origin.y,
-                                         width: CGFloat(input.base.width), height: CGFloat(input.base.height)),
-                  context: context)
+        let size = input.baseSize ?? CGSize(width: input.base.width, height: input.base.height)
+        drawImage(input.base, in: CGRect(origin: origin, size: size), context: context)
         context.restoreGState()
     }
 
@@ -269,7 +270,9 @@ enum AnnotationRenderer {
 enum Redactor {
     private static let context = CIContext(options: [.cacheIntermediates: false])
 
-    static func apply(_ redactions: [Annotation], to image: CGImage, scale: CGFloat) -> CGImage {
+    /// `geometryScale` maps annotation geometry (full-size image pixels) onto `image`, which may be a
+    /// downscaled preview used while a redaction is being dragged.
+    static func apply(_ redactions: [Annotation], to image: CGImage, scale: CGFloat, geometryScale: CGFloat = 1) -> CGImage {
         let regions = redactions.filter { $0.kind.isRedaction && $0.isMeaningful }
         guard !regions.isEmpty else { return image }
 
@@ -279,7 +282,9 @@ enum Redactor {
 
         for region in regions {
             // Image pixels (y-down) → Core Image (y-up).
-            let r = region.rect
+            let full = region.rect
+            let r = CGRect(x: full.minX * geometryScale, y: full.minY * geometryScale,
+                           width: full.width * geometryScale, height: full.height * geometryScale)
             let ciRect = CGRect(x: r.minX, y: extent.height - r.maxY, width: r.width, height: r.height)
                 .intersection(extent)
             guard !ciRect.isEmpty else { continue }
@@ -289,13 +294,13 @@ enum Redactor {
             case .pixelate:
                 let filter = CIFilter.pixellate()
                 filter.inputImage = output.clampedToExtent()
-                filter.scale = Float(max(10 * scale, min(ciRect.width, ciRect.height) / 8))
+                filter.scale = Float(max(10 * scale * geometryScale, min(ciRect.width, ciRect.height) / 8))
                 filter.center = ciRect.origin
                 effect = filter.outputImage
             case .blur:
                 let filter = CIFilter.gaussianBlur()
                 filter.inputImage = output.clampedToExtent()
-                filter.radius = Float(max(14 * scale, min(ciRect.width, ciRect.height) / 10))
+                filter.radius = Float(max(14 * scale * geometryScale, min(ciRect.width, ciRect.height) / 10))
                 effect = filter.outputImage
             default:
                 effect = nil
@@ -305,5 +310,22 @@ enum Redactor {
             }
         }
         return context.createCGImage(output, from: extent) ?? image
+    }
+
+    /// Downscaled copy of `image` (long side ≤ `maxSide`) for cheap live redaction previews.
+    static func previewSource(for image: CGImage, maxSide: Int = 1280) -> (image: CGImage, factor: CGFloat)? {
+        let longSide = max(image.width, image.height)
+        guard longSide > maxSide else { return nil }
+        let factor = CGFloat(maxSide) / CGFloat(longSide)
+        let width = max(1, Int((CGFloat(image.width) * factor).rounded()))
+        let height = max(1, Int((CGFloat(image.height) * factor).rounded()))
+        guard let space = CGColorSpace(name: CGColorSpace.sRGB),
+              let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                                      space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        else { return nil }
+        context.interpolationQuality = .medium
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        guard let scaled = context.makeImage() else { return nil }
+        return (scaled, CGFloat(width) / CGFloat(image.width))
     }
 }

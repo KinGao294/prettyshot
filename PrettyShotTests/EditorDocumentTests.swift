@@ -117,6 +117,26 @@ final class EditorDocumentTests: XCTestCase {
         XCTAssertTrue(doc.redactedBase === doc.original)
     }
 
+    func testDraggingRedactionUsesPreviewThenBakesFullResolution() {
+        let doc = makeDocument(width: 2600, height: 400)
+        doc.tool = .pixelate
+        drag(doc, from: CGPoint(x: 0, y: 0), to: CGPoint(x: 200, y: 200))
+        XCTAssertEqual(doc.redactedBase.width, 2600)
+
+        doc.tool = .select
+        doc.pointerDown(at: CGPoint(x: 100, y: 100))
+        doc.pointerDragged(to: CGPoint(x: 300, y: 100))
+        XCTAssertTrue(doc.redactionPreviewActive)
+        XCTAssertLessThan(doc.redactedBase.width, 2600)
+        // Preview is still drawn at full image size.
+        XCTAssertEqual(doc.renderInput(forCropEditing: false).baseSize, doc.imageBounds.size)
+
+        doc.pointerUp(at: CGPoint(x: 300, y: 100))
+        XCTAssertFalse(doc.redactionPreviewActive)
+        XCTAssertEqual(doc.redactedBase.width, 2600)
+        XCTAssertEqual(doc.redactions.first?.rect.minX, 200)
+    }
+
     func testStyleAppliesToSelection() {
         let doc = makeDocument(scale: 2)
         doc.tool = .rectangle
