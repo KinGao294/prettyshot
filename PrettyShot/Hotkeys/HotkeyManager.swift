@@ -12,12 +12,16 @@ final class HotkeyManager: ObservableObject {
     @Published private(set) var registrationErrors: [HotkeyAction: String] = [:]
 
     var onTrigger: ((HotkeyAction) -> Void)?
+    /// Fired by the temporary bare-Esc hotkey (see `beginEscapeMonitoring`).
+    var onEscape: (() -> Void)?
 
     private let defaults: UserDefaults
     private static let storageKey = "hotkeys.v1"
     private static let signature: OSType = 0x5053_6874 // 'PSht'
 
     private var hotKeyRefs: [HotkeyAction: EventHotKeyRef] = [:]
+    private var escapeRef: EventHotKeyRef?
+    private static let escapeID: UInt32 = 0xE5C
     private var eventHandler: EventHandlerRef?
     private var suspended = false
 
@@ -91,6 +95,23 @@ final class HotkeyManager: ObservableObject {
         hotKeyRefs.removeAll()
     }
 
+    /// Grabs bare Esc system-wide while a capture is in flight, so Esc cancels even before the HUD
+    /// has key focus (fullscreen capture never shows a HUD). Carbon hotkeys need no Accessibility permission.
+    func beginEscapeMonitoring() {
+        guard escapeRef == nil else { return }
+        installHandlerIfNeeded()
+        var ref: EventHotKeyRef?
+        let id = EventHotKeyID(signature: Self.signature, id: Self.escapeID)
+        if RegisterEventHotKey(UInt32(kVK_Escape), 0, id, GetApplicationEventTarget(), 0, &ref) == noErr {
+            escapeRef = ref
+        }
+    }
+
+    func endEscapeMonitoring() {
+        if let escapeRef { UnregisterEventHotKey(escapeRef) }
+        escapeRef = nil
+    }
+
     // MARK: - Private
 
     private func reregister() {
@@ -98,6 +119,10 @@ final class HotkeyManager: ObservableObject {
     }
 
     fileprivate func handleHotKey(id: UInt32) {
+        if id == Self.escapeID {
+            onEscape?()
+            return
+        }
         let index = Int(id) - 1
         guard HotkeyAction.allCases.indices.contains(index) else { return }
         onTrigger?(HotkeyAction.allCases[index])

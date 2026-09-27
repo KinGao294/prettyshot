@@ -23,34 +23,115 @@ final class CaptureSession {
 
     private let service: ScreenCaptureService
     private let model: CaptureHUDModel
+    /// Right after a Screen Recording grant ScreenCaptureKit can hand back black frames; retry once.
+    private let retryBlankFrames: Bool
     private var overlays: [CaptureOverlayWindow] = []
     private var continuation: CheckedContinuation<Outcome, Never>?
     private var finished = false
+    /// Set by `cancel()` at any point — also before `run()` has reached the HUD (no continuation yet).
+    private var cancelled = false
 
-    init(mode: CaptureMode, service: ScreenCaptureService) {
+    init(mode: CaptureMode, service: ScreenCaptureService, retryBlankFrames: Bool = false) {
         self.service = service
         self.model = CaptureHUDModel(mode: mode)
+        self.retryBlankFrames = retryBlankFrames
     }
 
+    var isCancelled: Bool { cancelled || Task.isCancelled }
+
+    /// Resolves to `.cancelled` whenever `cancel()` was called or the calling task was cancelled —
+    /// checked before and after every await, so a cancelled session never yields `.captured`.
     func run() async -> Outcome {
+        guard !isCancelled else { return finishedCancelled() }
         do {
-            let content = try await service.shareableContent()
             if model.mode == .fullscreen {
-                return .captured(try await service.captureScreen(.underMouse, content: content))
+                let result = try await captureFullscreen()
+                guard !isCancelled else { return finishedCancelled() }
+                finished = true
+                return .captured(result)
             }
-            let snapshots = try await service.snapshotAllScreens(content: content)
-            let windows = WindowCatalog.windows(from: content)
-            return await withCheckedContinuation { continuation in
-                self.continuation = continuation
-                present(snapshots: snapshots, windows: windows)
+            let (snapshots, windows) = try await snapshotAll()
+            guard !isCancelled else { return finishedCancelled() }
+            let outcome = await withTaskCancellationHandler {
+                await withCheckedContinuation { (continuation: CheckedContinuation<Outcome, Never>) in
+                    if self.finished || self.isCancelled {
+                        continuation.resume(returning: .cancelled)
+                        return
+                    }
+                    self.continuation = continuation
+                    self.present(snapshots: snapshots, windows: windows)
+                }
+            } onCancel: {
+                Task { @MainActor in self.cancel() }
             }
+            return isCancelled ? .cancelled : outcome
         } catch {
+            guard !isCancelled else { return finishedCancelled() }
+            finished = true
             return .failed(ScreenCaptureService.map(error))
         }
     }
 
     func cancel() {
+        cancelled = true
         finish(.cancelled)
+    }
+
+    private func finishedCancelled() -> Outcome {
+        finish(.cancelled)
+        return .cancelled
+    }
+
+    // MARK: - Capture (with one retry for fresh-grant blank frames)
+
+    private func captureFullscreen() async throws -> CaptureResult {
+        let screen = NSScreen.underMouse
+        for attempt in 0...1 {
+            let content = try await shareableContent()
+            try checkCancelled()
+            let result = try await service.captureScreen(screen, content: content)
+            try checkCancelled()
+            guard retryBlankFrames, ScreenCaptureService.looksBlank(result.image) else { return result }
+            if attempt == 0 { try await pauseBeforeRetry() }
+        }
+        throw CaptureError.notReady
+    }
+
+    private func snapshotAll() async throws -> ([ScreenSnapshot], [CapturableWindow]) {
+        for attempt in 0...1 {
+            let content = try await shareableContent()
+            try checkCancelled()
+            let snapshots = try await service.snapshotAllScreens(content: content)
+            try checkCancelled()
+            if !retryBlankFrames || !snapshots.allSatisfy({ ScreenCaptureService.looksBlank($0.image) }) {
+                return (snapshots, WindowCatalog.windows(from: content))
+            }
+            if attempt == 0 { try await pauseBeforeRetry() }
+        }
+        throw CaptureError.notReady
+    }
+
+    private func shareableContent() async throws -> SCShareableContent {
+        do {
+            let content = try await service.shareableContent()
+            if !content.displays.isEmpty || !retryBlankFrames { return content }
+        } catch CaptureError.permissionDenied {
+            throw CaptureError.permissionDenied
+        } catch {
+            if !retryBlankFrames { throw error }
+        }
+        // Fresh grant: the display list is sometimes empty / erroring for a moment.
+        try await pauseBeforeRetry()
+        return try await service.shareableContent()
+    }
+
+    private func pauseBeforeRetry() async throws {
+        try await Task.sleep(nanoseconds: 450_000_000)
+        try checkCancelled()
+    }
+
+    private func checkCancelled() throws {
+        if isCancelled { throw CancellationError() }
     }
 
     // MARK: - HUD

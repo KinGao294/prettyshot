@@ -18,12 +18,16 @@ final class AppCoordinator: ObservableObject {
     private let overlay = QuickOverlayController()
     private var statusItem: StatusItemController?
     private var captureSession: CaptureSession?
+    /// The in-flight capture (popover fade + ScreenCaptureKit + HUD); cancelled on toggle / Esc.
+    private var captureTask: Task<Void, Never>?
     private var editors: [EditorWindowController] = []
     private var historyWindow: NSWindow?
     private var settingsWindow: NSWindow?
     private var permissionWindow: NSWindow?
     /// Frontmost app before the capture HUD took focus; re-activated after Copy / Dismiss so ⌘V lands there.
     private var appBeforeCapture: NSRunningApplication?
+    /// Frontmost app sampled right before the popover activated PrettyShot (by then `frontmostApplication` is us).
+    private var appBeforePopover: NSRunningApplication?
 
     static var isRunningTests: Bool {
         ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
@@ -33,6 +37,7 @@ final class AppCoordinator: ObservableObject {
         guard !Self.isRunningTests else { return }
         statusItem = StatusItemController(coordinator: self)
         hotkeys.onTrigger = { [weak self] action in self?.perform(action) }
+        hotkeys.onEscape = { [weak self] in self?.cancelCapture() }
         hotkeys.registerAll()
         permissions.refresh()
     }
@@ -53,12 +58,19 @@ final class AppCoordinator: ObservableObject {
 
     // MARK: - Capture
 
-    func startCapture(_ mode: CaptureMode) {
-        if let captureSession {
-            // Pressing a capture hotkey again while the HUD is up cancels it (toggle).
-            captureSession.cancel()
+    /// Where a capture was started from — decides which previously-frontmost app gets focus back.
+    enum CaptureTrigger {
+        case hotkey, popover, window
+    }
+
+    func startCapture(_ mode: CaptureMode, trigger: CaptureTrigger = .hotkey) {
+        if captureSession != nil {
+            // Pressing a capture hotkey again while a capture is in flight cancels it (toggle).
+            cancelCapture()
             return
         }
+        // Sample before anything below (popover close, HUD) can activate PrettyShot.
+        let focusTarget = focusTarget(for: trigger)
         statusItem?.closePopover()
 
         permissions.refresh()
@@ -68,18 +80,52 @@ final class AppCoordinator: ObservableObject {
             return
         }
 
-        let frontmost = NSWorkspace.shared.frontmostApplication
-        appBeforeCapture = frontmost?.processIdentifier == ProcessInfo.processInfo.processIdentifier ? nil : frontmost
-
-        let session = CaptureSession(mode: mode, service: captureService)
+        appBeforeCapture = focusTarget
+        let session = CaptureSession(mode: mode, service: captureService, retryBlankFrames: permissions.grantIsFresh)
         captureSession = session
-        Task { @MainActor in
-            // Let the popover fade out before the frame is frozen.
+        hotkeys.beginEscapeMonitoring()
+        captureTask = Task { @MainActor [weak self] in
+            // Let the popover fade out before the frame is frozen (sleep throws on cancel → run() sees it).
             try? await Task.sleep(nanoseconds: 180_000_000)
             let outcome = await session.run()
-            captureSession = nil
-            handle(outcome)
+            guard let self, self.captureSession === session else { return } // superseded / already cancelled
+            self.endCapture()
+            self.handle(outcome)
         }
+    }
+
+    /// Cancels the in-flight capture immediately (Esc, or the capture hotkey pressed again) — also while
+    /// still in the popover delay or awaiting ScreenCaptureKit, and for fullscreen, which has no HUD.
+    func cancelCapture() {
+        guard let session = captureSession else { return }
+        captureTask?.cancel()
+        session.cancel()
+        endCapture()
+        handle(.cancelled)
+    }
+
+    private func endCapture() {
+        hotkeys.endEscapeMonitoring()
+        captureSession = nil
+        captureTask = nil
+    }
+
+    /// Called by the status item right before it activates PrettyShot to show the popover.
+    func popoverWillShow() {
+        appBeforePopover = Self.externalFrontmost() ?? appBeforePopover
+    }
+
+    private func focusTarget(for trigger: CaptureTrigger) -> NSRunningApplication? {
+        let popoverApp = appBeforePopover.flatMap { $0.isTerminated ? nil : $0 }
+        switch trigger {
+        case .popover: return popoverApp ?? Self.externalFrontmost()
+        case .hotkey, .window: return Self.externalFrontmost() ?? popoverApp
+        }
+    }
+
+    private static func externalFrontmost() -> NSRunningApplication? {
+        let frontmost = NSWorkspace.shared.frontmostApplication
+        return frontmost?.processIdentifier == ProcessInfo.processInfo.processIdentifier ? nil : frontmost
     }
 
     private func handle(_ outcome: CaptureSession.Outcome) {
@@ -287,7 +333,7 @@ final class AppCoordinator: ObservableObject {
                     },
                     captureRegion: { [weak self] in
                         self?.historyWindow?.orderOut(nil)
-                        self?.startCapture(.region)
+                        self?.startCapture(.region, trigger: .window)
                     }
                 )
             )
@@ -314,7 +360,7 @@ final class AppCoordinator: ObservableObject {
             onLater: { [weak self] in self?.permissionWindow?.close() },
             onRetryCapture: { [weak self] in
                 self?.permissionWindow?.close()
-                self?.startCapture(.region)
+                self?.startCapture(.region, trigger: .window)
             }
         )
         permissionWindow = makeWindow(title: "PrettyShot · 权限", size: NSSize(width: 520, height: 520), root: view, resizable: false)

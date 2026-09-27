@@ -36,6 +36,8 @@ final class StatusItemController: NSObject {
     func showPopover() {
         guard let button = statusItem.button else { return }
         coordinator.permissions.refresh()
+        // Must run before activate(): afterwards the frontmost app is PrettyShot itself.
+        coordinator.popoverWillShow()
         NSApp.activate()
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         popover.contentViewController?.view.window?.makeKey()
@@ -74,7 +76,7 @@ struct MenuPopoverView: View {
             section {
                 ForEach(CaptureMode.allCases) { mode in
                     MenuRow(symbol: mode.symbol, title: mode.menuTitle, hint: hotkeys.displayString(for: action(for: mode))) {
-                        coordinator.startCapture(mode)
+                        coordinator.startCapture(mode, trigger: .popover)
                     }
                 }
             }

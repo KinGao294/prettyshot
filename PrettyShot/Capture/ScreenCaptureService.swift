@@ -43,12 +43,15 @@ struct CaptureResult {
 enum CaptureError: LocalizedError {
     case permissionDenied
     case noDisplay
+    /// Screen Recording was just granted and ScreenCaptureKit still returns black / empty frames.
+    case notReady
     case failed(String)
 
     var errorDescription: String? {
         switch self {
         case .permissionDenied: return "PrettyShot 没有屏幕录制权限"
         case .noDisplay: return "找不到可捕获的显示器"
+        case .notReady: return "屏幕录制权限刚生效，画面还没准备好，请再按一次捕获"
         case .failed(let reason): return "捕获失败：\(reason)"
         }
     }
@@ -133,6 +136,28 @@ final class ScreenCaptureService {
     private func display(for screen: NSScreen, in content: SCShareableContent) -> SCDisplay? {
         guard let id = screen.displayID else { return nil }
         return content.displays.first { $0.displayID == id }
+    }
+
+    /// True when the frame is (almost) pure black — what ScreenCaptureKit returns for a moment after a fresh grant.
+    /// Only consulted right after a grant, so a genuinely black screen is not misreported in normal use.
+    nonisolated static func looksBlank(_ image: CGImage) -> Bool {
+        let side = 16
+        var pixels = [UInt8](repeating: 0, count: side * side * 4)
+        let drawn: Bool = pixels.withUnsafeMutableBytes { buffer in
+            guard let space = CGColorSpace(name: CGColorSpace.sRGB),
+                  let context = CGContext(
+                      data: buffer.baseAddress, width: side, height: side, bitsPerComponent: 8, bytesPerRow: side * 4,
+                      space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+                  ) else { return false }
+            context.interpolationQuality = .medium
+            context.draw(image, in: CGRect(x: 0, y: 0, width: side, height: side))
+            return true
+        }
+        guard drawn else { return false }
+        for index in stride(from: 0, to: pixels.count, by: 4) where max(pixels[index], pixels[index + 1], pixels[index + 2]) > 3 {
+            return false
+        }
+        return true
     }
 
     /// Never report a black/empty frame as success — map TCC denials to a readable error (P3).

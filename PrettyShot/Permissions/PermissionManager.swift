@@ -9,10 +9,20 @@ final class PermissionManager: ObservableObject {
     @Published private(set) var screenCaptureGranted: Bool = CGPreflightScreenCaptureAccess()
 
     private static let requestedKey = "permissions.screenCaptureRequested"
+    private let launchedAt = Date()
+    private var grantedAt: Date?
 
     func refresh() {
         let granted = CGPreflightScreenCaptureAccess()
+        if granted, !screenCaptureGranted { grantedAt = Date() }
         if granted != screenCaptureGranted { screenCaptureGranted = granted }
+    }
+
+    /// A grant that just happened (or a relaunch right after granting) can still yield black frames
+    /// from ScreenCaptureKit for a moment; captures in this window get one delayed retry.
+    var grantIsFresh: Bool {
+        if let grantedAt, Date().timeIntervalSince(grantedAt) < 60 { return true }
+        return Date().timeIntervalSince(launchedAt) < 30
     }
 
     /// Triggers the one-time system prompt, which also registers PrettyShot in the

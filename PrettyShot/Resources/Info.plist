@@ -28,6 +28,8 @@
 	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
 	<key>LSUIElement</key>
 	<true/>
+	<key>NSScreenCaptureUsageDescription</key>
+	<string>PrettyShot 需要屏幕录制权限来截取你选择的区域、窗口或屏幕。截图只在本机美化与保存，不会上传。</string>
 	<key>NSHumanReadableCopyright</key>
 	<string>© 2026 PrettyShot contributors · MIT License</string>
 </dict>

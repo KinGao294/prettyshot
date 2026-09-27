@@ -38,4 +38,34 @@ final class CaptureGeometryTests: XCTestCase {
         XCTAssertNotEqual(first, second)
         XCTAssertTrue(second.lastPathComponent.hasSuffix(" 2.png"))
     }
+
+    func testBlankFrameDetection() {
+        let space = CGColorSpace(name: CGColorSpace.sRGB)!
+        let context = CGContext(data: nil, width: 64, height: 64, bitsPerComponent: 8, bytesPerRow: 0,
+                                space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        context.setFillColor(CGColor(srgbRed: 0, green: 0, blue: 0, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: 64, height: 64))
+        XCTAssertTrue(ScreenCaptureService.looksBlank(context.makeImage()!))
+        XCTAssertFalse(ScreenCaptureService.looksBlank(TestImages.make(width: 64, height: 64, striped: true)))
+    }
+}
+
+@MainActor
+final class CaptureSessionCancellationTests: XCTestCase {
+    func testCancelBeforeRunResolvesCancelledWithoutCapturing() async {
+        // Fullscreen would capture immediately (no HUD) — cancel must win before any ScreenCaptureKit call.
+        let session = CaptureSession(mode: .fullscreen, service: ScreenCaptureService())
+        session.cancel()
+        guard case .cancelled = await session.run() else { return XCTFail("expected .cancelled") }
+    }
+
+    func testCancelledTaskResolvesCancelled() async {
+        let session = CaptureSession(mode: .region, service: ScreenCaptureService())
+        let task = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            return await session.run()
+        }
+        task.cancel()
+        guard case .cancelled = await task.value else { return XCTFail("expected .cancelled") }
+    }
 }
