@@ -1,4 +1,4 @@
-# SoftShot
+# PrettyShot
 
 Mac-native screenshot toolkit aiming for CleanShot-class workflows: capture, annotate, beautiful backgrounds, history, pin, scrolling capture, screen recording — plus an iPhone companion path.
 
@@ -7,7 +7,7 @@ Mac-native screenshot toolkit aiming for CleanShot-class workflows: capture, ann
 ## Intent
 
 - **Mac app:** feature-parity oriented toward CleanShot X (screenshots, recording, annotation, background tool, OCR, pin, history, scrolling capture). Branding & assets will be original — not a CleanShot clone of name/UI assets.
-- **iPhone:** CleanShot has no iOS app; SoftShot will add a companion (Share Extension / Shortcuts / light app) so phone screenshots can get the same “pretty background + annotate” treatment.
+- **iPhone:** CleanShot has no iOS app; PrettyShot will add a companion (Share Extension / Shortcuts / light app) so phone screenshots can get the same “pretty background + annotate” treatment.
 
 ## Open-source references (study, don’t fork-as-product)
 
