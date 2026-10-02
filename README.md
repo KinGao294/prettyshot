@@ -6,6 +6,16 @@
 
 原生 macOS 应用，全部在本机处理，截图不会上传。
 
+## 下载
+
+到 [Releases](https://github.com/KinGao294/prettyshot/releases/latest) 下载最新的 `PrettyShot-x.y.z.dmg`，打开后把 PrettyShot 拖进「应用程序」。支持 macOS 14 及以上，Apple 芯片和 Intel 都能用。
+
+这个版本没有经过 Apple 签名和公证，第一次打开时系统会拦下来。点「完成」后，去「系统设置 › 隐私与安全性」，在页面下方点「仍要打开」。也可以在终端运行：
+
+```bash
+xattr -dr com.apple.quarantine /Applications/PrettyShot.app
+```
+
 ## 用法
 
 PrettyShot 只在菜单栏有图标，不出现在 Dock 里。
