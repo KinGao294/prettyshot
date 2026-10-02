@@ -1,0 +1,140 @@
+name: Build & Release
+
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Show Xcode
+        run: xcodebuild -version
+
+      - name: Check tag matches MARKETING_VERSION
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          versions=$(
+            awk -F= '/MARKETING_VERSION =/ {
+              value = $2
+              gsub(/[";[:space:]]/, "", value)
+              if (value != "") print value
+            }' PrettyShot.xcodeproj/project.pbxproj | sort -u
+          )
+          if [[ -z "$versions" ]]; then
+            echo "MARKETING_VERSION was not found in PrettyShot.xcodeproj/project.pbxproj"
+            exit 1
+          fi
+          count=$(printf '%s\n' "$versions" | wc -l | tr -d '[:space:]')
+          if [[ "$count" -ne 1 ]]; then
+            echo "Expected exactly one MARKETING_VERSION, found ${count}:"
+            printf '%s\n' "$versions"
+            exit 1
+          fi
+          if [[ "$versions" != "$tag_version" ]]; then
+            echo "Tag version ${tag_version} does not match MARKETING_VERSION ${versions}"
+            exit 1
+          fi
+          echo "Tag ${GITHUB_REF_NAME} matches MARKETING_VERSION ${versions}"
+
+      - name: Build (Release, universal, ad-hoc signed)
+        run: |
+          xcodebuild -project PrettyShot.xcodeproj -scheme PrettyShot \
+            -configuration Release -derivedDataPath build \
+            -destination 'generic/platform=macOS' \
+            ARCHS="arm64 x86_64" ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="-" DEVELOPMENT_TEAM="" \
+            build
+
+      - name: Verify app
+        run: |
+          APP=build/Build/Products/Release/PrettyShot.app
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          info=$(lipo -info "$APP/Contents/MacOS/PrettyShot")
+          echo "$info"
+          case "$info" in
+            *arm64*) ;;
+            *)
+              echo "lipo -info output does not contain arm64"
+              exit 1
+              ;;
+          esac
+          case "$info" in
+            *x86_64*) ;;
+            *)
+              echo "lipo -info output does not contain x86_64"
+              exit 1
+              ;;
+          esac
+
+      - name: Package DMG
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          [[ "$GITHUB_REF_TYPE" == "tag" ]] || VERSION="dev-${GITHUB_SHA::7}"
+          mkdir -p dist/stage
+          cp -R build/Build/Products/Release/PrettyShot.app dist/stage/
+          ln -s /Applications dist/stage/Applications
+          hdiutil create -volname "PrettyShot" -srcfolder dist/stage \
+            -fs HFS+ -format UDZO "dist/PrettyShot-${VERSION}.dmg"
+          (cd dist && shasum -a 256 PrettyShot-*.dmg > SHA256SUMS.txt && cat SHA256SUMS.txt)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PrettyShot-dmg
+          path: |
+            dist/*.dmg
+            dist/SHA256SUMS.txt
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download DMG
+        uses: actions/download-artifact@v4
+        with:
+          name: PrettyShot-dmg
+          path: dist
+
+      - name: Check release assets
+        run: |
+          shopt -s nullglob
+          dmgs=(dist/*.dmg)
+          if [[ ${#dmgs[@]} -eq 0 || ! -f dist/SHA256SUMS.txt ]]; then
+            echo "Release artifact is missing a DMG or SHA256SUMS.txt"
+            ls -la dist || true
+            exit 1
+          fi
+          ls -l "${dmgs[@]}" dist/SHA256SUMS.txt
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          files: |
+            dist/*.dmg
+            dist/SHA256SUMS.txt
+          body: |
+            macOS 14 及以上，Apple 芯片和 Intel 通用。
+
+            **安装**：打开 dmg，把 PrettyShot 拖进「应用程序」。
+
+            **第一次打开**：这个版本没有经过 Apple 签名和公证，系统会提示无法验证开发者。点「完成」后，去「系统设置 › 隐私与安全性」，在页面下方点「仍要打开」。或者在终端运行：
+            ```
+            xattr -dr com.apple.quarantine /Applications/PrettyShot.app
+            ```
+
+            **屏幕录制权限**：第一次截图前，到「系统设置 › 隐私与安全性 › 录屏与系统录音」打开 PrettyShot，然后重启应用。升级到新版本后可能需要重新授权一次。
