@@ -3,11 +3,11 @@ import SwiftUI
 
 @MainActor
 final class EditorWindowController: NSWindowController, NSWindowDelegate {
-    let document: EditorDocument
+    let editorDocument: EditorDocument
     var onClose: ((EditorWindowController) -> Void)?
 
     init(document: EditorDocument, actions: EditorActions) {
-        self.document = document
+        self.editorDocument = document
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1160, height: 780),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],

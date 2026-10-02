@@ -22,6 +22,8 @@ final class AppCoordinator: ObservableObject {
     private var captureTask: Task<Void, Never>?
     private var editors: [EditorWindowController] = []
     private var historyWindow: NSWindow?
+    /// Capture was started from History. Bring that window back if the shot is cancelled or fails.
+    private var returnToHistoryOnCancel = false
     private var settingsWindow: NSWindow?
     private var permissionWindow: NSWindow?
     /// Frontmost app before the capture HUD took focus; re-activated after Copy / Dismiss so ⌘V lands there.
@@ -131,6 +133,7 @@ final class AppCoordinator: ObservableObject {
     private func handle(_ outcome: CaptureSession.Outcome) {
         switch outcome {
         case .captured(let result):
+            returnToHistoryOnCancel = false
             do {
                 let item = try history.add(image: result.image, scale: result.scale, mode: result.mode)
                 showOverlay(for: item, image: result.image)
@@ -141,6 +144,7 @@ final class AppCoordinator: ObservableObject {
             }
         case .cancelled:
             restoreFocus()
+            resumeHistoryIfNeeded()
         case .failed(let error):
             if case .permissionDenied = error {
                 permissions.refresh()
@@ -148,7 +152,27 @@ final class AppCoordinator: ObservableObject {
             } else {
                 ToastPresenter.shared.show(error.errorDescription ?? "捕获失败", style: .error, duration: 4)
             }
+            resumeHistoryIfNeeded()
         }
+    }
+
+    /// Leave History only after permission is confirmed, so a denied grant does not close the page.
+    private func startCaptureFromHistory() {
+        permissions.refresh()
+        guard permissions.screenCaptureGranted else {
+            permissions.requestIfNeeded()
+            showPermission(detail: nil)
+            return
+        }
+        returnToHistoryOnCancel = true
+        historyWindow?.orderOut(nil)
+        startCapture(.region, trigger: .window)
+    }
+
+    private func resumeHistoryIfNeeded() {
+        guard returnToHistoryOnCancel else { return }
+        returnToHistoryOnCancel = false
+        present(historyWindow)
     }
 
     // MARK: - Quick Overlay
@@ -300,7 +324,7 @@ final class AppCoordinator: ObservableObject {
                 ToastPresenter.shared.show("导出失败：\(error.localizedDescription)", style: .error, duration: 4)
             }
         }
-        if let window = editors.first(where: { $0.document === doc })?.window {
+        if let window = editors.first(where: { $0.editorDocument === doc })?.window {
             panel.beginSheetModal(for: window, completionHandler: respond)
         } else {
             respond(panel.runModal())
@@ -332,8 +356,7 @@ final class AppCoordinator: ObservableObject {
                         NSWorkspace.shared.activateFileViewerSelecting([self.history.url(for: item)])
                     },
                     captureRegion: { [weak self] in
-                        self?.historyWindow?.orderOut(nil)
-                        self?.startCapture(.region, trigger: .window)
+                        self?.startCaptureFromHistory()
                     }
                 )
             )

@@ -6,7 +6,9 @@ final class BackgroundTests: XCTestCase {
         XCTAssertEqual(BackgroundPreset.all.map(\.key), [
             "paper-mist", "ink-wash", "soft-bloom", "moss-quiet",
             "dusk-lilac", "ceramic-white", "night-ink", "citrus-fog",
+            "pastel-air",
         ])
+        XCTAssertFalse(BackgroundPreset.preset(for: "pastel-air")?.washes.isEmpty ?? true)
         for preset in BackgroundPreset.all {
             XCTAssertEqual(preset.stops.first?.location, 0)
             XCTAssertEqual(preset.stops.last?.location, 1)

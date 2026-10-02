@@ -201,10 +201,10 @@ def main():
     })
 
     signing = {
-        # Builds out of the box ("Sign to Run Locally"). Pick your Team in Xcode for a stable
-        # signature so the Screen Recording grant survives rebuilds (see README).
+        # Stable local identity (scripts/setup_local_signing.sh). Ad-hoc "-" changes the
+        # cdhash every rebuild and macOS drops the Screen Recording grant.
         "CODE_SIGN_STYLE": "Manual",
-        "CODE_SIGN_IDENTITY": "-",
+        "CODE_SIGN_IDENTITY": "PrettyShot Local",
         "DEVELOPMENT_TEAM": "",
     }
     app_settings = dict(signing, **{

@@ -15,7 +15,24 @@ struct GradientStop: Hashable {
     }
 }
 
-/// The eight original Paper Bloom backgrounds (DESIGN §3.3), 1:1 with the CSS gradients.
+/// A soft color bloom. Position is in the fill rect (y grows downward); radius is a fraction of the longer side.
+struct RadialWash: Hashable {
+    let hex: UInt32
+    let x: CGFloat
+    let y: CGFloat
+    let radius: CGFloat
+
+    func cgColor(alpha: CGFloat) -> CGColor {
+        CGColor(
+            srgbRed: CGFloat((hex >> 16) & 0xFF) / 255,
+            green: CGFloat((hex >> 8) & 0xFF) / 255,
+            blue: CGFloat(hex & 0xFF) / 255,
+            alpha: alpha
+        )
+    }
+}
+
+/// Paper Bloom backgrounds. Linear presets match DESIGN §3.3; `pastel-air` is a corner-bloom wash.
 struct BackgroundPreset: Identifiable, Hashable {
     let key: String
     let name: String
@@ -25,8 +42,20 @@ struct BackgroundPreset: Identifiable, Hashable {
     let stops: [GradientStop]
     /// Light presets get dark swatch labels.
     let isLight: Bool
+    /// When set, these blooms are painted over `stops.first` instead of the linear gradient.
+    let washes: [RadialWash]
 
     var id: String { key }
+
+    init(key: String, name: String, localizedName: String, angle: Double, stops: [GradientStop], isLight: Bool, washes: [RadialWash] = []) {
+        self.key = key
+        self.name = name
+        self.localizedName = localizedName
+        self.angle = angle
+        self.stops = stops
+        self.isLight = isLight
+        self.washes = washes
+    }
 
     static let all: [BackgroundPreset] = [
         BackgroundPreset(key: "paper-mist", name: "Paper Mist", localizedName: "纸雾", angle: 145,
@@ -53,6 +82,20 @@ struct BackgroundPreset: Identifiable, Hashable {
         BackgroundPreset(key: "citrus-fog", name: "Citrus Fog", localizedName: "柑雾", angle: 145,
                          stops: [.init(hex: 0xF6E7C8, location: 0), .init(hex: 0xE8C99A, location: 0.45), .init(hex: 0xD4B48A, location: 1)],
                          isLight: true),
+        // Cream corners, pink at the top and bottom, sky and lilac along the sides.
+        BackgroundPreset(key: "pastel-air", name: "Pastel Air", localizedName: "彩霭", angle: 115,
+                         stops: [.init(hex: 0xFDF6DF, location: 0), .init(hex: 0xF7DDFC, location: 0.34),
+                                 .init(hex: 0xD6EAFE, location: 0.68), .init(hex: 0xFEF7DA, location: 1)],
+                         isLight: true,
+                         washes: [
+                            .init(hex: 0xF7DDFC, x: 0.42, y: 0.00, radius: 0.85),
+                            .init(hex: 0xD6EAFE, x: 1.00, y: 0.08, radius: 0.82),
+                            .init(hex: 0xEFDFFD, x: 0.00, y: 0.42, radius: 0.78),
+                            .init(hex: 0xDEEBFD, x: 0.06, y: 1.00, radius: 0.80),
+                            .init(hex: 0xFDE1F8, x: 0.48, y: 1.02, radius: 0.72),
+                            .init(hex: 0xFEF7DA, x: 1.00, y: 1.00, radius: 0.70),
+                            .init(hex: 0xFDF5DE, x: 0.00, y: 0.00, radius: 0.58),
+                         ]),
     ]
 
     static func preset(for key: String?) -> BackgroundPreset? {
@@ -68,15 +111,45 @@ struct BackgroundPreset: Identifiable, Hashable {
         )
     }
 
-    /// Fills `rect` exactly like CSS `linear-gradient(<angle>deg, …)` would. Context must be y-down.
+    /// Fills `rect`. Linear presets match CSS `linear-gradient`; wash presets bloom from several points. Context must be y-down.
     func fill(_ rect: CGRect, in context: CGContext) {
-        guard let gradient = cgGradient else { return }
-        let (start, end) = GradientGeometry.endpoints(angleDegrees: angle, in: rect)
         context.saveGState()
         context.clip(to: rect)
-        context.drawLinearGradient(gradient, start: start, end: end,
-                                   options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
+        if washes.isEmpty {
+            if let gradient = cgGradient {
+                let (start, end) = GradientGeometry.endpoints(angleDegrees: angle, in: rect)
+                context.drawLinearGradient(gradient, start: start, end: end,
+                                           options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
+            }
+        } else {
+            fillWashes(rect, in: context)
+        }
         context.restoreGState()
+    }
+
+    private func fillWashes(_ rect: CGRect, in context: CGContext) {
+        if let base = stops.first?.cgColor {
+            context.setFillColor(base)
+            context.fill(rect)
+        }
+        let space = CGColorSpace(name: CGColorSpace.sRGB)
+        let span = max(rect.width, rect.height)
+        for wash in washes {
+            guard let gradient = CGGradient(
+                colorsSpace: space,
+                colors: [wash.cgColor(alpha: 1), wash.cgColor(alpha: 0.72), wash.cgColor(alpha: 0)] as CFArray,
+                locations: [0, 0.42, 1]
+            ) else { continue }
+            let center = CGPoint(x: rect.minX + wash.x * rect.width, y: rect.minY + wash.y * rect.height)
+            context.drawRadialGradient(
+                gradient,
+                startCenter: center,
+                startRadius: 0,
+                endCenter: center,
+                endRadius: wash.radius * span,
+                options: [.drawsBeforeStartLocation]
+            )
+        }
     }
 }
 

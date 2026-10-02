@@ -28,6 +28,7 @@ struct HistoryView: View {
             } else {
                 ScrollView {
                     LazyVGrid(columns: columns, spacing: 16) {
+                        NewShotCard(help: newShotHelp, action: actions.captureRegion)
                         ForEach(store.items) { item in
                             HistoryCard(item: item, store: store, actions: actions)
                         }
@@ -58,6 +59,11 @@ struct HistoryView: View {
                     .foregroundStyle(Palette.muted)
             }
             Spacer()
+            Button(action: actions.captureRegion) {
+                Label("新截图", systemImage: "plus.viewfinder")
+            }
+            .buttonStyle(BloomPrimaryButtonStyle())
+            .help(newShotHelp)
             Button {
                 NSWorkspace.shared.open(store.directory)
             } label: {
@@ -72,6 +78,11 @@ struct HistoryView: View {
         .padding(.horizontal, 20)
         .frame(height: 56)
         .background(Palette.ivory)
+    }
+
+    private var newShotHelp: String {
+        let hint = hotkeys.displayString(for: .captureRegion)
+        return hint.isEmpty ? "打开新的区域截图" : "打开新的区域截图（\(hint)）"
     }
 
     private var emptyState: some View {
@@ -97,6 +108,40 @@ struct HistoryView: View {
                 .padding(.top, 8)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+/// First cell in a filled history grid: leave this page and start a new capture.
+@MainActor
+private struct NewShotCard: View {
+    let help: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 8) {
+                Image(systemName: "plus.viewfinder")
+                    .font(.system(size: 22, weight: .medium))
+                    .foregroundStyle(Palette.bloomDeep)
+                Text("新截图")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Palette.charcoal)
+                Text("回到捕获窗口")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Palette.muted)
+            }
+            .frame(maxWidth: .infinity, minHeight: 168)
+            .background(
+                RoundedRectangle(cornerRadius: Metrics.cardRadius, style: .continuous)
+                    .fill(Color.white)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: Metrics.cardRadius, style: .continuous)
+                    .strokeBorder(Palette.bloomRose.opacity(0.7), style: StrokeStyle(lineWidth: 1.5, dash: [6, 4]))
+            )
+        }
+        .buttonStyle(.plain)
+        .help(help)
     }
 }
 

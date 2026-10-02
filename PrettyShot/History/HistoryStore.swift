@@ -41,7 +41,7 @@ struct HistoryIndex: Codable, Equatable {
 /// Local-only history (no cloud in v0.1): PNGs + index.json under Application Support.
 @MainActor
 final class HistoryStore: ObservableObject {
-    static let defaultLimit = 200
+    nonisolated static let defaultLimit = 200
 
     /// Newest first.
     @Published private(set) var items: [HistoryItem] = []
@@ -50,7 +50,7 @@ final class HistoryStore: ObservableObject {
     private let limit: Int
     private let thumbnails = NSCache<NSString, NSImage>()
 
-    static var defaultDirectory: URL {
+    nonisolated static var defaultDirectory: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         return base.appendingPathComponent("PrettyShot/History", isDirectory: true)
     }
