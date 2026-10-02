@@ -42,7 +42,7 @@ final class BackgroundTests: XCTestCase {
 
     func testDefaultStyleMatchesPrototype() {
         let style = BackgroundStyle.default
-        XCTAssertEqual(style.presetKey, "paper-mist")
+        XCTAssertEqual(style.presetKey, "pastel-air")
         XCTAssertEqual(style.padding, 28)
         XCTAssertEqual(style.radius, 12)
         XCTAssertEqual(style.shadow, 48)

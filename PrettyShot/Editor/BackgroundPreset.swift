@@ -178,8 +178,8 @@ struct BackgroundStyle: Codable, Equatable {
     var radius: Double
     var shadow: Double
 
-    /// Design defaults from prototype F4: Paper Mist, padding 28, radius 12, shadow 48.
-    static let `default` = BackgroundStyle(presetKey: "paper-mist", padding: 28, radius: 12, shadow: 48)
+    /// Pastel Air, the last-added wash; padding / radius / shadow match the editor defaults.
+    static let `default` = BackgroundStyle(presetKey: "pastel-air", padding: 28, radius: 12, shadow: 48)
 
     static let paddingRange: ClosedRange<Double> = 8...64
     static let radiusRange: ClosedRange<Double> = 0...28

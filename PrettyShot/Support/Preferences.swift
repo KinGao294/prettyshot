@@ -9,7 +9,7 @@ final class Preferences: ObservableObject {
 
     private enum Key {
         static let saveDirectory = "prefs.saveDirectory"
-        static let background = "prefs.background.v1"
+        static let background = "prefs.background.v2"
         static let copySoundEnabled = "prefs.copySound"
     }
 
