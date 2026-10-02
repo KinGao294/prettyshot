@@ -60,14 +60,6 @@ open build/Build/Products/Debug/PrettyShot.app
 
 第一次截图前，到「系统设置 › 隐私与安全性 › 录屏与系统录音」里打开 PrettyShot，然后重启应用。之后不用再设置。
 
-## 暂不支持
-
-这一版不做录屏、滚动长截图、文字识别、云同步和 iPhone 版。
-
-## 致谢
-
-设计思路参考了 [dodoshot](https://github.com/DodoApps/dodoshot)、[openshots](https://github.com/Tracekit-Dev/openshots) 和 [simpleshot](https://github.com/alexrett/simpleshot)（均为 MIT 协议），没有使用它们的代码和素材。
-
 ## 协议
 
 [MIT](LICENSE) © 2026 PrettyShot contributors
