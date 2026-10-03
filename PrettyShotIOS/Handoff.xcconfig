@@ -1,0 +1,12 @@
+// Default handoff for a free Personal Team: no App Groups entitlement.
+// The containing app is optional. See docs/ios-free-signing.md.
+// Keep this file in step with PrettyShotShare/Handoff.xcconfig except the entitlements path.
+
+PRETTYSHOT_HANDOFF_MODE = inline
+PRETTYSHOT_HANDOFF_CONDITION = PRETTYSHOT_HANDOFF_INLINE
+
+// App Group handoff. Comment the two lines above and uncomment these three,
+// then turn on the App Groups capability for group.app.prettyshot.ios.
+// PRETTYSHOT_HANDOFF_MODE = app-group
+// PRETTYSHOT_HANDOFF_CONDITION = PRETTYSHOT_HANDOFF_APP_GROUP
+// CODE_SIGN_ENTITLEMENTS = $(SRCROOT)/PrettyShotIOS/PrettyShotIOS.entitlements

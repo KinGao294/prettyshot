@@ -118,6 +118,56 @@ jobs:
             dist/*.dmg
             dist/SHA256SUMS.txt
 
+  ios:
+    runs-on: macos-15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Show Xcode
+        run: xcodebuild -version
+
+      - name: Pick an iPhone simulator
+        id: sim
+        run: |
+          set -euo pipefail
+          UDID=$(python3 - <<'PY'
+          import json, subprocess, sys
+          raw = subprocess.check_output(["xcrun", "simctl", "list", "devices", "available", "-j"])
+          data = json.loads(raw)
+          for runtime, devices in data.get("devices", {}).items():
+              if "iOS" not in runtime:
+                  continue
+              for device in devices:
+                  if device.get("isAvailable") and "iPhone" in device.get("name", ""):
+                      print(device["udid"])
+                      sys.exit(0)
+          sys.exit("no available iPhone simulator")
+          PY
+          )
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+          echo "Using simulator $UDID"
+          xcrun simctl list devices available
+
+      - name: Test PrettyShotIOS (simulator, signing disabled)
+        run: |
+          set -o pipefail
+          mkdir -p build
+          xcodebuild -project PrettyShot.xcodeproj -scheme PrettyShotIOS \
+            -destination "platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}" \
+            -derivedDataPath build/ios \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_STYLE=Manual \
+            DEVELOPMENT_TEAM="" \
+            test | tee build/ios-test.log
+          echo "---- iOS XCTest summary ----"
+          grep -E "Executed [0-9]+ test|TEST (SUCCEEDED|FAILED)" build/ios-test.log
+
   release:
     needs: build
     if: startsWith(github.ref, 'refs/tags/v')
