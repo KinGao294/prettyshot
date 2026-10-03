@@ -381,7 +381,7 @@ struct ScrollAssembly: Equatable {
     ) -> [RGBAImage] {
         var slices: [RGBAImage] = []
         for (index, segment) in segments.enumerated() {
-            var parts = contentSlices(segment, dedupe: dedupe)
+            var parts = Self.contentSlices(segment, dedupe: dedupe)
             if index > 0, seams.indices.contains(index - 1) {
                 let drop: Int
                 switch seams[index - 1].kind {
@@ -542,7 +542,7 @@ struct ScrollAssembly: Equatable {
         }
 
         var marks: [SeamMark] = []
-        for (segmentIndex, segment) in segments.enumerated() where segmentIndex < layout.pieces.count {
+        for (segmentIndex, _) in segments.enumerated() where segmentIndex < layout.pieces.count {
             let piece = layout.pieces[segmentIndex]
             let origin = origins[segmentIndex]
             let confidentYs = presented(at: segmentIndex).confidentSeamYs
