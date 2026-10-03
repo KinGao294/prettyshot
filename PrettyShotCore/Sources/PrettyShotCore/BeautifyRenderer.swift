@@ -68,7 +68,7 @@ public enum BeautifyRenderer {
         let canvas = CGRect(origin: .zero, size: layout.canvasSize)
 
         context.saveGState()
-        context.interpolationQuality = .high
+        context.interpolationQuality = .none
 
         let imageClip: CGPath
         if let preset = input.background.preset {
@@ -120,10 +120,11 @@ public enum BeautifyRenderer {
         let layout = BeautifyRenderer.layout(for: input)
         let width = Int(layout.canvasSize.width.rounded(.up))
         let height = Int(layout.canvasSize.height.rounded(.up))
+        let bytesPerRow = (width * 4 + 15) & ~15
         guard width > 0, height > 0,
               let space = CGColorSpace(name: CGColorSpace.sRGB),
               let context = CGContext(
-                  data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                  data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: bytesPerRow,
                   space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
               ) else { return nil }
         context.translateBy(x: 0, y: CGFloat(height))
