@@ -19,8 +19,9 @@ import PrettyShotCore
 /// is handed to the app. Editing keeps the file URL plus one preview. Nothing is exported at preview size.
 ///
 /// The 1320×2868 sample's delta omitted the source that was already resident. Putting that copy back
-/// makes the peak about 94.3MB, while five buffers alone are 84.5MB. The 12MB margin is that gap,
-/// kept visible for (36).
+/// makes the low sample about 94.3MB, while five buffers alone are 84.5MB. The 12MB margin is that gap.
+/// A second CI sample sits near 102MB. That spread is not folded into the formula: doing so would
+/// hand 1179×2556 and 1830×1830 at padding 28 to the app. Noted for (36).
 enum ExtensionMemoryBudget {
     static let limitBytes = 120 * 1024 * 1024
     /// Left unused so the process, ImageIO, and the shadow layer's allocator overhead still fit.
@@ -29,7 +30,7 @@ enum ExtensionMemoryBudget {
     static let previewMaxLongSide = 1280
     /// Source + redacted + canvas + shadow layer + one extra canvas buffer.
     static let fullSizeCopiesWhileExporting = 5
-    /// Bytes the five-buffer total misses. See the type comment. Visible for (36).
+    /// Bytes the five-buffer total misses on the 94.3MB sample. See the type comment. Visible for (36).
     static let renderMarginBytes = 12 * 1024 * 1024
     static let forbiddenSimultaneousFullSizeCopies = 3
 
