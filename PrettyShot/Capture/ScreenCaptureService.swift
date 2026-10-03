@@ -1,6 +1,7 @@
 import AppKit
 import CoreMedia
 import CoreVideo
+import PrettyShotCore
 import ScreenCaptureKit
 
 enum CaptureMode: String, CaseIterable, Identifiable, Codable {
