@@ -183,6 +183,34 @@ public struct PendingStickyConfirmation: Equatable {
     }
 }
 
+/// 「保留一次」 or 「都保留」. Either choice resolves a duplicate-segment candidate.
+public enum DuplicateSegmentChoice: Equatable {
+    /// 「保留一次」
+    case keepOnce
+    /// 「都保留」
+    case keepBoth
+}
+
+/// One recorded duplicate-segment choice, so undo can put that candidate back.
+struct DuplicateChoiceRecord: Equatable {
+    var id: String
+    var previous: DuplicateSegmentChoice?
+}
+
+/// A stretch that may repeat an earlier segment. It stays in 「待确认」 until the user chooses.
+public struct DuplicateSegmentCandidate: Equatable, Identifiable {
+    public var id: String
+    /// Nil until the user chooses 「保留一次」 or 「都保留」.
+    public var choice: DuplicateSegmentChoice?
+
+    public init(id: String, choice: DuplicateSegmentChoice? = nil) {
+        self.id = id
+        self.choice = choice
+    }
+
+    public var isUnresolved: Bool { choice == nil }
+}
+
 public enum StickyRestoreOutcome: Equatable {
     case restored(height: Int)
     case alreadyRestored
@@ -200,6 +228,10 @@ public struct ScrollAssembly: Equatable {
     public var dedupeStickyBars = true
     /// Set when a sticky band was plausible but not safe to decide automatically.
     public var pendingSticky: PendingStickyConfirmation? = nil
+    /// Repeated stretches waiting for 「保留一次」 or 「都保留」. Not seams, and not the sticky bar.
+    public var duplicateCandidates: [DuplicateSegmentCandidate] = []
+    /// Newest resolution last. Undo writes that candidate's previous choice back.
+    var duplicateChoiceUndo: [DuplicateChoiceRecord] = []
     /// Reused `presented` images so dragging a seam does not copy the whole stack again.
     var presentationCache = PresentationCache()
 
@@ -207,12 +239,14 @@ public struct ScrollAssembly: Equatable {
         segments: [ScrollSegment] = [],
         seams: [ScrollSeam] = [],
         dedupeStickyBars: Bool = true,
-        pendingSticky: PendingStickyConfirmation? = nil
+        pendingSticky: PendingStickyConfirmation? = nil,
+        duplicateCandidates: [DuplicateSegmentCandidate] = []
     ) {
         self.segments = segments
         self.seams = seams
         self.dedupeStickyBars = dedupeStickyBars
         self.pendingSticky = pendingSticky
+        self.duplicateCandidates = duplicateCandidates
     }
 
     public static func == (lhs: ScrollAssembly, rhs: ScrollAssembly) -> Bool {
@@ -220,14 +254,17 @@ public struct ScrollAssembly: Equatable {
             && lhs.seams == rhs.seams
             && lhs.dedupeStickyBars == rhs.dedupeStickyBars
             && lhs.pendingSticky == rhs.pendingSticky
+            && lhs.duplicateCandidates == rhs.duplicateCandidates
+            && lhs.duplicateChoiceUndo == rhs.duplicateChoiceUndo
     }
 
     public var needsReview: Bool {
         if pendingSticky?.isUnresolved == true { return true }
+        if duplicateCandidates.contains(where: \.isUnresolved) { return true }
         return seams.contains { !$0.isResolved }
     }
 
-    /// The stitch preview opens only while a seam or a sticky-bar choice still needs a decision.
+    /// The stitch preview opens while a seam, a duplicate-segment candidate, or a sticky-bar choice still needs a decision.
     /// A confident sticky-bar dedupe stays on and does not open it or block Done.
     public var opensStitchReview: Bool { needsReview }
 
@@ -244,11 +281,45 @@ public struct ScrollAssembly: Equatable {
     /// Seams the user has not aligned or joined as-is.
     public var unalignedSeamCount: Int { seams.filter { !$0.isResolved }.count }
 
-    /// Unaligned seams, other confirmations, and one uncertain sticky band.
+    /// Duplicate-segment candidates with no 「保留一次」 or 「都保留」 yet.
+    /// Unaligned seams and the uncertain sticky bar are not included.
+    public var pendingDuplicateConfirmCount: Int {
+        duplicateCandidates.reduce(0) { count, candidate in
+            candidate.isUnresolved ? count + 1 : count
+        }
+    }
+
+    /// Records 「保留一次」 or 「都保留」 and drops that candidate out of 「待确认」.
+    public mutating func resolveDuplicateCandidate(_ id: String, choice: DuplicateSegmentChoice) {
+        guard let index = duplicateCandidates.firstIndex(where: { $0.id == id }) else { return }
+        let previous = duplicateCandidates[index].choice
+        guard previous != choice else { return }
+        duplicateChoiceUndo.append(DuplicateChoiceRecord(id: id, previous: previous))
+        duplicateCandidates[index].choice = choice
+    }
+
+    /// Puts the most recent duplicate-segment choice back. An undone resolution counts as 「待确认」 again.
+    public mutating func undoLastDuplicateCandidateChoice() {
+        guard let last = duplicateChoiceUndo.popLast() else { return }
+        guard let index = duplicateCandidates.firstIndex(where: { $0.id == last.id }) else { return }
+        duplicateCandidates[index].choice = last.previous
+    }
+
+    /// Puts one candidate back to unresolved (`choice == nil`) and records that restore on the undo stack.
+    /// A missing id, or a candidate that is already unresolved, is left unchanged.
+    public mutating func restoreDuplicateCandidate(_ id: String) {
+        guard let index = duplicateCandidates.firstIndex(where: { $0.id == id }) else { return }
+        guard let previous = duplicateCandidates[index].choice else { return }
+        duplicateChoiceUndo.append(DuplicateChoiceRecord(id: id, previous: previous))
+        duplicateCandidates[index].choice = nil
+    }
+
+    /// Unaligned seams, unresolved duplicate-segment candidates, and one uncertain sticky band.
+    /// The three counts stay separate. Sticky confirmation is not part of 「待确认」.
     public var reviewRemainder: StitchCopy.Remainder {
         StitchCopy.Remainder(
             unaligned: unalignedSeamCount,
-            pendingConfirm: 0,
+            pendingConfirm: pendingDuplicateConfirmCount,
             stickyPending: pendingSticky?.isUnresolved == true
         )
     }

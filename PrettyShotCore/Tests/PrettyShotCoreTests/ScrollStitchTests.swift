@@ -320,6 +320,109 @@ final class ScrollStitchTests: XCTestCase {
         var cgHeight: Int
     }
 
+    func testPendingConfirmCountsUnresolvedDuplicateCandidates() {
+        var assembly = ScrollAssembly(duplicateCandidates: Self.threeDuplicateCandidates)
+
+        XCTAssertEqual(assembly.pendingDuplicateConfirmCount, 3)
+        XCTAssertEqual(assembly.reviewRemainder.pendingConfirm, 3)
+        XCTAssertEqual(assembly.reviewBottomBar, Self.confirmBar(3))
+        XCTAssertTrue(assembly.needsReview)
+
+        assembly.resolveDuplicateCandidate("dup-1", choice: .keepOnce)
+        XCTAssertEqual(assembly.pendingDuplicateConfirmCount, 2)
+        XCTAssertEqual(assembly.reviewBottomBar, Self.confirmBar(2))
+
+        assembly.resolveDuplicateCandidate("dup-2", choice: .keepBoth)
+        XCTAssertEqual(assembly.pendingDuplicateConfirmCount, 1)
+        XCTAssertEqual(assembly.reviewBottomBar, Self.confirmBar(1))
+
+        assembly.resolveDuplicateCandidate("dup-3", choice: .keepOnce)
+        XCTAssertEqual(assembly.pendingDuplicateConfirmCount, 0)
+        XCTAssertNil(assembly.reviewBottomBar)
+        XCTAssertFalse(assembly.needsReview)
+
+        assembly.undoLastDuplicateCandidateChoice()
+        XCTAssertEqual(assembly.pendingDuplicateConfirmCount, 1)
+        XCTAssertEqual(assembly.reviewRemainder.pendingConfirm, 1)
+        XCTAssertEqual(assembly.reviewBottomBar, Self.confirmBar(1))
+        XCTAssertNil(assembly.duplicateCandidates.first { $0.id == "dup-3" }?.choice)
+        XCTAssertTrue(assembly.needsReview)
+    }
+
+    func testPendingConfirmIgnoresUnalignedSeamsAndStickyBar() {
+        let sticky = PendingStickyConfirmation(headerRows: 8, footerRows: 0, seamCount: 3, keepOnce: nil)
+        var assembly = ScrollAssembly(
+            seams: [
+                ScrollSeam(kind: .needsAlignment, suggestedOverlap: 12),
+                ScrollSeam(kind: .needsAlignment, suggestedOverlap: 4),
+            ],
+            pendingSticky: sticky,
+            duplicateCandidates: Self.threeDuplicateCandidates
+        )
+
+        XCTAssertEqual(assembly.unalignedSeamCount, 2)
+        XCTAssertEqual(assembly.pendingDuplicateConfirmCount, 3)
+        XCTAssertTrue(assembly.reviewRemainder.stickyPending)
+        XCTAssertEqual(
+            assembly.reviewBottomBar,
+            "⚠ 还有 6 处没处理（待对齐 2 · 待确认 3 · 固定栏待确认 1）。为了不拼错，处理完才能继续——不会静默拼接。"
+        )
+        XCTAssertEqual(assembly.pendingSticky?.prompt, sticky.prompt)
+
+        assembly.resolveDuplicateCandidate("dup-1", choice: .keepBoth)
+        assembly.resolveDuplicateCandidate("dup-2", choice: .keepOnce)
+        XCTAssertEqual(assembly.pendingDuplicateConfirmCount, 1)
+        XCTAssertEqual(assembly.unalignedSeamCount, 2)
+        XCTAssertTrue(assembly.pendingSticky?.isUnresolved == true)
+        XCTAssertEqual(assembly.reviewRemainder.unaligned, 2)
+        XCTAssertEqual(assembly.reviewRemainder.pendingConfirm, 1)
+        XCTAssertTrue(assembly.reviewRemainder.stickyPending)
+
+        assembly.resolveDuplicateCandidate("dup-3", choice: .keepBoth)
+        XCTAssertEqual(assembly.pendingDuplicateConfirmCount, 0)
+        XCTAssertEqual(assembly.unalignedSeamCount, 2)
+        XCTAssertEqual(
+            assembly.reviewBottomBar,
+            "⚠ 还有 3 处没处理（待对齐 2 · 固定栏待确认 1）。为了不拼错，处理完才能继续——不会静默拼接。"
+        )
+        let parts = assembly.reviewRemainder.detail.split(separator: "·").map {
+            $0.trimmingCharacters(in: .whitespaces)
+        }
+        XCTAssertFalse(parts.contains { $0.hasPrefix("待确认") })
+        XCTAssertFalse(parts.contains("待确认 0"))
+    }
+
+    func testRestoreByIdReopensOneCandidateAndUndoHidesTheBar() {
+        var assembly = ScrollAssembly(duplicateCandidates: Self.threeDuplicateCandidates)
+        assembly.resolveDuplicateCandidate("dup-1", choice: .keepOnce)
+        assembly.resolveDuplicateCandidate("dup-2", choice: .keepBoth)
+        assembly.resolveDuplicateCandidate("dup-3", choice: .keepOnce)
+        XCTAssertEqual(assembly.pendingDuplicateConfirmCount, 0)
+        XCTAssertNil(assembly.reviewBottomBar)
+
+        assembly.restoreDuplicateCandidate("missing")
+        XCTAssertEqual(assembly.pendingDuplicateConfirmCount, 0)
+        XCTAssertNil(assembly.reviewBottomBar)
+
+        assembly.restoreDuplicateCandidate("dup-2")
+        XCTAssertEqual(assembly.pendingDuplicateConfirmCount, 1)
+        XCTAssertNil(assembly.duplicateCandidates.first { $0.id == "dup-2" }?.choice)
+        XCTAssertEqual(assembly.reviewBottomBar, Self.confirmBar(1))
+
+        assembly.undoLastDuplicateCandidateChoice()
+        XCTAssertEqual(assembly.pendingDuplicateConfirmCount, 0)
+        XCTAssertEqual(assembly.duplicateCandidates.first { $0.id == "dup-2" }?.choice, .keepBoth)
+        XCTAssertNil(assembly.reviewBottomBar)
+    }
+
+    private static var threeDuplicateCandidates: [DuplicateSegmentCandidate] {
+        (1...3).map { DuplicateSegmentCandidate(id: "dup-\($0)") }
+    }
+
+    private static func confirmBar(_ count: Int) -> String {
+        "⚠ 还有 \(count) 处没处理（待确认 \(count)）。为了不拼错，处理完才能继续——不会静默拼接。"
+    }
+
     private func stopPeak(of stitcher: inout ScrollStitcher, ledger: AllocationLedger) throws -> StopMeasurement {
         ledger.rebasePeak()
         let assembly = stitcher.takeAssembly()
