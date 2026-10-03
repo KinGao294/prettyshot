@@ -37,6 +37,47 @@ protocol HandoffStore: AnyObject {
     func discard(ticketID: String) throws
 }
 
+extension HandoffStore {
+    /// Removes a ticket only after the app has read the files. An interrupted open must not call this.
+    func confirmReceipt(ticketID: String) throws {
+        try discard(ticketID: ticketID)
+    }
+}
+
+/// Result of putting files into the inbox. Nothing is removed until `confirmReceipt`.
+enum HandoffReceipt: Equatable {
+    /// Copied into the store. The app has not confirmed yet.
+    case waitingForApp(HandoffTicket)
+    /// Open was interrupted or the app cannot take the file. The ticket is still in the store.
+    case interrupted(HandoffTicket)
+    /// Nothing was staged. The source files were not deleted.
+    case failed(HandoffError)
+}
+
+enum HandoffTransfer {
+    /// Copies `files` as-is. Does not decode bitmaps and does not delete the sources.
+    static func persist(copying files: [URL], kind: HandoffKind, store: HandoffStore, fileManager: FileManager = .default) -> HandoffReceipt {
+        if files.isEmpty || files.contains(where: { !fileManager.fileExists(atPath: $0.path) }) {
+            return .failed(.unreadable)
+        }
+        do {
+            let ticket = try store.stage(copying: files, kind: kind)
+            return .waitingForApp(ticket)
+        } catch let error as HandoffError {
+            return .failed(error)
+        } catch {
+            return .failed(.unreadable)
+        }
+    }
+
+    /// Records the open attempt. Failure leaves the ticket pending so the extension can retry.
+    static func resolveOpen(succeeded: Bool, ticket: HandoffTicket, store: HandoffStore) -> HandoffReceipt {
+        let stillThere = (try? store.pendingTickets().contains { $0.id == ticket.id }) ?? false
+        guard stillThere else { return .failed(.missingTicket) }
+        return succeeded ? .waitingForApp(ticket) : .interrupted(ticket)
+    }
+}
+
 enum HandoffStoreFactory {
     static let appGroupID = "group.app.prettyshot.ios"
     static let infoKey = "PrettyShotHandoffMode"
@@ -76,7 +117,7 @@ enum HandoffStoreFactory {
         if mode == .appGroup, let containerURL {
             return DirectoryHandoffStore(root: containerURL.appendingPathComponent("Handoff", isDirectory: true))
         }
-        return InlineHandoffStore()
+        return InlineHandoffStore.inbox()
     }
 }
 
@@ -93,23 +134,33 @@ final class DirectoryHandoffStore: HandoffStore {
     }
 
     func stage(copying files: [URL], kind: HandoffKind) throws -> HandoffTicket {
+        if files.isEmpty { throw HandoffError.unreadable }
         let id = UUID().uuidString
         let folder = root.appendingPathComponent(id, isDirectory: true)
-        try fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
-        var names: [String] = []
-        for (index, file) in files.enumerated() {
-            let safe = Self.safeName(file.lastPathComponent, index: index)
-            let destination = folder.appendingPathComponent(safe)
-            if fileManager.fileExists(atPath: destination.path) {
-                try fileManager.removeItem(at: destination)
+        do {
+            try fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
+            var names: [String] = []
+            for (index, file) in files.enumerated() {
+                guard fileManager.fileExists(atPath: file.path) else { throw HandoffError.unreadable }
+                let safe = Self.safeName(file.lastPathComponent, index: index)
+                let destination = folder.appendingPathComponent(safe)
+                if fileManager.fileExists(atPath: destination.path) {
+                    try fileManager.removeItem(at: destination)
+                }
+                try fileManager.copyItem(at: file, to: destination)
+                names.append(safe)
             }
-            try fileManager.copyItem(at: file, to: destination)
-            names.append(safe)
+            let ticket = HandoffTicket(id: id, kind: kind, fileNames: names, createdAt: Date())
+            let data = try JSONEncoder().encode(ticket)
+            try data.write(to: folder.appendingPathComponent("manifest.json"), options: .atomic)
+            return ticket
+        } catch {
+            if fileManager.fileExists(atPath: folder.path) {
+                try? fileManager.removeItem(at: folder)
+            }
+            if let error = error as? HandoffError { throw error }
+            throw HandoffError.unreadable
         }
-        let ticket = HandoffTicket(id: id, kind: kind, fileNames: names, createdAt: Date())
-        let data = try JSONEncoder().encode(ticket)
-        try data.write(to: folder.appendingPathComponent("manifest.json"), options: .atomic)
-        return ticket
     }
 
     func pendingTickets() throws -> [HandoffTicket] {
@@ -160,10 +211,22 @@ final class DirectoryHandoffStore: HandoffStore {
 final class InlineHandoffStore: HandoffStore {
     var canTransferToApp: Bool { false }
     var persistsAcrossProcesses: Bool { false }
+    var root: URL { directory.root }
     private let directory: DirectoryHandoffStore
 
-    init(fileManager: FileManager = .default) {
+    /// Unique directory. Another instance, including the containing app, sees nothing.
+    convenience init(fileManager: FileManager = .default) {
         let root = fileManager.temporaryDirectory.appendingPathComponent("PrettyShotInline-\(UUID().uuidString)", isDirectory: true)
+        self.init(root: root, fileManager: fileManager)
+    }
+
+    /// Stable inbox for this process. A later `inbox()` still sees tickets the app has not confirmed.
+    static func inbox(fileManager: FileManager = .default) -> InlineHandoffStore {
+        let root = fileManager.temporaryDirectory.appendingPathComponent("PrettyShotInlineInbox", isDirectory: true)
+        return InlineHandoffStore(root: root, fileManager: fileManager)
+    }
+
+    init(root: URL, fileManager: FileManager = .default) {
         directory = DirectoryHandoffStore(root: root, fileManager: fileManager)
     }
 

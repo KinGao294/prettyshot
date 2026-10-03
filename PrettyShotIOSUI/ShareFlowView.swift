@@ -11,6 +11,7 @@ struct ShareFlowView: View {
     var onSave: () -> Void
     var onStitchInApp: () -> Void
     var onSavePreview: () -> Void
+    var onRetryHandoff: () -> Void
     var onDismissLarge: () -> Void
 
     var body: some View {
@@ -30,6 +31,8 @@ struct ShareFlowView: View {
                 multiPage(classification)
             case .failed:
                 messagePage(title: IOSCopy.readFailedTitle, body: IOSCopy.readFailedBody)
+            case .handoffInterrupted:
+                interruptedPage
             case .denied:
                 deniedPage
             case .saved(let title, let detail):
@@ -59,6 +62,22 @@ struct ShareFlowView: View {
             Spacer()
         }
         .padding(20)
+        .background(IOSTheme.paper)
+    }
+
+    private var interruptedPage: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(IOSCopy.handoffInterruptedTitle).font(.system(size: 21, weight: .bold))
+            Text(canTransferToApp ? IOSCopy.handoffInterruptedBody : IOSCopy.handoffInlineInterruptedBody)
+                .font(.system(size: 15))
+            if canTransferToApp {
+                Button(IOSCopy.handoffRetry, action: onRetryHandoff).buttonStyle(BloomButtonStyle())
+            }
+            Button(IOSCopy.savePreviewAnyway, action: onSavePreview).buttonStyle(PlainCardButtonStyle())
+            Button(IOSCopy.cancel, action: onCancel).buttonStyle(PlainCardButtonStyle())
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         .background(IOSTheme.paper)
     }
 
@@ -124,6 +143,8 @@ enum SharePhase: Equatable {
     case failed
     case denied
     case saved(title: String, detail: String)
+    /// The file is still in the inbox. The user can retry or save a preview.
+    case handoffInterrupted
 }
 
 extension ShareClassification {

@@ -12,8 +12,9 @@ import ImageIO
 /// 4. decodes one full-size image, bakes redaction into it, and draws the beautified result
 ///
 /// Full resolution stays inline while two RGBA copies fit under the cap (12MP × 2 × 4 = 96MB).
-/// Larger images hand off to the app when an App Group is available; otherwise the extension
-/// saves the preview-resolution image and says so.
+/// Editing and handoff keep the file URL or encoded bytes plus one preview. They do not decode
+/// a second full-size bitmap. A larger image is handed off as that file, or the extension asks
+/// before saving a preview.
 enum ExtensionMemoryBudget {
     static let limitBytes = 120 * 1024 * 1024
     static let bytesPerPixel = 4
@@ -37,6 +38,25 @@ enum ExtensionMemoryBudget {
         scaledCount(width: width, height: height, maxLongSide: maxLongSide)
     }
 
+    /// Editing / handoff. The preview is the only decoded bitmap.
+    static func inlineEditingHold(pixelCount: Int, previewPixels: Int) -> MemoryHold {
+        precondition(pixelCount >= 0)
+        return MemoryHold(
+            fullDecodedCopies: 0,
+            estimatedBytes: rgbaBytes(pixels: previewPixels, copies: 1),
+            passesFileWithoutDecode: true
+        )
+    }
+
+    /// Full export after the preview is released: one source decode and one output.
+    static func fullExportHold(pixelCount: Int) -> MemoryHold {
+        MemoryHold(
+            fullDecodedCopies: fullSizeCopiesWhileExporting,
+            estimatedBytes: rgbaBytes(pixels: pixelCount, copies: fullSizeCopiesWhileExporting),
+            passesFileWithoutDecode: false
+        )
+    }
+
     static func plan(pixelCount: Int, canTransferToApp: Bool) -> Plan {
         let exportBytes = rgbaBytes(pixels: pixelCount, copies: fullSizeCopiesWhileExporting)
         if exportBytes <= limitBytes {
@@ -46,6 +66,13 @@ enum ExtensionMemoryBudget {
             return .handoffToApp
         }
         return .previewResolutionInline
+    }
+
+    struct MemoryHold: Equatable {
+        var fullDecodedCopies: Int
+        var estimatedBytes: Int
+        /// Handoff passes the file URL or encoded bytes and does not decode a full bitmap.
+        var passesFileWithoutDecode: Bool
     }
 
     private static func scaledCount(width: Int, height: Int, maxLongSide: Int) -> Int {
@@ -62,16 +89,34 @@ enum ExtensionMemoryBudget {
 /// ImageIO thumbnail path. Pixel size comes from the header; the preview never decodes 12MP.
 enum ImagePrep {
     static func pixelSize(_ data: Data) -> (width: Int, height: Int)? {
-        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
-              let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] else { return nil }
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        return pixelSize(source)
+    }
+
+    static func pixelSize(_ url: URL) -> (width: Int, height: Int)? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+        return pixelSize(source)
+    }
+
+    static func downsample(_ data: Data, maxLongSide: Int) -> CGImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        return downsample(source, maxLongSide: maxLongSide)
+    }
+
+    static func downsample(_ url: URL, maxLongSide: Int) -> CGImage? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+        return downsample(source, maxLongSide: maxLongSide)
+    }
+
+    private static func pixelSize(_ source: CGImageSource) -> (width: Int, height: Int)? {
+        guard let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] else { return nil }
         let width = (props[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue
         let height = (props[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue
         guard let width, let height, width > 0, height > 0 else { return nil }
         return (width, height)
     }
 
-    static func downsample(_ data: Data, maxLongSide: Int) -> CGImage? {
-        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+    private static func downsample(_ source: CGImageSource, maxLongSide: Int) -> CGImage? {
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,

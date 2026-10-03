@@ -194,10 +194,22 @@ struct AppRootView: View {
     private func openPending() {
         guard let ticket = pending.last else { return }
         let urls = (try? store.files(for: ticket.id)) ?? []
-        ordered = urls.enumerated().compactMap { index, url in
+        let loaded = urls.enumerated().compactMap { index, url -> ShotFile? in
             guard let data = try? Data(contentsOf: url) else { return nil }
             return ShotFile(label: "\(index + 1)", data: data)
         }
+        guard !urls.isEmpty, loaded.count == urls.count else {
+            loadError = true
+            return
+        }
+        do {
+            try store.confirmReceipt(ticketID: ticket.id)
+        } catch {
+            loadError = true
+            return
+        }
+        ordered = loaded
+        refreshPending()
         if ordered.count >= 2 {
             route = .order
         } else if let first = ordered.first {
@@ -207,19 +219,28 @@ struct AppRootView: View {
     }
 
     private func copyEditor() {
-        guard case .image(let image, let preview) = editor.export(canTransferToApp: store.canTransferToApp) else { return }
-        PhotoLibrarySaver.copyToPasteboard(image)
-        editor.showToast(preview ? IOSCopy.toastPreviewResolution : IOSCopy.toastCopied,
-                          detail: preview ? IOSCopy.toastPreviewResolutionDetail : IOSCopy.toastCopiedDetail)
+        switch editor.export(canTransferToApp: store.canTransferToApp) {
+        case .image(let image, false):
+            PhotoLibrarySaver.copyToPasteboard(image)
+            editor.showToast(IOSCopy.toastCopied, detail: IOSCopy.toastCopiedDetail)
+        case .image, .handoff, nil:
+            editor.showToast(IOSCopy.handoffInterruptedTitle, detail: IOSCopy.largeInlineBody)
+        }
     }
 
     private func saveEditor() {
         switch editor.export(canTransferToApp: store.canTransferToApp) {
         case .handoff:
-            if let url = editor.writeEncodedToTemporaryFile() {
-                _ = try? store.stage(copying: [url], kind: .singleImage)
+            if let url = editor.handoffSourceURL() {
+                switch HandoffTransfer.persist(copying: [url], kind: .singleImage, store: store) {
+                case .waitingForApp, .interrupted:
+                    editor.showToast(IOSCopy.largeTitle, detail: store.canTransferToApp ? IOSCopy.largeBody : IOSCopy.largeInlineBody)
+                case .failed:
+                    editor.showToast(IOSCopy.handoffInterruptedTitle, detail: IOSCopy.handoffInterruptedBody)
+                }
+            } else {
+                editor.showToast(IOSCopy.handoffInterruptedTitle, detail: IOSCopy.handoffInterruptedBody)
             }
-            editor.showToast(IOSCopy.largeTitle, detail: store.canTransferToApp ? IOSCopy.largeBody : IOSCopy.largeInlineBody)
         case .image(let image, let preview):
             guard let data = ShotEncoder.pngData(image) else { return }
             PhotoLibrarySaver.savePNG(data) { status in

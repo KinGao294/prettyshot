@@ -9,6 +9,8 @@ final class ShareViewController: UIViewController {
     private var host: UIHostingController<ShareFlowView>?
     private var providers: [NSItemProvider] = []
     private var pendingKind: HandoffKind = .stitch
+    /// Stays set until the app confirms. A failed open does not clear it.
+    private var stagedTicket: HandoffTicket?
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -38,6 +40,7 @@ final class ShareViewController: UIViewController {
             onSave: { [weak self] in self?.saveOut(forcePreview: false) },
             onStitchInApp: { [weak self] in self?.handOff() },
             onSavePreview: { [weak self] in self?.saveOut(forcePreview: true) },
+            onRetryHandoff: { [weak self] in self?.handOff() },
             onDismissLarge: { [weak self] in
                 self?.showsLarge = false
                 self?.refresh()
@@ -81,15 +84,25 @@ final class ShareViewController: UIViewController {
             refresh()
             return
         }
-        provider.loadDataRepresentation(forTypeIdentifier: type) { [weak self] data, _ in
+        provider.loadFileRepresentation(forTypeIdentifier: type) { [weak self] url, _ in
+            let copied = url.flatMap { source -> URL? in
+                let dest = FileManager.default.temporaryDirectory
+                    .appendingPathComponent(UUID().uuidString + "-" + source.lastPathComponent)
+                do {
+                    try FileManager.default.copyItem(at: source, to: dest)
+                    return dest
+                } catch {
+                    return nil
+                }
+            }
             DispatchQueue.main.async {
                 guard let self else { return }
-                guard let data else {
+                guard let copied else {
                     self.phase = .failed
                     self.refresh()
                     return
                 }
-                self.editor.load(data)
+                self.editor.load(fileURL: copied)
                 self.phase = .editor
                 self.refresh()
             }
@@ -97,7 +110,12 @@ final class ShareViewController: UIViewController {
     }
 
     private func copyOut() {
-        guard let image = exportedImage(forcePreview: false) else { return }
+        guard case .image(let image, false) = editor.export(canTransferToApp: store.canTransferToApp) else {
+            showsLarge = true
+            pendingKind = .singleImage
+            refresh()
+            return
+        }
         PhotoLibrarySaver.copyToPasteboard(image)
         phase = .saved(title: IOSCopy.toastCopied, detail: IOSCopy.toastCopiedDetail)
         refresh()
@@ -105,18 +123,18 @@ final class ShareViewController: UIViewController {
     }
 
     private func saveOut(forcePreview: Bool) {
-        if !forcePreview, case .handoff = editor.export(canTransferToApp: store.canTransferToApp) {
+        let attempt = editor.export(canTransferToApp: store.canTransferToApp, userChosePreview: forcePreview)
+        guard case .image(let image, let preview) = attempt, preview == forcePreview else {
             showsLarge = true
             pendingKind = .singleImage
             refresh()
             return
         }
-        guard let image = exportedImage(forcePreview: forcePreview), let data = ShotEncoder.pngData(image) else {
+        guard let data = ShotEncoder.pngData(image) else {
             phase = .failed
             refresh()
             return
         }
-        let preview = forcePreview || editor.usingPreviewResolution
         PhotoLibrarySaver.savePNG(data) { [weak self] status in
             guard let self else { return }
             if PhotoSaveRouter.route(for: status) == .offerCopy {
@@ -133,25 +151,39 @@ final class ShareViewController: UIViewController {
         }
     }
 
-    private func exportedImage(forcePreview: Bool) -> CGImage? {
-        if forcePreview { return editor.exportPreviewResolution() }
-        if case .image(let image, _) = editor.export(canTransferToApp: store.canTransferToApp) {
-            return image
-        }
-        return editor.exportPreviewResolution()
-    }
-
     private func handOff() {
-        guard store.canTransferToApp else { return }
-        if pendingKind == .singleImage, let url = editor.writeEncodedToTemporaryFile() {
-            _ = try? store.stage(copying: [url], kind: .singleImage)
-            openApp()
+        if let ticket = stagedTicket {
+            deliver(.waitingForApp(ticket))
+            return
+        }
+        if pendingKind == .singleImage {
+            guard let url = editor.handoffSourceURL() else {
+                phase = .handoffInterrupted
+                refresh()
+                return
+            }
+            deliver(HandoffTransfer.persist(copying: [url], kind: .singleImage, store: store))
             return
         }
         copyProviders { [weak self] urls in
             guard let self else { return }
-            _ = try? self.store.stage(copying: urls, kind: self.pendingKind)
-            self.openApp()
+            self.deliver(HandoffTransfer.persist(copying: urls, kind: self.pendingKind, store: self.store))
+        }
+    }
+
+    private func deliver(_ receipt: HandoffReceipt) {
+        switch receipt {
+        case .waitingForApp(let ticket), .interrupted(let ticket):
+            stagedTicket = ticket
+            guard store.canTransferToApp else {
+                phase = .handoffInterrupted
+                refresh()
+                return
+            }
+            openApp(ticket)
+        case .failed:
+            phase = .handoffInterrupted
+            refresh()
         }
     }
 
@@ -176,10 +208,23 @@ final class ShareViewController: UIViewController {
         group.notify(queue: .main) { done(urls) }
     }
 
-    private func openApp() {
-        guard let url = URL(string: "prettyshot://handoff") else { return }
-        extensionContext?.open(url) { [weak self] _ in
-            self?.finishSoon()
+    private func openApp(_ ticket: HandoffTicket) {
+        guard let url = URL(string: "prettyshot://handoff") else {
+            phase = .handoffInterrupted
+            refresh()
+            return
+        }
+        extensionContext?.open(url) { [weak self] success in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                switch HandoffTransfer.resolveOpen(succeeded: success, ticket: ticket, store: self.store) {
+                case .waitingForApp:
+                    self.finishSoon()
+                case .interrupted, .failed:
+                    self.phase = .handoffInterrupted
+                    self.refresh()
+                }
+            }
         }
     }
 

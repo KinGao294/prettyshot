@@ -300,3 +300,175 @@ final class StatusBarAndPhotoRouteTests: XCTestCase {
         XCTAssertEqual(PhotoSaveRouter.route(for: .denied), .offerCopy)
     }
 }
+
+final class ShareAcceptanceTests: XCTestCase {
+    func testInlineHandoffRoundTripKeepsPixels() throws {
+        let tmp = try makeTemp()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let source = try patternedPNG(width: 6, height: 4, directory: tmp)
+        let store = InlineHandoffStore(root: tmp.appendingPathComponent("inbox", isDirectory: true))
+        let receipt = HandoffTransfer.persist(copying: [source.url], kind: .singleImage, store: store)
+        guard case .waitingForApp(let ticket) = receipt else {
+            XCTFail("expected a stored ticket, got \(receipt)")
+            return
+        }
+        let stagedURL = try store.files(for: ticket.id)[0]
+        let staged = try Data(contentsOf: stagedURL)
+        XCTAssertEqual(staged, source.png)
+        XCTAssertEqual(try rgba(of: staged), try rgba(of: source.png))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: source.url.path))
+    }
+
+    func testInterruptedHandoffStaysUntilTheAppConfirms() throws {
+        let tmp = try makeTemp()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let source = try patternedPNG(width: 4, height: 3, directory: tmp)
+        let root = tmp.appendingPathComponent("inbox", isDirectory: true)
+        let store = InlineHandoffStore(root: root)
+        let receipt = HandoffTransfer.persist(copying: [source.url], kind: .singleImage, store: store)
+        guard case .waitingForApp(let ticket) = receipt else {
+            XCTFail("expected a stored ticket")
+            return
+        }
+
+        let opened = HandoffTransfer.resolveOpen(succeeded: true, ticket: ticket, store: store)
+        guard case .waitingForApp = opened else {
+            XCTFail("a successful open still waits for the app to confirm")
+            return
+        }
+        XCTAssertEqual(try store.pendingTickets().map(\.id), [ticket.id])
+
+        let interrupted = HandoffTransfer.resolveOpen(succeeded: false, ticket: ticket, store: store)
+        guard case .interrupted(let same) = interrupted else {
+            XCTFail("expected a retryable interrupt, got \(interrupted)")
+            return
+        }
+        let reopened = InlineHandoffStore(root: root)
+        let recovered = try Data(contentsOf: try reopened.files(for: same.id)[0])
+        XCTAssertEqual(recovered, source.png)
+        XCTAssertEqual(try rgba(of: recovered), try rgba(of: source.png))
+
+        try reopened.confirmReceipt(ticketID: same.id)
+        XCTAssertTrue(try reopened.pendingTickets().isEmpty)
+    }
+
+    func testUnreadableSourceFailsWithoutDeletingTheOriginal() throws {
+        let tmp = try makeTemp()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let source = try patternedPNG(width: 2, height: 2, directory: tmp)
+        let missing = tmp.appendingPathComponent("missing.png")
+        let store = InlineHandoffStore(root: tmp.appendingPathComponent("inbox", isDirectory: true))
+        let receipt = HandoffTransfer.persist(copying: [source.url, missing], kind: .stitch, store: store)
+        XCTAssertEqual(receipt, .failed(.unreadable))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: source.url.path))
+        XCTAssertEqual(try Data(contentsOf: source.url), source.png)
+        XCTAssertTrue(try store.pendingTickets().isEmpty)
+    }
+
+    func testTwelveMegapixelPathDoesNotDecodeUntilExport() throws {
+        let pixels = 12_000_000
+        XCTAssertEqual(
+            ExportFidelityRouter.decide(pixelCount: pixels, canTransferToApp: false, userChosePreview: false),
+            .fullResolutionPNG
+        )
+        XCTAssertEqual(
+            ExportFidelityRouter.decide(pixelCount: pixels, canTransferToApp: true, userChosePreview: false),
+            .fullResolutionPNG
+        )
+        XCTAssertEqual(
+            ExportFidelityRouter.decide(pixelCount: 20_000_000, canTransferToApp: false, userChosePreview: false),
+            .askBeforeDownscale
+        )
+        XCTAssertEqual(
+            ExportFidelityRouter.decide(pixelCount: 20_000_000, canTransferToApp: false, userChosePreview: true),
+            .previewChosen
+        )
+
+        let previewPixels = ExtensionMemoryBudget.previewPixelCount(width: 4000, height: 3000)
+        let editing = ExtensionMemoryBudget.inlineEditingHold(pixelCount: pixels, previewPixels: previewPixels)
+        XCTAssertEqual(editing.fullDecodedCopies, 0)
+        XCTAssertTrue(editing.passesFileWithoutDecode)
+        XCTAssertLessThanOrEqual(editing.estimatedBytes, ExtensionMemoryBudget.limitBytes)
+
+        let exporting = ExtensionMemoryBudget.fullExportHold(pixelCount: pixels)
+        XCTAssertEqual(exporting.fullDecodedCopies, 2)
+        XCTAssertLessThanOrEqual(exporting.estimatedBytes, ExtensionMemoryBudget.limitBytes)
+        XCTAssertGreaterThan(
+            ExtensionMemoryBudget.rgbaBytes(pixels: pixels, copies: ExtensionMemoryBudget.forbiddenSimultaneousFullSizeCopies),
+            ExtensionMemoryBudget.limitBytes
+        )
+
+        let tmp = try makeTemp()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let url = try solidPNG(width: 2400, height: 1600, directory: tmp)
+        let carrier = try ShareImageCarrier(fileURL: url)
+        XCTAssertEqual(carrier.fullDecodedCopiesHeld, 0)
+        XCTAssertEqual(carrier.pixelWidth, 2400)
+        XCTAssertEqual(carrier.pixelHeight, 1600)
+        let preview = try XCTUnwrap(carrier.preview())
+        XCTAssertLessThanOrEqual(max(preview.width, preview.height), ExtensionMemoryBudget.previewMaxLongSide)
+        XCTAssertLessThan(preview.width * preview.height, 2400 * 1600)
+
+        let store = InlineHandoffStore(root: tmp.appendingPathComponent("inbox", isDirectory: true))
+        let receipt = HandoffTransfer.persist(copying: [carrier.fileURL], kind: .singleImage, store: store)
+        guard case .waitingForApp(let ticket) = receipt else {
+            XCTFail("expected the file to be copied")
+            return
+        }
+        XCTAssertEqual(try Data(contentsOf: try store.files(for: ticket.id)[0]), try Data(contentsOf: url))
+        XCTAssertEqual(carrier.fullDecodedCopiesHeld, 0)
+    }
+
+    private func makeTemp() throws -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("accept-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    private func patternedPNG(width: Int, height: Int, directory: URL) throws -> (url: URL, png: Data) {
+        let space = try XCTUnwrap(CGColorSpace(name: CGColorSpace.sRGB))
+        let context = try XCTUnwrap(CGContext(
+            data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+            space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ))
+        context.setFillColor(CGColor(srgbRed: 0.2, green: 0.4, blue: 0.6, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        context.setFillColor(CGColor(srgbRed: 1, green: 0, blue: 0, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: 1, height: 1))
+        let image = try XCTUnwrap(context.makeImage())
+        let png = try XCTUnwrap(ShotEncoder.pngData(image))
+        let url = directory.appendingPathComponent("shot.png")
+        try png.write(to: url)
+        return (url, png)
+    }
+
+    private func solidPNG(width: Int, height: Int, directory: URL) throws -> URL {
+        let space = try XCTUnwrap(CGColorSpace(name: CGColorSpace.sRGB))
+        let context = try XCTUnwrap(CGContext(
+            data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+            space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ))
+        context.setFillColor(CGColor(srgbRed: 0.1, green: 0.2, blue: 0.3, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        let image = try XCTUnwrap(context.makeImage())
+        let png = try XCTUnwrap(ShotEncoder.pngData(image))
+        let url = directory.appendingPathComponent("large.png")
+        try png.write(to: url)
+        return url
+    }
+
+    private func rgba(of data: Data) throws -> [UInt8] {
+        let source = try XCTUnwrap(CGImageSourceCreateWithData(data as CFData, nil))
+        let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        let width = image.width
+        let height = image.height
+        var buffer = [UInt8](repeating: 0, count: width * height * 4)
+        let space = try XCTUnwrap(CGColorSpace(name: CGColorSpace.sRGB))
+        let context = try XCTUnwrap(CGContext(
+            data: &buffer, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
+            space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ))
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return buffer
+    }
+}

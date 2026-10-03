@@ -82,6 +82,10 @@ enum IOSCopy {
     static let largeInlineBody = "免费签名不能把原图交给 App。请打开 PrettyShot，从相册选同一张继续。扩展里可以先按预览尺寸保存。"
     static let openApp = "打开 PrettyShot"
     static let savePreviewAnyway = "按预览尺寸保存"
+    static let handoffInterruptedTitle = "还没交到 App"
+    static let handoffInterruptedBody = "图片还在这里，没有丢掉。可以再试一次，或先按预览尺寸保存。"
+    static let handoffInlineInterruptedBody = "当前签名不能把原图交给 App。原图还在，可以按预览尺寸保存，或打开 PrettyShot 从相册再选。"
+    static let handoffRetry = "再试一次"
 
     // MARK: - 分享多张 · 帧 12 S11
 

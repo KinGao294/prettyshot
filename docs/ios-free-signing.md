@@ -55,3 +55,5 @@ Bundle ID：主 App `app.prettyshot.ios`，扩展 `app.prettyshot.ios.share`。U
 3. 装到手机后看扩展和 App 的 `containerURL` 是否非 nil、App 首页是否出现「继续上次分享」。失败就改回 inline，能力关掉。
 
 TestFlight、公证和上架仍然要付费开发者账号。M4 的真机内存测量也一样。
+
+分享扩展的三条验收（12MP 不崩、交接被打断图还在、不静默压缩）里，模拟器替代不了的步骤写在 [ios-manual-tests.md](ios-manual-tests.md)。

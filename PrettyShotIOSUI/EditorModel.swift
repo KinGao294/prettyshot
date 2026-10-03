@@ -37,8 +37,12 @@ final class EditorModel: ObservableObject {
     @Published private(set) var canRedo = false
 
     private var encoded = Data()
+    /// Set when the extension loaded a file URL. Handoff copies this file and does not keep a second decoded bitmap.
+    private var sourceURL: URL?
     private var undoStack: [Snapshot] = []
     private var redoStack: [Snapshot] = []
+
+    var pixelCount: Int { max(0, pixelWidth) * max(0, pixelHeight) }
 
     var cropMatch: StatusBarCrop? {
         StatusBarCropTable.match(width: pixelWidth, height: pixelHeight)
@@ -50,43 +54,66 @@ final class EditorModel: ObservableObject {
     }
 
     func load(_ data: Data) {
+        sourceURL = nil
         encoded = data
-        if let size = ImagePrep.pixelSize(data) {
-            pixelWidth = size.width
-            pixelHeight = size.height
-        }
+        applySize(ImagePrep.pixelSize(data))
+        refreshPreview()
+    }
+
+    /// Keeps the file. Pixel size comes from the header; the only decoded image is the preview.
+    func load(fileURL: URL) {
+        sourceURL = fileURL
+        encoded = Data()
+        applySize(ImagePrep.pixelSize(fileURL))
         refreshPreview()
     }
 
     func refreshPreview() {
-        guard !encoded.isEmpty else {
-            preview = nil
-            return
+        let image: CGImage?
+        if let sourceURL {
+            image = ImagePrep.downsample(sourceURL, maxLongSide: ExtensionMemoryBudget.previewMaxLongSide)
+        } else if !encoded.isEmpty {
+            image = ImagePrep.downsample(encoded, maxLongSide: ExtensionMemoryBudget.previewMaxLongSide)
+        } else {
+            image = nil
         }
-        guard let image = ImagePrep.downsample(encoded, maxLongSide: ExtensionMemoryBudget.previewMaxLongSide) else {
-            preview = nil
-            return
-        }
-        preview = UIImage(cgImage: image)
+        preview = image.map { UIImage(cgImage: $0) }
     }
 
-    func export(canTransferToApp: Bool) -> ExportAttempt? {
-        let pixels = pixelWidth * pixelHeight
-        guard pixels > 0, !encoded.isEmpty else { return nil }
-        switch ExtensionMemoryBudget.plan(pixelCount: pixels, canTransferToApp: canTransferToApp) {
-        case .handoffToApp:
+    /// Original file for handoff. Copies encoded bytes out only when there is no file yet.
+    func handoffSourceURL() -> URL? {
+        if let sourceURL { return sourceURL }
+        return writeEncodedToTemporaryFile()
+    }
+
+    func export(canTransferToApp: Bool, userChosePreview: Bool = false) -> ExportAttempt? {
+        guard pixelCount > 0, sourceURL != nil || !encoded.isEmpty else { return nil }
+        switch ExportFidelityRouter.decide(
+            pixelCount: pixelCount,
+            canTransferToApp: canTransferToApp,
+            userChosePreview: userChosePreview
+        ) {
+        case .askBeforeDownscale:
             return .handoff
-        case .fullResolutionInline:
-            preview = nil
-            let longSide = max(pixelWidth, pixelHeight)
-            guard let full = ImagePrep.downsample(encoded, maxLongSide: longSide) else { return nil }
-            let rendered = render(full)
-            refreshPreview()
-            return rendered.map { .image($0, previewResolution: false) }
-        case .previewResolutionInline:
+        case .previewChosen:
             guard let current = preview?.cgImage else { return nil }
             usingPreviewResolution = true
             return render(current).map { .image($0, previewResolution: true) }
+        case .fullResolutionPNG:
+            preview = nil
+            let longSide = max(pixelWidth, pixelHeight)
+            let rendered: CGImage? = {
+                let full: CGImage?
+                if let sourceURL {
+                    full = ImagePrep.downsample(sourceURL, maxLongSide: longSide)
+                } else {
+                    full = ImagePrep.downsample(encoded, maxLongSide: longSide)
+                }
+                guard let full else { return nil }
+                return render(full)
+            }()
+            refreshPreview()
+            return rendered.map { .image($0, previewResolution: false) }
         }
     }
 
@@ -168,6 +195,13 @@ final class EditorModel: ObservableObject {
     func showToast(_ title: String, detail: String) {
         toastTitle = title
         toastDetail = detail
+    }
+
+    private func applySize(_ size: (width: Int, height: Int)?) {
+        if let size {
+            pixelWidth = size.width
+            pixelHeight = size.height
+        }
     }
 
     private func render(_ base: CGImage) -> CGImage? {
