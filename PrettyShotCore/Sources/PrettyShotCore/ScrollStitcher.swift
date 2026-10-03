@@ -1252,7 +1252,11 @@ public struct ScrollStitcher {
         if let tieShifts, tieShifts.count >= 2 {
             let number = seams.count + 1
             pendingTitle = "接缝 \(number) · 待确认：位移无法唯一确定"
-            seamNote = "找到 \(tieShifts.count) 个得分相同的位移，自动对齐没法确定是哪一个——为了不拼错，先停下来请你确认。"
+            var reason = "找到 \(tieShifts.count) 个都说得通的位移，自动对齐没法确定是哪一个——为了不拼错，先停下来请你确认。"
+            if Self.repeatsListRows(frame, height: 22) {
+                reason = "这一段是重复的列表行（行高 22 px）。" + reason
+            }
+            seamNote = reason
             let selected = selectedShift ?? tieShifts[0]
             candidateLines = tieShifts.sorted(by: >).enumerated().map { index, shift in
                 Self.shiftCandidateLine(index: index, shift: shift, selected: selected)
@@ -1299,6 +1303,24 @@ public struct ScrollStitcher {
             line += " · 当前"
         }
         return line
+    }
+
+    /// True when most rows repeat the row `period` px below. Alias periods of 60 do not.
+    private static func repeatsListRows(_ frame: RGBAImage, height period: Int) -> Bool {
+        guard period > 0, frame.width > 0, frame.height >= period * 3 else { return false }
+        let pixels = frame.pixels
+        let rowBytes = frame.width * 4
+        guard pixels.count >= frame.height * rowBytes else { return false }
+        var matches = 0
+        let compared = frame.height - period
+        for y in 0..<compared {
+            let top = y * rowBytes
+            let below = (y + period) * rowBytes
+            if pixels[top..<(top + rowBytes)] == pixels[below..<(below + rowBytes)] {
+                matches += 1
+            }
+        }
+        return matches * 2 >= compared
     }
 
     private mutating func sealOpenSegment() {
@@ -1453,13 +1475,12 @@ private enum RowSamples {
         // Distant aliases with similar score *and* similar support are not safe — a repeating
         // list can match at several periods. Nearby 1–2 px candidates are the same scroll.
         let rivals = ranked.dropFirst().filter { rival in
-            abs(rival.shift - best.shift) > 2
-                && rival.score <= best.score + 4
-                && rival.votes * 2 >= best.votes
+            abs(rival.shift - best.shift) > AliasRival.shiftGap
+                && rival.score <= best.score + AliasRival.scoreSlack
+                && rival.votes * AliasRival.voteFactor >= best.votes
         }
         // One candidate used to be trusted even when it reversed the last shift.
-        // Only that lone opposite candidate uses the reverse-seam line.
-        // Two or more equal scores, one of them the other way, are a shift tie.
+        // Only that lone opposite candidate, with no rival inside the threshold, uses the reverse line.
         let loneReverse = rivals.isEmpty && (lastShift.map { prior in
             prior != 0 && best.shift.signum() != prior.signum()
         } ?? false)
@@ -1473,15 +1494,10 @@ private enum RowSamples {
            let preferred = resolveAlias(best: best, rivals: Array(rivals), prior: prior) {
             return ShiftChoice(shift: preferred, confident: true)
         }
-        let equalScores = ranked.filter { cluster in
-            cluster.score == best.score && abs(cluster.shift - best.shift) > 2
-        }
-        let tieShifts = [best.shift] + equalScores.map(\.shift)
-        let oppositeTie = tieShifts.contains { $0.signum() != best.shift.signum() }
-        if oppositeTie {
-            return ShiftChoice(shift: best.shift, confident: false, reversed: false, tieShifts: tieShifts)
-        }
-        return ShiftChoice(shift: best.shift, confident: false, reversed: false)
+        // resolveAlias did not pick one. Every rival inside the threshold is a tie,
+        // whatever its direction and whether or not the scores are exactly equal.
+        let tieShifts = [best.shift] + rivals.map(\.shift)
+        return ShiftChoice(shift: best.shift, confident: false, reversed: false, tieShifts: tieShifts)
     }
 
     /// Header and footer used to score a shift. A stationary edge that is too tall for the
@@ -1703,7 +1719,7 @@ private enum RowSamples {
         while index < keys.count {
             var group = [keys[index]]
             var next = index + 1
-            while next < keys.count, keys[next] - keys[next - 1] <= 2 {
+            while next < keys.count, keys[next] - keys[next - 1] <= AliasRival.shiftGap {
                 group.append(keys[next])
                 next += 1
             }
