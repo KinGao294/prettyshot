@@ -156,7 +156,7 @@ final class CaptureSession {
             view.onRegion = { [weak self] rect in
                 guard let self else { return }
                 if self.model.mode == .scrolling {
-                    self.beginScrolling(rect: rect, snapshot: snapshot)
+                    self.beginScrolling(rect, snapshot: snapshot)
                 } else {
                     self.finishRegion(rect, in: snapshot)
                 }

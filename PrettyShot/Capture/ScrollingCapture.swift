@@ -301,11 +301,9 @@ private final class RegionFramePump: NSObject, SCStreamOutput, SCStreamDelegate 
         let stream = SCStream(filter: filter, configuration: configuration, delegate: self)
         try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: queue)
         try await stream.startCapture()
-        lock.lock()
-        let alreadyStopped = stopped
-        lock.unlock()
+        let alreadyStopped = lock.withLock { stopped }
         if alreadyStopped {
-            stream.stopCapture { _ in }
+            try? await stream.stopCapture()
             return
         }
         self.stream = stream
