@@ -193,7 +193,7 @@ final class StitchGateCopyTests: XCTestCase {
         XCTAssertEqual(session.gate.primaryTitle, IOSCopy.nextBeautify)
     }
 
-    func testRestoreAutoDoesNotClaimRedetection() {
+    func testRestoreAutoRerunsDetection() {
         let image = RGBAImage(width: 4, height: 8, pixels: [UInt8](repeating: 255, count: 4 * 8 * 4))
         let segment = ScrollSegment(image: image, confidentSeamYs: [])
         var session = StitchSession(assembly: ScrollAssembly(
@@ -203,7 +203,7 @@ final class StitchGateCopyTests: XCTestCase {
         ))
         session.restoreAuto(seam: 0)
         XCTAssertEqual(session.assembly.seams.first?.kind, .aligned(overlap: 3))
-        XCTAssertEqual(session.assembly.duplicateCandidates.first?.choice, .keepOnce)
+        XCTAssertTrue(session.assembly.duplicateCandidates.isEmpty)
         XCTAssertEqual(session.gate.step, .ready)
         XCTAssertEqual(IOSCopy.reDetect, "还原自动")
         XCTAssertEqual(IOSCopy.alignDone, "完成")
