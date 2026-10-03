@@ -13,11 +13,20 @@ enum ExportAttempt {
 
 enum ShotEncoder {
     static func pngData(_ image: CGImage) -> Data? {
-        let data = NSMutableData()
-        guard let destination = CGImageDestinationCreateWithData(data, "public.png" as CFString, 1, nil) else { return nil }
-        CGImageDestinationAddImage(destination, image, nil)
-        guard CGImageDestinationFinalize(destination) else { return nil }
-        return data as Data
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("pretty-shot-\(UUID().uuidString).png")
+        let wrote: Bool = autoreleasepool {
+            guard let destination = CGImageDestinationCreateWithURL(url as CFURL, "public.png" as CFString, 1, nil) else {
+                return false
+            }
+            CGImageDestinationAddImage(destination, image, nil)
+            return CGImageDestinationFinalize(destination)
+        }
+        guard wrote, let mapped = try? Data(contentsOf: url, options: .alwaysMapped) else {
+            try? FileManager.default.removeItem(at: url)
+            return nil
+        }
+        try? FileManager.default.removeItem(at: url)
+        return mapped
     }
 }
 
