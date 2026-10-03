@@ -89,6 +89,17 @@ final class TileBuffer {
         storage.advanced(by: destLocal * rowBytes).copyMemory(from: bytes, byteCount: count * rowBytes)
     }
 
+    /// Moves the live rows toward the spare at the end, opening `count` rows at local 0.
+    func shiftRowsUp(by count: Int) {
+        guard count > 0, rows > 0 else { return }
+        var y = rows - 1
+        while y >= 0 {
+            let dest = storage.advanced(by: (y + count) * rowBytes)
+            dest.copyMemory(from: storage.advanced(by: y * rowBytes), byteCount: rowBytes)
+            y -= 1
+        }
+    }
+
     /// Keeps the left rows and returns a new tile holding the right rows.
     func split(atLocalRow local: Int) -> TileBuffer {
         let rightRows = rows - local
@@ -172,11 +183,11 @@ final class ImageStorage {
         }
     }
 
-    func appendRows(from source: ImageStorage, sourceRow: Int, count: Int) {
+    func appendRows(from source: ImageStorage, sourceRow: Int, count: Int, exact: Bool = false) {
         var left = count
         var sourceCursor = sourceRow
         while left > 0 {
-            let tile = ensureWritableTile()
+            let tile = ensureWritableTile(reserving: left, exact: exact)
             let (sourceIndex, sourceLocal) = source.location(of: sourceCursor)
             let n = min(left, tile.spareRows, source.tiles[sourceIndex].rows - sourceLocal)
             if n == 0 { break }
@@ -205,21 +216,78 @@ final class ImageStorage {
     }
 
     /// Inserts `source` so its first row lands at `row`. Existing rows at and below `row` shift down.
-    /// Only the tile that contains the cut is copied.
+    /// Spare rows in the neighbouring chunk are filled before a new chunk is opened, and a new chunk
+    /// is only as large as `tileRows` so the next insert can fill it instead of allocating again.
     func insert(_ source: ImageStorage, atRow row: Int) {
         guard source.height > 0 else { return }
         if row >= height {
             append(from: source)
             return
         }
-        let boundary = ensureBoundary(atRow: row)
-        var inserted: [TileBuffer] = []
-        let scratch = ImageStorage(width: width)
-        scratch.append(from: source)
-        inserted = scratch.tiles
-        scratch.tiles = []
-        tiles.insert(contentsOf: inserted, at: boundary)
-        height += source.height
+        var boundary = ensureBoundary(atRow: row)
+        var sourceRow = 0
+        var left = source.height
+        if boundary > 0 {
+            let room = tiles[boundary - 1].spareRows
+            let n = min(left, room)
+            if n > 0 {
+                write(from: source, sourceRow: sourceRow, into: tiles[boundary - 1], destLocal: tiles[boundary - 1].rows, count: n)
+                tiles[boundary - 1].rows += n
+                left -= n
+                sourceRow += n
+                height += n
+            }
+        }
+        while left > 0 {
+            if boundary < tiles.count, tiles[boundary].spareRows >= left {
+                let tile = tiles[boundary]
+                tile.shiftRowsUp(by: left)
+                write(from: source, sourceRow: sourceRow, into: tile, destLocal: 0, count: left)
+                tile.rows += left
+                height += left
+                return
+            }
+            let n = min(left, Self.tileRows)
+            let tile = TileBuffer(rowBytes: rowBytes, rowCapacity: Self.tileRows, ledger: PixelMetrics.threadLedger)
+            write(from: source, sourceRow: sourceRow, into: tile, destLocal: 0, count: n)
+            tile.rows = n
+            tiles.insert(tile, at: boundary)
+            boundary += 1
+            left -= n
+            sourceRow += n
+            height += n
+        }
+    }
+
+    /// Drops rows from the bottom. The rows that stay are not copied.
+    func removeLastRows(_ count: Int) {
+        var left = min(max(0, count), height)
+        while left > 0, let last = tiles.last {
+            if last.rows <= left {
+                left -= last.rows
+                height -= last.rows
+                tiles.removeLast()
+            } else {
+                last.rows -= left
+                height -= left
+                left = 0
+            }
+        }
+    }
+
+    private func write(from source: ImageStorage, sourceRow: Int, into tile: TileBuffer, destLocal: Int, count: Int) {
+        var left = count
+        var sourceCursor = sourceRow
+        var dest = destLocal
+        while left > 0 {
+            let (index, local) = source.location(of: sourceCursor)
+            let n = min(left, source.tiles[index].rows - local)
+            if n == 0 { break }
+            tile.write(from: source.tiles[index], sourceLocal: local, destLocal: dest, count: n)
+            left -= n
+            sourceCursor += n
+            dest += n
+        }
     }
 
     func overwrite(from source: ImageStorage, atRow row: Int) {
@@ -260,9 +328,10 @@ final class ImageStorage {
         return requested
     }
 
-    private func ensureWritableTile() -> TileBuffer {
+    private func ensureWritableTile(reserving rows: Int = 1, exact: Bool = false) -> TileBuffer {
         if let last = tiles.last, last.spareRows > 0 { return last }
-        let tile = TileBuffer(rowBytes: rowBytes, rowCapacity: Self.tileRows, ledger: PixelMetrics.threadLedger)
+        let cap = exact ? min(Self.tileRows, max(rows, 1)) : Self.tileRows
+        let tile = TileBuffer(rowBytes: rowBytes, rowCapacity: cap, ledger: PixelMetrics.threadLedger)
         tiles.append(tile)
         return tile
     }
@@ -357,12 +426,7 @@ public struct RGBAImage: Equatable {
         }
         if lower == 0, upper == height { return self }
         let sliced = ImageStorage(width: width)
-        var row = lower
-        while row < upper {
-            let count = min(ImageStorage.tileRows, upper - row)
-            sliced.appendRows(from: storage, sourceRow: row, count: count)
-            row += count
-        }
+        sliced.appendRows(from: storage, sourceRow: lower, count: upper - lower, exact: true)
         return RGBAImage(width: width, height: upper - lower, storage: sliced)
     }
 
@@ -453,6 +517,14 @@ public struct RGBAImage: Equatable {
         guard rows.width == width, rows.height == range.count, range.lowerBound >= 0 else { return }
         ensureUnique()
         storage.overwrite(from: rows.storage, atRow: range.lowerBound)
+    }
+
+    /// Removes rows from the bottom without copying the prefix that stays.
+    mutating func removeLastRows(_ count: Int) {
+        guard count > 0 else { return }
+        ensureUnique()
+        storage.removeLastRows(count)
+        height = storage.height
     }
 
     private mutating func ensureUnique() {

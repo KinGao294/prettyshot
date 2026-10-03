@@ -1,4 +1,5 @@
 import CoreGraphics
+import Foundation
 import PrettyShotCore
 import XCTest
 @testable import PrettyShot
@@ -521,7 +522,8 @@ final class ScrollStitcherTests: XCTestCase {
         let warmAgain = await store.loadStitchForOverlay(store.items[0])
         XCTAssertEqual(warm?.flattenedIfResolved()?.height, deduped.height)
         XCTAssertEqual(warmAgain?.flattenedIfResolved()?.height, deduped.height)
-        XCTAssertEqual(StitchLoadMetrics.diskReads, 0, "a stitch just saved is already in memory")
+        XCTAssertEqual(StitchLoadMetrics.diskReads, 1, "the overlay reads the sidecar once")
+        XCTAssertFalse(StitchLoadMetrics.lastReadWasMainThread)
 
         let cold = HistoryStore(directory: directory, limit: 10)
         StitchLoadMetrics.reset()
@@ -536,6 +538,67 @@ final class ScrollStitcherTests: XCTestCase {
         XCTAssertFalse(StitchLoadMetrics.lastReadWasMainThread)
     }
 
+    @MainActor
+    func testPruneAndDeleteReleaseTheStitchCache() throws {
+        var stitcher = ScrollStitcher()
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.viewport(scroll: 0)), .seeded)
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.viewport(scroll: 15)), .appended(15))
+        let assembly = stitcher.takeAssembly()
+        let image = try XCTUnwrap(assembly.flattenedIfResolved()?.cgImage())
+
+        let prunedDir = FileManager.default.temporaryDirectory.appendingPathComponent("PrettyShotTests-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: prunedDir) }
+        let pruned = HistoryStore(directory: prunedDir, limit: 1)
+        let first = try pruned.add(image: image, scale: 2, mode: .scrolling)
+        try pruned.saveStitch(assembly, for: first)
+        XCTAssertNotNil(pruned.loadStitch(for: pruned.items[0]))
+        XCTAssertNotNil(pruned.cachedStitch(for: first))
+        _ = try pruned.add(image: image, scale: 2, mode: .scrolling)
+        XCTAssertNil(pruned.cachedStitch(for: first), "pruning a history item must drop its decoded stitch")
+
+        let deletedDir = FileManager.default.temporaryDirectory.appendingPathComponent("PrettyShotTests-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: deletedDir) }
+        let deleted = HistoryStore(directory: deletedDir, limit: 4)
+        let kept = try deleted.add(image: image, scale: 2, mode: .scrolling)
+        try deleted.saveStitch(assembly, for: kept)
+        XCTAssertNotNil(deleted.loadStitch(for: deleted.items[0]))
+        deleted.delete(deleted.items[0])
+        XCTAssertNil(deleted.cachedStitch(for: kept), "deleting a history item must drop its decoded stitch")
+    }
+
+    @MainActor
+    func testInFlightStitchReadDoesNotRepopulateDeletedCache() async throws {
+        var stitcher = ScrollStitcher()
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.viewport(scroll: 0)), .seeded)
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.viewport(scroll: 15)), .appended(15))
+        let assembly = stitcher.takeAssembly()
+        let image = try XCTUnwrap(assembly.flattenedIfResolved()?.cgImage())
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("PrettyShotTests-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = HistoryStore(directory: directory, limit: 4)
+        let item = try store.add(image: image, scale: 2, mode: .scrolling)
+        try store.saveStitch(assembly, for: item)
+
+        let gate = DispatchSemaphore(value: 0)
+        let slot = StitchLoadSlot()
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            StitchLoadMetrics.setBeforeRead {
+                StitchLoadMetrics.setBeforeRead(nil)
+                cont.resume()
+                gate.wait()
+            }
+            slot.task = Task { @MainActor in
+                await store.loadStitchForOverlay(item)
+            }
+        }
+        store.delete(item)
+        gate.signal()
+        let loaded = await slot.task?.value
+        XCTAssertNil(loaded)
+        XCTAssertNil(store.cachedStitch(for: item), "a read that finishes after delete must not cache the stitch")
+        StitchLoadMetrics.reset()
+    }
+
     func testSeamLoupeIsFullResolutionAndTracksOverlap() throws {
         var stitcher = ScrollStitcher()
         XCTAssertEqual(stitcher.ingest(ScrollFixtures.page(scroll: 0, slot: 0)), .seeded)
@@ -547,6 +610,10 @@ final class ScrollStitcherTests: XCTestCase {
         XCTAssertLessThanOrEqual(first.height, 72 + 36)
         XCTAssertNotEqual(first.pixels, second.pixels)
     }
+}
+
+private final class StitchLoadSlot: @unchecked Sendable {
+    var task: Task<ScrollAssembly?, Never>?
 }
 
 private enum ScrollFixtures {

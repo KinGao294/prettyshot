@@ -108,10 +108,19 @@ final class HistoryStore: ObservableObject {
     let directory: URL
     private let limit: Int
     private let thumbnails = NSCache<NSString, NSImage>()
-    /// Assemblies already in memory. The completion overlay reads this instead of the sidecar.
-    private var stitchCache: [UUID: ScrollAssembly] = [:]
+    /// At most one decoded stitch. A second load replaces it; delete, prune, and save drop it.
+    private var stitchCache: CachedStitch?
     /// One in-flight disk read per item, shared by concurrent overlay loads.
     private var stitchLoads: [UUID: Task<ScrollAssembly?, Never>] = [:]
+    /// Bumped when an id is deleted or pruned so a read that is already running cannot cache it again.
+    private var stitchEpoch: [UUID: Int] = [:]
+    private var stitchLoadToken: [UUID: UUID] = [:]
+
+    private struct CachedStitch {
+        var id: UUID
+        var assembly: ScrollAssembly
+        var epoch: Int
+    }
 
     nonisolated static var defaultDirectory: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -171,9 +180,7 @@ final class HistoryStore: ObservableObject {
         try? FileManager.default.removeItem(at: url(for: item))
         try? FileManager.default.removeItem(at: stitchDirectory(for: item))
         thumbnails.removeObject(forKey: item.id.uuidString as NSString)
-        stitchCache[item.id] = nil
-        stitchLoads[item.id]?.cancel()
-        stitchLoads[item.id] = nil
+        dropStitchMemory(id: item.id)
         items.removeAll { $0.id == item.id }
         persist()
     }
@@ -182,11 +189,13 @@ final class HistoryStore: ObservableObject {
         for item in items {
             try? FileManager.default.removeItem(at: url(for: item))
             try? FileManager.default.removeItem(at: stitchDirectory(for: item))
+            dropStitchMemory(id: item.id)
         }
         thumbnails.removeAllObjects()
-        stitchCache.removeAll()
+        stitchCache = nil
         stitchLoads.values.forEach { $0.cancel() }
         stitchLoads.removeAll()
+        stitchLoadToken.removeAll()
         items.removeAll()
         persist()
     }
@@ -208,38 +217,72 @@ final class HistoryStore: ObservableObject {
         items[index].hasStickyRestore = assembly.dedupeStickyBars
             && assembly.hasStickyRepeats
             && assembly.pendingSticky?.isUnresolved != true
-        stitchCache[item.id] = assembly
+        // The sidecar is on disk. Keeping the pixels here would pin every long capture until quit.
+        dropStitchMemory(id: item.id)
         thumbnails.removeObject(forKey: item.id.uuidString as NSString)
         persist()
     }
 
     func cachedStitch(for item: HistoryItem) -> ScrollAssembly? {
-        stitchCache[item.id]
+        guard let stitchCache, stitchCache.id == item.id else { return nil }
+        return stitchCache.assembly
     }
 
     /// Loads a previously saved assembly. Returns nil when this item has no sidecar.
     func loadStitch(for item: HistoryItem) -> ScrollAssembly? {
-        if let cached = stitchCache[item.id] { return cached }
+        let epoch = stitchEpoch[item.id] ?? 0
+        if let stitchCache, stitchCache.id == item.id, stitchCache.epoch == epoch {
+            return stitchCache.assembly
+        }
         guard let assembly = StitchArchive.load(from: stitchDirectory(for: item)) else { return nil }
-        stitchCache[item.id] = assembly
-        return assembly
+        rememberStitch(assembly, id: item.id, epoch: epoch)
+        return stitchEpoch[item.id] ?? 0 == epoch ? assembly : nil
     }
 
-    /// One disk read, off the main thread. Concurrent callers share the same task and the cache.
+    /// One disk read, off the main thread. Concurrent callers share the same task.
+    /// The decoded assembly is cached only while this id is still the newest one and has not been deleted.
     func loadStitchForOverlay(_ item: HistoryItem) async -> ScrollAssembly? {
-        if let cached = stitchCache[item.id] { return cached }
-        if let existing = stitchLoads[item.id] {
-            return await existing.value
+        let id = item.id
+        let epoch = stitchEpoch[id] ?? 0
+        if let stitchCache, stitchCache.id == id, stitchCache.epoch == epoch {
+            return stitchCache.assembly
+        }
+        if let existing = stitchLoads[id] {
+            let assembly = await existing.value
+            guard stitchEpoch[id] ?? 0 == epoch else { return nil }
+            return assembly
         }
         let folder = stitchDirectory(for: item)
+        let token = UUID()
         let task = Task.detached(priority: .userInitiated) { () -> ScrollAssembly? in
             StitchArchive.load(from: folder)
         }
-        stitchLoads[item.id] = task
+        stitchLoads[id] = task
+        stitchLoadToken[id] = token
         let assembly = await task.value
-        stitchLoads[item.id] = nil
-        if let assembly { stitchCache[item.id] = assembly }
+        if stitchLoadToken[id] == token {
+            stitchLoads[id] = nil
+            stitchLoadToken[id] = nil
+        }
+        guard stitchEpoch[id] ?? 0 == epoch else { return nil }
+        if let assembly {
+            rememberStitch(assembly, id: id, epoch: epoch)
+        }
         return assembly
+    }
+
+    /// Forgets a decoded stitch and invalidates any read of this id that has not finished yet.
+    private func dropStitchMemory(id: UUID) {
+        stitchEpoch[id, default: 0] += 1
+        if stitchCache?.id == id { stitchCache = nil }
+        stitchLoads[id]?.cancel()
+        stitchLoads[id] = nil
+        stitchLoadToken[id] = nil
+    }
+
+    private func rememberStitch(_ assembly: ScrollAssembly, id: UUID, epoch: Int) {
+        guard stitchEpoch[id] ?? 0 == epoch else { return }
+        stitchCache = CachedStitch(id: id, assembly: assembly, epoch: epoch)
     }
 
     func thumbnail(for item: HistoryItem, maxPixelSize: Int = 480) async -> NSImage? {
@@ -280,6 +323,7 @@ final class HistoryStore: ObservableObject {
         for item in items[limit...] {
             try? FileManager.default.removeItem(at: url(for: item))
             try? FileManager.default.removeItem(at: stitchDirectory(for: item))
+            dropStitchMemory(id: item.id)
         }
         items.removeSubrange(limit...)
     }
@@ -303,14 +347,29 @@ enum StitchLoadMetrics {
         return readOnMain
     }
 
+    /// Test hook. Runs on the reader thread before the sidecar is decoded, so a delete can land mid-read.
+    private static var beforeRead: (() -> Void)?
+
+    static func setBeforeRead(_ hook: (() -> Void)?) {
+        lock.lock()
+        beforeRead = hook
+        lock.unlock()
+    }
+
     static func reset() {
         lock.lock()
         reads = 0
         readOnMain = false
+        beforeRead = nil
         lock.unlock()
     }
 
     static func record(onMain: Bool) {
+        let hook: (() -> Void)?
+        lock.lock()
+        hook = beforeRead
+        lock.unlock()
+        hook?()
         lock.lock()
         reads += 1
         readOnMain = onMain
@@ -401,10 +460,10 @@ private enum StitchArchive {
     }
 
     static func load(from folder: URL) -> ScrollAssembly? {
+        StitchLoadMetrics.record(onMain: Thread.isMainThread)
         let manifestURL = folder.appendingPathComponent("manifest.json")
         guard let data = try? Data(contentsOf: manifestURL),
               let manifest = try? decode(data) else { return nil }
-        StitchLoadMetrics.record(onMain: Thread.isMainThread)
         return try? read(manifest, from: folder)
     }
 

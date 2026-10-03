@@ -741,6 +741,10 @@ public struct ScrollStitcher {
     private var lockedFooter: Int?
     private var pendingSticky: PendingStickyConfirmation?
     private var stickyRepeats: [StickyRepeat] = []
+    /// One shared copy of the sticky bars for the open run. Each seam records these images
+    /// instead of cropping a fresh header and footer on every frame.
+    private var pinnedHeader: RGBAImage?
+    private var pinnedFooter: RGBAImage?
 
     public init(options: Options = Options()) {
         self.options = options
@@ -884,12 +888,15 @@ public struct ScrollStitcher {
 
         // Split only once the new strip is known to fit, so a rejected frame cannot slice the seed.
         splitSeedIfNeeded(headerH: headerH, footerH: footerH)
-        let repeatHeader = canvasHeader > 0
-            ? canvas.crop(rows: 0..<canvasHeader)
-            : RGBAImage(width: next.width, height: 0, pixels: [])
-        let repeatFooter = canvasFooter > 0
-            ? canvas.crop(rows: (canvas.height - canvasFooter)..<canvas.height)
-            : RGBAImage(width: next.width, height: 0, pixels: [])
+        if canvasHeader > 0, pinnedHeader == nil {
+            pinnedHeader = canvas.crop(rows: 0..<canvasHeader)
+        }
+        if canvasFooter > 0, pinnedFooter == nil {
+            pinnedFooter = canvas.crop(rows: (canvas.height - canvasFooter)..<canvas.height)
+        }
+        let emptyBar = RGBAImage(width: next.width, height: 0, pixels: [])
+        let repeatHeader = canvasHeader > 0 ? (pinnedHeader ?? emptyBar) : emptyBar
+        let repeatFooter = canvasFooter > 0 ? (pinnedFooter ?? emptyBar) : emptyBar
 
         let fitted: RGBAImage
         let clipped: Bool
@@ -925,10 +932,11 @@ public struct ScrollStitcher {
                 canvas.overwriteRows((canvas.height - canvasFooter)..<canvas.height, with: newFooter)
             } else {
                 if canvasFooter > 0 {
-                    canvas = canvas.crop(rows: 0..<(canvas.height - canvasFooter))
+                    canvas.removeLastRows(canvasFooter)
                 }
                 canvas.insertRows(newFooter, at: canvas.height)
                 canvasFooter = newFooter.height
+                pinnedFooter = newFooter
             }
         }
         canvasIsSeed = false
@@ -961,6 +969,8 @@ public struct ScrollStitcher {
         open = true
         confidentYs = []
         stickyRepeats = []
+        pinnedHeader = nil
+        pinnedFooter = nil
         // An uncertain sticky run stays one confirmation. Clearing the lock here made every
         // following frame look uncertain again and open another seam.
         if savedPending != nil {
@@ -988,6 +998,8 @@ public struct ScrollStitcher {
         lockedFooter = nil
         confidentYs = []
         stickyRepeats = []
+        pinnedHeader = nil
+        pinnedFooter = nil
     }
 
     private mutating func splitSeedIfNeeded(headerH: Int, footerH: Int) {

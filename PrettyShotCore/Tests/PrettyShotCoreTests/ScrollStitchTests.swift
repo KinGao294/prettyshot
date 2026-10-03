@@ -204,23 +204,172 @@ final class ScrollStitchTests: XCTestCase {
             XCTAssertEqual(rows, shift, "step \(step)")
         }
 
+        let measured = try stopPeak(of: &stitcher, ledger: ledger)
+        let imageBytes = measured.imageBytes
+        // Estimate only: a815b78 kept three full buffers alive together. Not measured on that revision.
+        let before = imageBytes * 3
+        print("AC-L19 scroll-down peak bytes before≈\(before) (estimate, 3x full image, not measured) after=\(measured.peak) (measured) imageBytes=\(imageBytes) height=\(measured.height) cg=\(measured.cgWidth)x\(measured.cgHeight)")
+
+        XCTAssertEqual(measured.width, width)
+        XCTAssertEqual(measured.height, target)
+        XCTAssertEqual(measured.cgWidth, width)
+        XCTAssertEqual(measured.cgHeight, target)
+        XCTAssertLessThan(measured.peak, imageBytes * 2, "stop path still retains a second full-image copy")
+        XCTAssertLessThan(measured.peak, before)
+    }
+
+    func testStickyHeaderFooterStopPeakStaysUnderTwoImages() throws {
+        let width = 1440
+        let viewport = 60
+        let header = 10
+        let footer = 8
+        let shift = 20
+        let target = 20_000
+        var options = ScrollStitcher.Options()
+        options.maxHeight = target
+        options.maxPixels = width * target
+        let ledger = AllocationLedger()
+        PixelMetrics.threadLedger = ledger
+        defer { PixelMetrics.threadLedger = nil }
+
+        var stitcher = ScrollStitcher(options: options)
+        let steps = (target - viewport) / shift
+        XCTAssertEqual(stitcher.ingest(stickyFrame(origin: 0, width: width, height: viewport, header: header, footer: footer)), .seeded)
+        for step in 1...steps {
+            let outcome = stitcher.ingest(stickyFrame(origin: step * shift, width: width, height: viewport, header: header, footer: footer))
+            guard case .appended(let rows) = outcome else {
+                XCTFail("sticky step \(step) expected append, got \(outcome)")
+                return
+            }
+            XCTAssertEqual(rows, shift, "sticky step \(step)")
+        }
+        let measured = try stopPeak(of: &stitcher, ledger: ledger)
+        reportPeak("sticky-bars", measured: measured)
+        XCTAssertEqual(measured.height, target)
+        XCTAssertLessThan(measured.peak, measured.imageBytes * 2)
+    }
+
+    func testScrollUpStopPeakStaysUnderTwoImages() throws {
+        let width = 1440
+        let viewport = 80
+        let shift = 40
+        let target = 20_000
+        var options = ScrollStitcher.Options()
+        options.maxHeight = target
+        options.maxPixels = width * target
+        let ledger = AllocationLedger()
+        PixelMetrics.threadLedger = ledger
+        defer { PixelMetrics.threadLedger = nil }
+
+        var stitcher = ScrollStitcher(options: options)
+        let steps = (target - viewport) / shift
+        XCTAssertEqual(stitcher.ingest(CoreScrollFixtures.uniqueFrame(origin: steps * shift, width: width, height: viewport)), .seeded)
+        for step in 1...steps {
+            let origin = (steps - step) * shift
+            let outcome = stitcher.ingest(CoreScrollFixtures.uniqueFrame(origin: origin, width: width, height: viewport))
+            guard case .prepended(let rows) = outcome else {
+                XCTFail("scroll-up step \(step) expected prepend, got \(outcome)")
+                return
+            }
+            XCTAssertEqual(rows, shift, "scroll-up step \(step)")
+        }
+        let measured = try stopPeak(of: &stitcher, ledger: ledger)
+        reportPeak("scroll-up", measured: measured)
+        XCTAssertEqual(measured.height, target)
+        XCTAssertLessThan(measured.peak, measured.imageBytes * 2)
+    }
+
+    /// 2 px per frame with a sticky header and footer. 1 px is below the confident-bar threshold.
+    func testSlowStickyScrollStopPeakStaysUnderTwoImages() throws {
+        let width = 1440
+        let viewport = 60
+        let header = 10
+        let footer = 8
+        let shift = 2
+        let target = 20_000
+        var options = ScrollStitcher.Options()
+        options.maxHeight = target
+        options.maxPixels = width * target
+        let ledger = AllocationLedger()
+        PixelMetrics.threadLedger = ledger
+        defer { PixelMetrics.threadLedger = nil }
+
+        var stitcher = ScrollStitcher(options: options)
+        let steps = (target - viewport) / shift
+        XCTAssertEqual(stitcher.ingest(stickyFrame(origin: 0, width: width, height: viewport, header: header, footer: footer)), .seeded)
+        for step in 1...steps {
+            let outcome = stitcher.ingest(stickyFrame(origin: step * shift, width: width, height: viewport, header: header, footer: footer))
+            guard case .appended(let rows) = outcome else {
+                XCTFail("slow step \(step) expected append, got \(outcome)")
+                return
+            }
+            XCTAssertEqual(rows, shift, "slow step \(step)")
+        }
+        let measured = try stopPeak(of: &stitcher, ledger: ledger)
+        reportPeak("slow-scroll", measured: measured)
+        XCTAssertEqual(measured.height, target)
+        XCTAssertLessThan(measured.peak, measured.imageBytes * 2)
+    }
+
+    private struct StopMeasurement {
+        var peak: Int
+        var imageBytes: Int
+        var width: Int
+        var height: Int
+        var cgWidth: Int
+        var cgHeight: Int
+    }
+
+    private func stopPeak(of stitcher: inout ScrollStitcher, ledger: AllocationLedger) throws -> StopMeasurement {
         ledger.rebasePeak()
         let assembly = stitcher.takeAssembly()
         let stitched = try XCTUnwrap(assembly.flattenedIfResolved())
         let cg = try XCTUnwrap(stitched.cgImage())
-        let stopPeak = ledger.peakBytes
-        let imageBytes = stitched.width * stitched.height * 4
-        // a815b78 stop path kept three full buffers: parts while joining, the joined segment while
-        // exportChunks joined again, and `Data(pixels)` for the CGImage provider.
-        let before = imageBytes * 3
-        print("AC-L19 peak bytes before≈\(before) after=\(stopPeak) imageBytes=\(imageBytes) height=\(stitched.height) cg=\(cg.width)x\(cg.height)")
+        return StopMeasurement(
+            peak: ledger.peakBytes,
+            imageBytes: stitched.width * stitched.height * 4,
+            width: stitched.width,
+            height: stitched.height,
+            cgWidth: cg.width,
+            cgHeight: cg.height
+        )
+    }
 
-        XCTAssertEqual(stitched.width, width)
-        XCTAssertEqual(stitched.height, target)
-        XCTAssertEqual(cg.width, width)
-        XCTAssertEqual(cg.height, target)
-        XCTAssertLessThan(stopPeak, imageBytes * 2, "stop path still retains a second full-image copy")
-        XCTAssertLessThan(stopPeak, before)
+    private func reportPeak(_ scenario: String, measured: StopMeasurement) {
+        let before = measured.imageBytes * 3
+        print("AC-L19 \(scenario) peak bytes before≈\(before) (estimate, 3x full image, not measured) after=\(measured.peak) (measured) imageBytes=\(measured.imageBytes) height=\(measured.height) cg=\(measured.cgWidth)x\(measured.cgHeight)")
+        XCTAssertLessThan(measured.peak, before)
+    }
+
+    private func stickyFrame(origin: Int, width: Int, height: Int, header: Int, footer: Int) -> RGBAImage {
+        fastFrame(width: width, height: height) { y in
+            if y < header { return CoreScrollFixtures.color(slot: y) }
+            if y >= height - footer { return CoreScrollFixtures.color(slot: 100 + (y - (height - footer))) }
+            return CoreScrollFixtures.color(slot: CoreScrollFixtures.contentSlot + origin + (y - header))
+        }
+    }
+
+    /// Fills each row by doubling a 4-byte pixel so a 20,000 px capture stays practical in Debug.
+    private func fastFrame(width: Int, height: Int, rowColor: (Int) -> [UInt8]) -> RGBAImage {
+        var pixels = [UInt8](repeating: 255, count: width * height * 4)
+        pixels.withUnsafeMutableBytes { raw in
+            guard let base = raw.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return }
+            for y in 0..<height {
+                let rgb = rowColor(y)
+                let dest = base.advanced(by: y * width * 4)
+                dest[0] = rgb[0]
+                dest[1] = rgb[1]
+                dest[2] = rgb[2]
+                dest[3] = 255
+                var filled = 1
+                while filled < width {
+                    let count = min(filled, width - filled)
+                    dest.advanced(by: filled * 4).update(from: dest, count: count * 4)
+                    filled += count
+                }
+            }
+        }
+        return RGBAImage(width: width, height: height, pixels: pixels)
     }
 
     private func wideAssembly(width: Int, height: Int) -> ScrollAssembly {
