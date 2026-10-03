@@ -13,10 +13,14 @@ import PrettyShotCore
 /// 4. decodes one full-size image, bakes redaction into it, and draws the beautified result
 ///
 /// Export peak is five RGBA buffers at once: the source, the redacted copy, the beautify canvas,
-/// the shadow transparency layer, and one extra canvas-sized buffer. The canvas is the laid-out
-/// size after padding, not the source. About 40MB is left for the process itself. There is no tiled
-/// render in M3. A 12MP image's five buffers are about 240MB, so that image is handed to the app.
-/// Editing keeps the file URL plus one preview. Nothing is exported at preview size.
+/// the shadow transparency layer, and one extra canvas-sized buffer, plus `renderMarginBytes`.
+/// The canvas is the laid-out size after padding, not the source. About 40MB is left for the process
+/// itself. There is no tiled render in M3. A 12MP image's five buffers are about 240MB, so that image
+/// is handed to the app. Editing keeps the file URL plus one preview. Nothing is exported at preview size.
+///
+/// The 1320×2868 sample's delta omitted the source that was already resident. Putting that copy back
+/// makes the peak about 94.3MB, while five buffers alone are 84.5MB. The 12MB margin is that gap,
+/// kept visible for (36).
 enum ExtensionMemoryBudget {
     static let limitBytes = 120 * 1024 * 1024
     /// Left unused so the process, ImageIO, and the shadow layer's allocator overhead still fit.
@@ -25,6 +29,8 @@ enum ExtensionMemoryBudget {
     static let previewMaxLongSide = 1280
     /// Source + redacted + canvas + shadow layer + one extra canvas buffer.
     static let fullSizeCopiesWhileExporting = 5
+    /// Bytes the five-buffer total misses. See the type comment. Visible for (36).
+    static let renderMarginBytes = 12 * 1024 * 1024
     static let forbiddenSimultaneousFullSizeCopies = 3
 
     enum Plan: Equatable {
@@ -55,7 +61,7 @@ enum ExtensionMemoryBudget {
     /// Bytes for the buffers that are alive together during a shadowed, redacted export.
     /// Canvas and the shadow layer use the output size; pass the source size when the canvas is not known yet.
     static func exportPeakBytes(sourcePixels: Int, canvasPixels: Int) -> Int {
-        rgbaBytes(pixels: sourcePixels, copies: 2) + rgbaBytes(pixels: canvasPixels, copies: 3)
+        rgbaBytes(pixels: sourcePixels, copies: 2) + rgbaBytes(pixels: canvasPixels, copies: 3) + renderMarginBytes
     }
 
     /// Full export after the preview is released. Byte estimate uses the five-buffer peak.

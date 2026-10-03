@@ -43,6 +43,7 @@ struct AppRootView: View {
                             onReadd: beginReadd
                         )
                             .navigationBarHidden(true)
+                            .task(id: editor.toastTitle) { await dismissReaddToastIfNeeded() }
                     case .order:
                         orderScreen
                     case .stitch:
@@ -53,9 +54,11 @@ struct AppRootView: View {
                             onExportSegments: saveSegments,
                             missingLine: missingOrdinals.isEmpty ? nil : IOSCopy.missingBanner(missingOrdinals),
                             missingOrdinals: missingOrdinals,
-                            onReadd: beginReadd
+                            onReadd: beginReadd,
+                            readdToastTitle: editor.toastDetail == nil ? editor.toastTitle : nil
                         )
                             .navigationBarHidden(true)
+                            .task(id: editor.toastTitle) { await dismissReaddToastIfNeeded() }
                     case .error:
                         openFailedPage
                     }
@@ -189,6 +192,12 @@ struct AppRootView: View {
             .disabled(ordered.count < 2)
             .padding(.horizontal, 16)
         }
+        .overlay(alignment: .top) {
+            if ReaddToast.draws(on: .order), editor.toastDetail == nil, let title = editor.toastTitle {
+                SuccessToastBanner(title: title)
+            }
+        }
+        .task(id: editor.toastTitle) { await dismissReaddToastIfNeeded() }
         .navigationTitle(IOSCopy.stitchCardTitle)
     }
 
@@ -372,6 +381,14 @@ struct AppRootView: View {
         refreshPending()
     }
 
+    private func dismissReaddToastIfNeeded() async {
+        guard editor.toastTitle != nil, editor.toastDetail == nil else { return }
+        let title = editor.toastTitle
+        try? await Task.sleep(nanoseconds: UInt64(ReaddToast.dismissAfter * 1_000_000_000))
+        guard editor.toastTitle == title else { return }
+        editor.expireToast(after: ReaddToast.dismissAfter)
+    }
+
     private func beginReadd(_ ordinal: Int) {
         readdOrdinal = ordinal
         showReaddPicker = true
@@ -405,13 +422,11 @@ struct AppRootView: View {
         }
         let total = max(expectedTotal, ordered.count)
         missingOrdinals = step.session.ordinals
+        readdItem = nil
         if missingOrdinals.isEmpty {
-            editor.showToast(IOSCopy.addedBack(ordinal: ordinal, total: total), detail: IOSCopy.inAppSavedDetail)
+            editor.showReaddToast(IOSCopy.addedBack(ordinal: ordinal, total: total))
         } else {
-            editor.showToast(
-                IOSCopy.addedBackStillMissing(ordinal: ordinal, stillMissing: missingOrdinals.count),
-                detail: IOSCopy.inAppSavedDetail
-            )
+            editor.showReaddToast(IOSCopy.addedBackStillMissing(ordinal: ordinal, stillMissing: missingOrdinals.count))
         }
         if route == .stitch || route == .editor {
             let loaded = StitchSourceLoader.load(ordered.map(\.data))

@@ -215,12 +215,21 @@ final class EditorModel: ObservableObject {
         toastDetail = detail
     }
 
-    /// Re-add currently reuses the save subtitle and never clears itself.
+    /// Single-line re-add toast. No subtitle. Success haptic. Cleared by `expireToast`.
     func showReaddToast(_ title: String) {
-        showToast(title, detail: IOSCopy.inAppSavedDetail)
+        toastTitle = title
+        toastDetail = nil
+        lastFeedbackIsSuccess = ReaddToast.playsSuccessHaptic
+        if ReaddToast.playsSuccessHaptic {
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+        }
     }
 
-    func expireToast(after elapsed: TimeInterval) {}
+    func expireToast(after elapsed: TimeInterval) {
+        guard toastDetail == nil, ReaddToast.dismissAfter > 0, elapsed + 0.000_1 >= ReaddToast.dismissAfter else { return }
+        toastTitle = nil
+        toastDetail = nil
+    }
 
     private func applySize(_ size: (width: Int, height: Int)?) {
         if let size {

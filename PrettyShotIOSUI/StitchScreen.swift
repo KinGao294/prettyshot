@@ -118,6 +118,7 @@ struct StitchScreen: View {
     var missingLine: String?
     var missingOrdinals: [Int] = []
     var onReadd: (Int) -> Void = { _ in }
+    var readdToastTitle: String? = nil
 
     var body: some View {
         VStack(spacing: 0) {
@@ -198,6 +199,11 @@ struct StitchScreen: View {
             .background(IOSTheme.paper)
         }
         .background(IOSTheme.paper)
+        .overlay(alignment: .top) {
+            if ReaddToast.draws(on: .stitch), let readdToastTitle {
+                SuccessToastBanner(title: readdToastTitle)
+            }
+        }
         .sheet(isPresented: $model.showChoices) { choiceSheet }
         .sheet(isPresented: $model.showSticky) { stickySheet }
         .sheet(isPresented: $model.showOverLimit) { overLimitSheet }

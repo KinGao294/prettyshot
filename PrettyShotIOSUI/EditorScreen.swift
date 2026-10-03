@@ -210,17 +210,21 @@ struct EditorScreen: View {
     @ViewBuilder
     private var toast: some View {
         if let title = model.toastTitle {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.system(size: 15, weight: .semibold))
-                if let detail = model.toastDetail {
-                    Text(detail).font(.system(size: 12))
+            if model.toastDetail == nil, ReaddToast.draws(on: .editor) {
+                SuccessToastBanner(title: title)
+            } else {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).font(.system(size: 15, weight: .semibold))
+                    if let detail = model.toastDetail {
+                        Text(detail).font(.system(size: 12))
+                    }
                 }
+                .foregroundStyle(Color(hex: 0xF5F2EC))
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .background(Color(hex: 0x1C1C1E).opacity(0.88), in: Capsule())
+                .padding(.top, 70)
             }
-            .foregroundStyle(Color(hex: 0xF5F2EC))
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            .background(Color(hex: 0x1C1C1E).opacity(0.88), in: Capsule())
-            .padding(.top, 70)
         }
     }
 
@@ -259,5 +263,36 @@ struct EditorScreen: View {
                     break
                 }
             }
+    }
+}
+
+/// Generic success toast: 70pt under the Dynamic Island, centered, dark blur capsule, Mint check, title only.
+struct SuccessToastBanner: View {
+    var title: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if ReaddToast.showsMintCheck {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(Color(hex: 0x7EB8A8))
+            }
+            Text(title)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(Color(hex: 0xF5F2EC))
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background {
+            if ReaddToast.usesDarkBlur {
+                ZStack {
+                    Capsule().fill(.ultraThinMaterial)
+                    Capsule().fill(Color(hex: 0x1C1C1E).opacity(0.72))
+                }
+            } else {
+                Capsule().fill(Color(hex: 0x1C1C1E).opacity(0.88))
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.top, ReaddToast.topOffset)
     }
 }

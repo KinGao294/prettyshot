@@ -217,14 +217,15 @@ enum PendingShareResume {
     }
 
     /// 1-based positions of image files across every share. `pending` must already use global missing ordinals
-    /// (the list `pendingTickets()` returns). PDFs occupy a slot but are not emitted.
+    /// (the list `pendingTickets()` returns). PDF tickets are not in the list and do not shift later cards.
     static func globalFileOrdinals(_ pending: [HandoffTicket]) -> [Int] {
         var offset = 0
         var ordinals: [Int] = []
         for ticket in ordered(pending) {
+            if ticket.kind == .pdf { continue }
             let span = ticket.fileNames.count + ticket.missingShots.count
             let localMissing = Set(ticket.missingShots.map { $0.ordinal - offset })
-            if ticket.kind != .pdf, span > 0 {
+            if span > 0 {
                 for position in 1...span where !localMissing.contains(position) {
                     ordinals.append(offset + position)
                 }
@@ -235,11 +236,16 @@ enum PendingShareResume {
     }
 
     /// Missing ordinals stored on disk are local to each share. Readers see one continuous list.
+    /// A PDF share does not move the next image's ordinal.
     static func withGlobalMissingOrdinals(_ tickets: [HandoffTicket]) -> [HandoffTicket] {
         var offset = 0
         var result: [HandoffTicket] = []
         for ticket in tickets {
             var copy = ticket
+            if ticket.kind == .pdf {
+                result.append(copy)
+                continue
+            }
             copy.missingShots = ticket.missingShots.map { MissingShot(ordinal: $0.ordinal + offset) }
             result.append(copy)
             offset += ticket.fileNames.count + ticket.missingShots.count
@@ -259,7 +265,7 @@ enum ReceiptConfirmation {
                 data.append(try Data(contentsOf: url))
             }
         }
-        for ticket in ordered {
+        for ticket in ordered where ticket.kind != .pdf {
             do {
                 try store.confirmReceipt(ticketID: ticket.id)
             } catch {

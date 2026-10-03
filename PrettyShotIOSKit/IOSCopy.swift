@@ -292,9 +292,10 @@ enum IOSCopy {
     }
 
     static func handoffBannerDetail(for pending: [HandoffTicket]) -> String {
-        handoffBannerDetail(
+        let imageShares = pending.filter { $0.kind != .pdf }.count
+        return handoffBannerDetail(
             count: PendingShareResume.stagedFileCount(pending),
-            shares: pending.count
+            shares: imageShares
         )
     }
 
@@ -343,15 +344,15 @@ enum ReaddSurface: Equatable {
 }
 
 enum ReaddToast {
-    /// EditorScreen's capsule sits 70pt down. The other screens do not draw it.
+    /// 70pt below the Dynamic Island, centered.
     static let topOffset: CGFloat = 70
-    /// Nothing schedules a dismiss today.
-    static let dismissAfter: TimeInterval = 0
-    static let showsMintCheck = false
-    static let usesDarkBlur = false
-    static let playsSuccessHaptic = false
-    /// The re-add call site passes the in-app save line as the subtitle.
-    static var subtitle: String? { IOSCopy.inAppSavedDetail }
+    /// Generic success toast. Inside 1.6–1.8s.
+    static let dismissAfter: TimeInterval = 1.7
+    static let showsMintCheck = true
+    static let usesDarkBlur = true
+    static let playsSuccessHaptic = true
+    /// Single-line title. The in-app save line is not this toast's subtitle.
+    static var subtitle: String? { nil }
 
     static func surfaceAfterReadd(from surface: ReaddSurface) -> ReaddSurface {
         switch surface {
@@ -362,13 +363,17 @@ enum ReaddToast {
         }
     }
 
-    /// Only the editor overlay reads `toastTitle`.
+    /// The screen the user is on after re-adding draws the toast. Editor does too,
+    /// so a re-add that stays put is still visible, and a dismissed toast is gone.
     static func draws(on surface: ReaddSurface) -> Bool {
-        surface == .editor
+        switch surface {
+        case .editor, .order, .stitch:
+            return true
+        }
     }
 }
 
-/// Frame 11 cancel. The sheet writes padding back through `Int`, so 37.4 becomes 37.
+/// Frame 11 cancel closes the sheet and leaves every edit as it was.
 enum Frame11Cancel {
     static func preserved(
         padding: Double,
@@ -376,6 +381,6 @@ enum Frame11Cancel {
         redactionCount: Int,
         removeStatusBar: Bool
     ) -> (padding: Double, arrowCount: Int, redactionCount: Int, removeStatusBar: Bool) {
-        (Double(Int(padding.rounded())), arrowCount, redactionCount, removeStatusBar)
+        (padding, arrowCount, redactionCount, removeStatusBar)
     }
 }
