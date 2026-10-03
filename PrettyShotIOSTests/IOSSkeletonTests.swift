@@ -496,7 +496,9 @@ final class ShareAcceptanceTests: XCTestCase {
         let height = 40
         let data = try patternedPNG(width: width, height: height, directory: tmp).png
         let stitched = StitchSourceLoader.images(from: [data])
-        XCTAssertEqual(stitched.map { ($0.width, $0.height) }, [(width, height)])
+        XCTAssertEqual(stitched.count, 1)
+        XCTAssertEqual(stitched.first?.width, width)
+        XCTAssertEqual(stitched.first?.height, height)
 
         let full = try XCTUnwrap(ImagePrep.fullImage(data))
         XCTAssertEqual(full.width, width)
