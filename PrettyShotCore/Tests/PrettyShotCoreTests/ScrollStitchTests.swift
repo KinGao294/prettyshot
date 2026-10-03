@@ -861,6 +861,42 @@ final class ScrollStitchTests: XCTestCase {
         XCTAssertEqual(assembly.previewStackHeight(), 38)
     }
 
+    /// Four identical distinctive rows sit on both sides of a confident seam.
+    /// 4b2745d's matchingBlock returns k=4 (available is 8, so the 9-row escape does not apply).
+    /// The block continues into itself, so neither ingest nor re-detect may flag it.
+    func testContinuingIdenticalRowsAcrossTheSeamAreNotCandidates() {
+        var stitcher = ScrollStitcher()
+        XCTAssertEqual(stitcher.ingest(Self.continuingBandFrame(scroll: 0)), .seeded)
+        XCTAssertEqual(stitcher.ingest(Self.continuingBandFrame(scroll: 8)), .appended(8))
+        var assembly = stitcher.takeAssembly()
+        XCTAssertEqual(assembly.segments.count, 1)
+        XCTAssertEqual(assembly.confidentSeamCount, 1)
+        XCTAssertTrue(assembly.duplicateCandidates.isEmpty)
+        XCTAssertFalse(assembly.needsReview)
+        XCTAssertEqual(assembly.previewPrimaryTitle, "下一步 · 美化 →")
+        XCTAssertEqual(assembly.flattenedIfResolved()?.height, 40)
+
+        assembly.completeManualAlignment()
+        XCTAssertTrue(assembly.duplicateCandidates.isEmpty)
+        XCTAssertFalse(assembly.needsReview)
+        XCTAssertEqual(assembly.previewPrimaryTitle, "下一步 · 美化 →")
+    }
+
+    /// ABABABAB across the seam. The longest match is k=8, which tiles with period 2.
+    /// Falling through to k=2 would still flag a candidate; the whole match has to be dropped.
+    func testPeriodicRunAcrossTheSeamIsNotACandidate() {
+        var stitcher = ScrollStitcher()
+        XCTAssertEqual(stitcher.ingest(Self.alternatingRunFrame(scroll: 0)), .seeded)
+        XCTAssertEqual(stitcher.ingest(Self.alternatingRunFrame(scroll: 16)), .appended(16))
+        var assembly = stitcher.takeAssembly()
+        XCTAssertEqual(assembly.segments.count, 1)
+        XCTAssertEqual(assembly.confidentSeamCount, 1)
+        XCTAssertTrue(assembly.duplicateCandidates.isEmpty)
+        XCTAssertEqual(assembly.flattenedIfResolved()?.height, 56)
+        assembly.completeManualAlignment()
+        XCTAssertTrue(assembly.duplicateCandidates.isEmpty)
+    }
+
     private static func rowHits(_ image: RGBAImage, rgb: [UInt8]) -> Int {
         var hits = 0
         for y in 0..<image.height where CoreScrollFixtures.row(image, y) == rgb {
@@ -911,6 +947,57 @@ final class ScrollStitchTests: XCTestCase {
                 pixels[i] = rgb[0]
                 pixels[i + 1] = rgb[1]
                 pixels[i + 2] = rgb[2]
+            }
+        }
+        return RGBAImage(width: width, height: height, pixels: pixels)
+    }
+
+    /// Page rows 28..<36 are one distinctive icon-and-white row, repeated. Everything else is unique.
+    private static func continuingBandFrame(scroll: Int, height: Int = 32) -> RGBAImage {
+        let width = CoreScrollFixtures.width
+        let icon = CoreScrollFixtures.color(slot: 7)
+        var pixels = [UInt8](repeating: 255, count: width * height * 4)
+        for y in 0..<height {
+            let page = scroll + y
+            let inBand = page >= 28 && page < 36
+            for x in 0..<width {
+                let rgb: [UInt8]
+                if inBand, x < 10 {
+                    rgb = icon
+                } else if inBand {
+                    rgb = [255, 255, 255]
+                } else {
+                    rgb = CoreScrollFixtures.color(slot: page + 30)
+                }
+                let index = (y * width + x) * 4
+                pixels[index] = rgb[0]
+                pixels[index + 1] = rgb[1]
+                pixels[index + 2] = rgb[2]
+                pixels[index + 3] = 255
+            }
+        }
+        return RGBAImage(width: width, height: height, pixels: pixels)
+    }
+
+    /// Pages 32..<48 alternate two colors. Scroll 0 then 16 puts ABABABAB on both sides of the seam,
+    /// while each frame's last rows stay unique so the run is not a sticky footer.
+    private static func alternatingRunFrame(scroll: Int, height: Int = 40) -> RGBAImage {
+        let width = CoreScrollFixtures.width
+        var pixels = [UInt8](repeating: 255, count: width * height * 4)
+        for y in 0..<height {
+            let page = scroll + y
+            let rgb: [UInt8]
+            if page >= 32, page < 48 {
+                rgb = CoreScrollFixtures.color(slot: page % 2 == 0 ? 11 : 13)
+            } else {
+                rgb = CoreScrollFixtures.color(slot: page + 50)
+            }
+            for x in 0..<width {
+                let index = (y * width + x) * 4
+                pixels[index] = rgb[0]
+                pixels[index + 1] = rgb[1]
+                pixels[index + 2] = rgb[2]
+                pixels[index + 3] = 255
             }
         }
         return RGBAImage(width: width, height: height, pixels: pixels)
