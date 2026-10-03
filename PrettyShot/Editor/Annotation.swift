@@ -1,4 +1,5 @@
 import AppKit
+import PrettyShotCore
 import SwiftUI
 
 struct RGBAColor: Codable, Hashable {
@@ -204,4 +205,18 @@ struct Annotation: Identifiable, Equatable {
         let t = max(0, min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / lengthSquared))
         return hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy))
     }
+}
+
+extension Annotation: Redactable {
+    var redactionKind: RedactionKind? {
+        switch kind {
+        case .pixelate: return .pixelate
+        case .blur: return .blur
+        default: return nil
+        }
+    }
+
+    var redactionRect: CGRect { rect }
+
+    var isMeaningfulRedaction: Bool { isMeaningful }
 }

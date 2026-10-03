@@ -1,3 +1,4 @@
+import PrettyShotCore
 import SwiftUI
 
 struct EditorActions {

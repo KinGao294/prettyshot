@@ -1,4 +1,5 @@
 import AppKit
+import PrettyShotCore
 import SwiftUI
 
 /// Live canvas. Draws through `Renderer.draw` (same code as export) scaled to fit, and maps

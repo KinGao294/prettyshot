@@ -6,6 +6,9 @@ options:
   deploymentTarget:
     macOS: "14.0"
   developmentLanguage: en
+packages:
+  PrettyShotCore:
+    path: PrettyShotCore
 settings:
   base:
     SWIFT_VERSION: "5.0"
@@ -29,6 +32,9 @@ targets:
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         ENABLE_HARDENED_RUNTIME: YES
         COMBINE_HIDPI_IMAGES: YES
+    dependencies:
+      - package: PrettyShotCore
+        product: PrettyShotCore
   PrettyShotTests:
     type: bundle.unit-test
     platform: macOS
@@ -36,6 +42,8 @@ targets:
       - path: PrettyShotTests
     dependencies:
       - target: PrettyShot
+      - package: PrettyShotCore
+        product: PrettyShotCore
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.prettyshot.PrettyShotTests

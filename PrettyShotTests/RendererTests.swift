@@ -1,3 +1,4 @@
+import PrettyShotCore
 import XCTest
 @testable import PrettyShot
 
@@ -71,4 +72,57 @@ final class RendererTests: XCTestCase {
         let outside = [TestImages.pixel(redacted, x: 160, y: 50)[0], TestImages.pixel(redacted, x: 161, y: 50)[0]]
         XCTAssertGreaterThan(abs(Int(outside[0]) - Int(outside[1])), 200)
     }
+
+    func testFacadeMatchesSharedCompositorPixels() {
+        let image = TestImages.make(width: 80, height: 40, striped: true)
+        let cases: [(String, RenderInput)] = [
+            ("pastel", input(image, background: .default, scale: 2)),
+            ("plain", input(image, background: BackgroundStyle(presetKey: nil, padding: 28, radius: 12, shadow: 48), scale: 1)),
+            ("crop", input(image, crop: CGRect(x: 10, y: 4, width: 40, height: 20), background: BackgroundStyle(presetKey: "paper-mist", padding: 16, radius: 8, shadow: 20), scale: 2)),
+            ("preview-size", {
+                var rendered = input(image, background: BackgroundStyle(presetKey: "night-ink", padding: 12, radius: 0, shadow: 0), scale: 1)
+                rendered.baseSize = CGSize(width: 160, height: 80)
+                return rendered
+            }()),
+        ]
+        for (name, rendered) in cases {
+            let viaApp = Renderer.render(rendered)
+            let viaCore = BeautifyRenderer.render(rendered.beautifyInput)
+            XCTAssertEqual(viaApp?.width, viaCore?.width, name)
+            XCTAssertEqual(viaApp?.height, viaCore?.height, name)
+            XCTAssertEqual(TestImages.bytes(viaApp!), TestImages.bytes(viaCore!), name)
+        }
+    }
+
+    func testAnnotationRedactionMatchesSharedRegion() {
+        let image = TestImages.make(width: 80, height: 40, striped: true)
+        let annotation = Annotation(kind: .blur, start: CGPoint(x: 8, y: 4), end: CGPoint(x: 48, y: 28),
+                                    color: .bloomRose, lineWidth: 4, fontSize: 22)
+        let viaAnnotation = Redactor.apply([annotation], to: image, scale: 2, geometryScale: 0.5)
+        let viaRegion = Redactor.apply([
+            SharedMark(kind: .blur, rect: annotation.rect, meaningful: true),
+        ], to: image, scale: 2, geometryScale: 0.5)
+        XCTAssertEqual(TestImages.bytes(viaAnnotation), TestImages.bytes(viaRegion))
+    }
+
+    func testFacadeStillDrawsAnnotations() {
+        let image = TestImages.make(width: 40, height: 40)
+        var rendered = input(image, background: BackgroundStyle(presetKey: nil, padding: 0, radius: 0, shadow: 0), scale: 1)
+        rendered.annotations = [
+            Annotation(kind: .arrow, start: CGPoint(x: 2, y: 20), end: CGPoint(x: 38, y: 20),
+                       color: RGBAColor(hex: 0x000000), lineWidth: 4, fontSize: 16),
+        ]
+        let output = Renderer.render(rendered)!
+        XCTAssertLessThan(TestImages.pixel(output, x: 20, y: 20)[0], 80)
+    }
+}
+
+private struct SharedMark: Redactable {
+    var kind: RedactionKind
+    var rect: CGRect
+    var meaningful: Bool
+
+    var redactionKind: RedactionKind? { kind }
+    var redactionRect: CGRect { rect }
+    var isMeaningfulRedaction: Bool { meaningful }
 }

@@ -79,6 +79,27 @@ jobs:
               ;;
           esac
 
+      - name: Test shared module (macOS)
+        run: swift test --package-path PrettyShotCore
+
+      - name: Build shared module (iOS Simulator)
+        working-directory: PrettyShotCore
+        run: |
+          xcodebuild -scheme PrettyShotCore \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath ../build/PrettyShotCore-ios \
+            -skipPackagePluginValidation \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Test Mac app (XCTest)
+        run: |
+          xcodebuild -project PrettyShot.xcodeproj -scheme PrettyShot \
+            -destination 'platform=macOS' \
+            -derivedDataPath build/macos-tests \
+            CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="-" DEVELOPMENT_TEAM="" \
+            test
+
       - name: Package DMG
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
