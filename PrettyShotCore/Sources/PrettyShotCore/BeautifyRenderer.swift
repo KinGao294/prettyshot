@@ -117,24 +117,48 @@ public enum BeautifyRenderer {
     }
 
     /// Renders to a new sRGB bitmap at output resolution.
+    /// The bitmap is the context's own buffer. `makeImage()` would keep a second canvas-sized
+    /// copy alive next to the shadow layer, which pushes a 1179×2556 export over the extension cap.
     public static func render(
         _ input: BeautifyInput,
         drawAnnotations: ((CGContext) -> Void)? = nil
     ) -> CGImage? {
-        let layout = BeautifyRenderer.layout(for: input)
-        let width = Int(layout.canvasSize.width.rounded(.up))
-        let height = Int(layout.canvasSize.height.rounded(.up))
-        let bytesPerRow = (width * 4 + 15) & ~15
-        guard width > 0, height > 0,
-              let space = CGColorSpace(name: CGColorSpace.sRGB),
-              let context = CGContext(
-                  data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: bytesPerRow,
-                  space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-              ) else { return nil }
-        context.translateBy(x: 0, y: CGFloat(height))
-        context.scaleBy(x: 1, y: -1)
-        draw(input, in: context, drawAnnotations: drawAnnotations)
-        return context.makeImage()
+        autoreleasepool {
+            let layout = BeautifyRenderer.layout(for: input)
+            let width = Int(layout.canvasSize.width.rounded(.up))
+            let height = Int(layout.canvasSize.height.rounded(.up))
+            let bytesPerRow = (width * 4 + 15) & ~15
+            let byteCount = bytesPerRow * height
+            guard width > 0, height > 0, byteCount > 0,
+                  let space = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
+            let owned = OwnedBitmap(byteCount: byteCount)
+            guard let context = CGContext(
+                data: owned.baseAddress, width: width, height: height, bitsPerComponent: 8, bytesPerRow: bytesPerRow,
+                space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else { return nil }
+            context.translateBy(x: 0, y: CGFloat(height))
+            context.scaleBy(x: 1, y: -1)
+            draw(input, in: context, drawAnnotations: drawAnnotations)
+            context.flush()
+            let info = Unmanaged.passRetained(owned).toOpaque()
+            guard let provider = CGDataProvider(
+                dataInfo: info, data: owned.baseAddress, size: byteCount,
+                releaseData: { info, _, _ in
+                    guard let info else { return }
+                    Unmanaged<OwnedBitmap>.fromOpaque(info).takeRetainedValue()
+                }
+            ) else {
+                Unmanaged<OwnedBitmap>.fromOpaque(info).takeRetainedValue()
+                return nil
+            }
+            return CGImage(
+                width: width, height: height,
+                bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: bytesPerRow,
+                space: space,
+                bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent
+            )
+        }
     }
 
     /// Draws a CGImage into a y-down context without flipping it upside down.
@@ -183,5 +207,21 @@ public enum BeautifyRenderer {
         let deviceScale = max(hypot(t.c, t.d), 0.0001)
         let down: CGFloat = t.d < 0 ? -1 : 1
         return (CGSize(width: 0, height: down * amount * 0.25 * deviceScale), amount * 0.6 * deviceScale)
+    }
+}
+
+/// Backing store for a rendered bitmap. Freed when the CGImage provider releases it.
+private final class OwnedBitmap {
+    let baseAddress: UnsafeMutableRawPointer
+    let byteCount: Int
+
+    init(byteCount: Int) {
+        self.byteCount = byteCount
+        baseAddress = UnsafeMutableRawPointer.allocate(byteCount: byteCount, alignment: 16)
+        baseAddress.initializeMemory(as: UInt8.self, repeating: 0, count: byteCount)
+    }
+
+    deinit {
+        baseAddress.deallocate()
     }
 }
