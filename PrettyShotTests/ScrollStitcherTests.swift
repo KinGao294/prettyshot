@@ -373,7 +373,7 @@ final class ScrollStitcherTests: XCTestCase {
         let assembly = stitcher.takeAssembly()
         XCTAssertTrue(assembly.needsReview)
         XCTAssertNil(assembly.flattenedIfResolved())
-        XCTAssertNil(assembly.seams.last?.note)
+        XCTAssertEqual(assembly.seams.last?.note, StitchCopy.reverseSeam)
     }
 
     /// A jump much larger than the previous shift stays a seam, even inside one segment.
@@ -384,7 +384,22 @@ final class ScrollStitcherTests: XCTestCase {
         XCTAssertEqual(stitcher.ingest(ScrollFixtures.aliasPeriod(scroll: 42)), .unmatched)
         let assembly = stitcher.takeAssembly()
         XCTAssertTrue(assembly.needsReview)
-        XCTAssertNil(assembly.seams.last?.note)
+        XCTAssertEqual(assembly.seams.last?.note, StitchCopy.reverseSeam)
+    }
+
+    /// One reverse candidate, and it copies rows already on the page. That opens a seam.
+    func testReverseSingleCandidateFalseMatchOpensSeam() throws {
+        var stitcher = ScrollStitcher()
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.page(scroll: 0, height: 48, slot: 0)), .seeded)
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.page(scroll: 12, height: 48, slot: 0)), .appended(12))
+        let outcome = stitcher.ingest(ScrollFixtures.falseReverse())
+        XCTAssertNotEqual(outcome, .ignored)
+        XCTAssertEqual(outcome, .unmatched)
+        let assembly = stitcher.takeAssembly()
+        XCTAssertTrue(assembly.needsReview)
+        XCTAssertNil(assembly.flattenedIfResolved())
+        XCTAssertEqual(assembly.seams.count, 1)
+        XCTAssertEqual(assembly.seams.last?.note, StitchCopy.reverseSeam)
     }
 
     private func assertDownwardJoin(
@@ -1108,6 +1123,23 @@ private enum ScrollFixtures {
     }
 
     /// Period close to the frame height, so one row votes for both `s` and `s - period`.
+    /// Next downward page, with the previous page's top rows copied into the bottom.
+    /// The copy is the only alignment, and it points backward.
+    static func falseReverse(previousOrigin: Int = 12, height: Int = 48, reverse: Int = 16) -> RGBAImage {
+        var pixels = [UInt8](repeating: 255, count: width * height * 4)
+        for y in 0..<height {
+            let slot = y < reverse ? previousOrigin + 12 + y : previousOrigin + (y - reverse)
+            let rgb = color(slot: slot)
+            for x in 0..<width {
+                let i = (y * width + x) * 4
+                pixels[i] = rgb[0]
+                pixels[i + 1] = rgb[1]
+                pixels[i + 2] = rgb[2]
+            }
+        }
+        return RGBAImage(width: width, height: height, pixels: pixels)
+    }
+
     static func aliasPeriod(scroll: Int, height: Int = 90, period: Int = 60) -> RGBAImage {
         fill(width: width, height: height) { y in
             let pageY = y + scroll
