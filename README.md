@@ -75,6 +75,10 @@ xattr -dr com.apple.quarantine /Applications/PrettyShot.app
 
 两种方式都需要：第一次截图前，到「系统设置 › 隐私与安全性 › 录屏与系统录音」里打开 PrettyShot，然后重启应用。之后不用再设置。
 
+## iOS
+
+M3 是 iOS 17 模拟器骨架：主 App `PrettyShotIOS` 和分享扩展 `PrettyShotShare`，共用 `PrettyShotCore`。Xcode scheme 选 **PrettyShotIOS**。免费 Apple ID 的签名、App Group 和「扩展里自己存完」的 fallback 写在 [docs/ios-free-signing.md](docs/ios-free-signing.md)。默认不启用 App Group。重复段识别（设计帧 56–61）等拼接 PR 合入后再接，文案已经按 r5 定好。
+
 ## 协议
 
 [MIT](LICENSE) © 2026 PrettyShot contributors

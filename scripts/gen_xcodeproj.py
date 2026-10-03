@@ -77,18 +77,20 @@ def main():
     app_target = oid("target", APP)
     test_target = oid("target", TESTS)
 
-    phases = {
-        (APP, "sources"): oid("phase", APP, "sources"),
-        (APP, "frameworks"): oid("phase", APP, "frameworks"),
-        (APP, "resources"): oid("phase", APP, "resources"),
-        (TESTS, "sources"): oid("phase", TESTS, "sources"),
-        (TESTS, "frameworks"): oid("phase", TESTS, "frameworks"),
-        (TESTS, "resources"): oid("phase", TESTS, "resources"),
-    }
+    IOS = "PrettyShotIOS"
+    SHARE = "PrettyShotShare"
+    IOS_UI = "PrettyShotIOSUI"
+    IOS_KIT = "PrettyShotIOSKit"
+    IOS_TESTS = "PrettyShotIOSTests"
+    IOS_BUNDLE = "app.prettyshot.ios"
+    phases = {}
+    for target in (APP, TESTS, IOS, SHARE, IOS_TESTS):
+        for kind in ("sources", "frameworks", "resources"):
+            phases[(target, kind)] = oid("phase", target, kind)
     build_files = {k: [] for k in phases}
 
-    def build_group(folder, target):
-        tree = scan(folder, {".swift", ".plist"})
+    def build_group(folder, target, also_compile=()):
+        tree = scan(folder, {".swift", ".plist", ".xcconfig", ".entitlements"})
         group_ids = {}
 
         def ensure_group(rel):
@@ -114,13 +116,16 @@ def main():
                     ".swift": "sourcecode.swift",
                     ".plist": "text.plist.xml",
                     ".xcassets": "folder.assetcatalog",
+                    ".xcconfig": "text.xcconfig",
+                    ".entitlements": "text.plist.entitlements",
                 }[ext]
                 add(fid, {"isa": "PBXFileReference", "lastKnownFileType": ftype, "path": name, "sourceTree": "<group>"})
                 objects[gid]["children"].append(fid)
                 if ext == ".swift":
-                    bid = oid("build", target, path)
-                    add(bid, {"isa": "PBXBuildFile", "fileRef": fid})
-                    build_files[(target, "sources")].append(bid)
+                    for compiled in (target,) + tuple(also_compile):
+                        bid = oid("build", compiled, path)
+                        add(bid, {"isa": "PBXBuildFile", "fileRef": fid})
+                        build_files[(compiled, "sources")].append(bid)
                 elif ext == ".xcassets":
                     bid = oid("build", target, path)
                     add(bid, {"isa": "PBXBuildFile", "fileRef": fid})
@@ -133,13 +138,32 @@ def main():
 
     app_group = build_group(APP, APP)
     test_group = build_group(TESTS, TESTS)
+    ios_group = build_group(IOS, IOS)
+    share_group = build_group(SHARE, SHARE)
+    kit_group = build_group(IOS_KIT, IOS, also_compile=(SHARE,))
+    ui_group = build_group(IOS_UI, IOS, also_compile=(SHARE,))
+    ios_test_group = build_group(IOS_TESTS, IOS_TESTS)
+
+    ios_product = oid("product", IOS)
+    share_product = oid("product", SHARE)
+    ios_test_product = oid("product", IOS_TESTS)
+    ios_target = oid("target", IOS)
+    share_target = oid("target", SHARE)
+    ios_test_target = oid("target", IOS_TESTS)
 
     add(app_product, {"isa": "PBXFileReference", "explicitFileType": "wrapper.application", "includeInIndex": 0,
                       "path": f"{APP}.app", "sourceTree": "BUILT_PRODUCTS_DIR"})
     add(test_product, {"isa": "PBXFileReference", "explicitFileType": "wrapper.cfbundle", "includeInIndex": 0,
                        "path": f"{TESTS}.xctest", "sourceTree": "BUILT_PRODUCTS_DIR"})
-    add(products_group, {"isa": "PBXGroup", "children": [app_product, test_product], "name": "Products",
-                         "sourceTree": "<group>"})
+    add(ios_product, {"isa": "PBXFileReference", "explicitFileType": "wrapper.application", "includeInIndex": 0,
+                      "path": f"{IOS}.app", "sourceTree": "BUILT_PRODUCTS_DIR"})
+    add(share_product, {"isa": "PBXFileReference", "explicitFileType": "wrapper.app-extension", "includeInIndex": 0,
+                        "path": f"{SHARE}.appex", "sourceTree": "BUILT_PRODUCTS_DIR"})
+    add(ios_test_product, {"isa": "PBXFileReference", "explicitFileType": "wrapper.cfbundle", "includeInIndex": 0,
+                           "path": f"{IOS_TESTS}.xctest", "sourceTree": "BUILT_PRODUCTS_DIR"})
+    add(products_group, {"isa": "PBXGroup",
+                         "children": [app_product, test_product, ios_product, share_product, ios_test_product],
+                         "name": "Products", "sourceTree": "<group>"})
 
     doc_files = [f for f in ("README.md", "DEVIATIONS.md", "LICENSE") if os.path.exists(os.path.join(ROOT, f))]
     doc_refs = []
@@ -149,8 +173,9 @@ def main():
         add(fid, {"isa": "PBXFileReference", "lastKnownFileType": ftype, "path": name, "sourceTree": "<group>"})
         doc_refs.append(fid)
 
-    add(main_group, {"isa": "PBXGroup", "children": doc_refs + [app_group, test_group, products_group],
-                     "sourceTree": "<group>"})
+    add(main_group, {"isa": "PBXGroup", "children": doc_refs + [
+        app_group, test_group, kit_group, ui_group, ios_group, share_group, ios_test_group, products_group,
+    ], "sourceTree": "<group>"})
 
     # Local Swift package (macOS + iOS). Static product, so no embed phase.
     package_ref = add(oid("package", "PrettyShotCore"), {
@@ -158,7 +183,7 @@ def main():
         "relativePath": "PrettyShotCore",
     })
     package_deps = {}
-    for target in (APP, TESTS):
+    for target in (APP, TESTS, IOS, SHARE, IOS_TESTS):
         dep = add(oid("pkgproduct", target, "PrettyShotCore"), {
             "isa": "XCSwiftPackageProductDependency",
             "package": package_ref,
@@ -176,6 +201,21 @@ def main():
                "resources": "PBXResourcesBuildPhase"}[kind]
         add(pid, {"isa": isa, "buildActionMask": 2147483647, "files": build_files[(target, kind)],
                   "runOnlyForDeploymentPostprocessing": 0})
+
+    embed_file = add(oid("embed", IOS, SHARE), {
+        "isa": "PBXBuildFile",
+        "fileRef": share_product,
+        "settings": {"ATTRIBUTES": ["RemoveHeadersOnCopy", "CodeSignOnCopy"]},
+    })
+    embed_phase = add(oid("phase", IOS, "embed"), {
+        "isa": "PBXCopyFilesBuildPhase",
+        "buildActionMask": 2147483647,
+        "dstPath": "",
+        "dstSubfolderSpec": 13,
+        "files": [embed_file],
+        "name": "Embed Foundation Extensions",
+        "runOnlyForDeploymentPostprocessing": 0,
+    })
 
     # --- Build configurations -------------------------------------------------
     common = {
@@ -253,11 +293,14 @@ def main():
         "TEST_HOST": f"$(BUILT_PRODUCTS_DIR)/{APP}.app/Contents/MacOS/{APP}",
     })
 
-    def config_list(owner, settings_by_name):
+    def config_list(owner, settings_by_name, base=None):
         ids = []
         for name, settings in settings_by_name:
             cid = oid("config", owner, name)
-            add(cid, {"isa": "XCBuildConfiguration", "buildSettings": dict(sorted(settings.items())), "name": name})
+            body = {"isa": "XCBuildConfiguration", "buildSettings": dict(sorted(settings.items())), "name": name}
+            if base:
+                body["baseConfigurationReference"] = base
+            add(cid, body)
             ids.append(cid)
         lid = oid("configlist", owner)
         add(lid, {"isa": "XCConfigurationList", "buildConfigurations": ids,
@@ -298,6 +341,99 @@ def main():
         "productType": "com.apple.product-type.bundle.unit-test",
     })
 
+    ios_xcconfig = oid("file", os.path.join(IOS, "Handoff.xcconfig"))
+    share_xcconfig = oid("file", os.path.join(SHARE, "Handoff.xcconfig"))
+    ios_signing = {
+        "CODE_SIGN_STYLE": "Automatic",
+        "CURRENT_PROJECT_VERSION": "1",
+        "DEVELOPMENT_TEAM": "",
+        "IPHONEOS_DEPLOYMENT_TARGET": "17.0",
+        "MARKETING_VERSION": MARKETING_VERSION,
+        "SDKROOT": "iphoneos",
+        "SUPPORTED_PLATFORMS": "iphoneos iphonesimulator",
+        "SUPPORTS_MACCATALYST": "NO",
+        "SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD": "NO",
+        "SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD": "NO",
+        "SWIFT_ACTIVE_COMPILATION_CONDITIONS": "$(inherited) $(PRETTYSHOT_HANDOFF_CONDITION)",
+        "SWIFT_VERSION": "5.0",
+        "TARGETED_DEVICE_FAMILY": "1",
+    }
+    ios_app_settings = dict(ios_signing, **{
+        "ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME": "AccentColor",
+        "GENERATE_INFOPLIST_FILE": "NO",
+        "INFOPLIST_FILE": f"{IOS}/Info.plist",
+        "LD_RUNPATH_SEARCH_PATHS": ["$(inherited)", "@executable_path/Frameworks"],
+        "PRODUCT_BUNDLE_IDENTIFIER": IOS_BUNDLE,
+        "PRODUCT_NAME": "$(TARGET_NAME)",
+        "SWIFT_EMIT_LOC_STRINGS": "YES",
+    })
+    share_settings = dict(ios_signing, **{
+        "GENERATE_INFOPLIST_FILE": "NO",
+        "INFOPLIST_FILE": f"{SHARE}/Info.plist",
+        "LD_RUNPATH_SEARCH_PATHS": ["$(inherited)", "@executable_path/Frameworks", "@executable_path/../../Frameworks"],
+        "PRODUCT_BUNDLE_IDENTIFIER": f"{IOS_BUNDLE}.share",
+        "PRODUCT_NAME": "$(TARGET_NAME)",
+        "SKIP_INSTALL": "YES",
+        "SWIFT_EMIT_LOC_STRINGS": "YES",
+    })
+    ios_test_settings = dict(ios_signing, **{
+        "BUNDLE_LOADER": "$(TEST_HOST)",
+        "GENERATE_INFOPLIST_FILE": "YES",
+        "PRODUCT_BUNDLE_IDENTIFIER": f"{IOS_BUNDLE}.tests",
+        "PRODUCT_NAME": "$(TARGET_NAME)",
+        "SWIFT_EMIT_LOC_STRINGS": "NO",
+        "TEST_HOST": f"$(BUILT_PRODUCTS_DIR)/{IOS}.app/{IOS}",
+    })
+    ios_configs = config_list(IOS, [("Debug", ios_app_settings), ("Release", ios_app_settings)], base=ios_xcconfig)
+    share_configs = config_list(SHARE, [("Debug", share_settings), ("Release", share_settings)], base=share_xcconfig)
+    ios_test_configs = config_list(IOS_TESTS, [("Debug", ios_test_settings), ("Release", ios_test_settings)], base=ios_xcconfig)
+
+    share_proxy = add(oid("proxy", SHARE), {"isa": "PBXContainerItemProxy", "containerPortal": project_id, "proxyType": 1,
+                                            "remoteGlobalIDString": share_target, "remoteInfo": SHARE})
+    share_dependency = add(oid("dependency", IOS, SHARE), {"isa": "PBXTargetDependency", "target": share_target,
+                                                          "targetProxy": share_proxy})
+    ios_test_proxy = add(oid("proxy", IOS_TESTS), {"isa": "PBXContainerItemProxy", "containerPortal": project_id,
+                                                   "proxyType": 1, "remoteGlobalIDString": ios_target, "remoteInfo": IOS})
+    ios_test_dependency = add(oid("dependency", IOS_TESTS), {"isa": "PBXTargetDependency", "target": ios_target,
+                                                            "targetProxy": ios_test_proxy})
+
+    add(share_target, {
+        "isa": "PBXNativeTarget",
+        "buildConfigurationList": share_configs,
+        "buildPhases": [phases[(SHARE, "sources")], phases[(SHARE, "frameworks")], phases[(SHARE, "resources")]],
+        "buildRules": [],
+        "dependencies": [],
+        "name": SHARE,
+        "packageProductDependencies": [package_deps[SHARE]],
+        "productName": SHARE,
+        "productReference": share_product,
+        "productType": "com.apple.product-type.app-extension",
+    })
+    add(ios_target, {
+        "isa": "PBXNativeTarget",
+        "buildConfigurationList": ios_configs,
+        "buildPhases": [phases[(IOS, "sources")], phases[(IOS, "frameworks")], phases[(IOS, "resources")], embed_phase],
+        "buildRules": [],
+        "dependencies": [share_dependency],
+        "name": IOS,
+        "packageProductDependencies": [package_deps[IOS]],
+        "productName": IOS,
+        "productReference": ios_product,
+        "productType": "com.apple.product-type.application",
+    })
+    add(ios_test_target, {
+        "isa": "PBXNativeTarget",
+        "buildConfigurationList": ios_test_configs,
+        "buildPhases": [phases[(IOS_TESTS, "sources")], phases[(IOS_TESTS, "frameworks")], phases[(IOS_TESTS, "resources")]],
+        "buildRules": [],
+        "dependencies": [ios_test_dependency],
+        "name": IOS_TESTS,
+        "packageProductDependencies": [package_deps[IOS_TESTS]],
+        "productName": IOS_TESTS,
+        "productReference": ios_test_product,
+        "productType": "com.apple.product-type.bundle.unit-test",
+    })
+
     add(project_id, {
         "isa": "PBXProject",
         "attributes": {
@@ -307,6 +443,9 @@ def main():
             "TargetAttributes": {
                 app_target: {"CreatedOnToolsVersion": "15.4"},
                 test_target: {"CreatedOnToolsVersion": "15.4", "TestTargetID": app_target},
+                ios_target: {"CreatedOnToolsVersion": "15.4"},
+                share_target: {"CreatedOnToolsVersion": "15.4"},
+                ios_test_target: {"CreatedOnToolsVersion": "15.4", "TestTargetID": ios_target},
             },
         },
         "buildConfigurationList": project_configs,
@@ -319,11 +458,11 @@ def main():
         "productRefGroup": products_group,
         "projectDirPath": "",
         "projectRoot": "",
-        "targets": [app_target, test_target],
+        "targets": [app_target, test_target, ios_target, share_target, ios_test_target],
     })
 
     # --- Serialize --------------------------------------------------------------
-    order = ["PBXBuildFile", "PBXContainerItemProxy", "PBXFileReference", "PBXFrameworksBuildPhase", "PBXGroup",
+    order = ["PBXBuildFile", "PBXContainerItemProxy", "PBXCopyFilesBuildPhase", "PBXFileReference", "PBXFrameworksBuildPhase", "PBXGroup",
              "PBXNativeTarget", "PBXProject", "PBXResourcesBuildPhase", "PBXSourcesBuildPhase",
              "PBXTargetDependency", "XCBuildConfiguration", "XCConfigurationList",
              "XCLocalSwiftPackageReference", "XCSwiftPackageProductDependency"]
@@ -388,9 +527,49 @@ def main():
     with open(os.path.join(proj_dir, "xcshareddata", "xcschemes", f"{APP}.xcscheme"), "w") as f:
         f.write(scheme)
 
+    ios_scheme = f'''<?xml version="1.0" encoding="UTF-8"?>
+<Scheme LastUpgradeVersion = "1540" version = "1.7">
+   <BuildAction parallelizeBuildables = "YES" buildImplicitDependencies = "YES">
+      <BuildActionEntries>
+         <BuildActionEntry buildForTesting = "YES" buildForRunning = "YES" buildForProfiling = "YES" buildForArchiving = "YES" buildForAnalyzing = "YES">
+            {ref(ios_target, IOS, IOS + ".app")}
+         </BuildActionEntry>
+         <BuildActionEntry buildForTesting = "YES" buildForRunning = "YES" buildForProfiling = "NO" buildForArchiving = "NO" buildForAnalyzing = "YES">
+            {ref(share_target, SHARE, SHARE + ".appex")}
+         </BuildActionEntry>
+         <BuildActionEntry buildForTesting = "YES" buildForRunning = "NO" buildForProfiling = "NO" buildForArchiving = "NO" buildForAnalyzing = "YES">
+            {ref(ios_test_target, IOS_TESTS, IOS_TESTS + ".xctest")}
+         </BuildActionEntry>
+      </BuildActionEntries>
+   </BuildAction>
+   <TestAction buildConfiguration = "Debug" selectedDebuggerIdentifier = "Xcode.DebuggerFoundation.Debugger.LLDB" selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB" shouldUseLaunchSchemeArgsEnv = "YES">
+      <Testables>
+         <TestableReference skipped = "NO" parallelizable = "NO">
+            {ref(ios_test_target, IOS_TESTS, IOS_TESTS + ".xctest")}
+         </TestableReference>
+      </Testables>
+   </TestAction>
+   <LaunchAction buildConfiguration = "Debug" selectedDebuggerIdentifier = "Xcode.DebuggerFoundation.Debugger.LLDB" selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB" launchStyle = "0" useCustomWorkingDirectory = "NO" ignoresPersistentStateOnLaunch = "NO" debugDocumentVersioning = "YES" debugServiceExtension = "internal" allowLocationSimulation = "YES">
+      <BuildableProductRunnable runnableDebuggingMode = "0">
+         {ref(ios_target, IOS, IOS + ".app")}
+      </BuildableProductRunnable>
+   </LaunchAction>
+   <ProfileAction buildConfiguration = "Release" shouldUseLaunchSchemeArgsEnv = "YES" savedToolIdentifier = "" useCustomWorkingDirectory = "NO" debugDocumentVersioning = "YES">
+      <BuildableProductRunnable runnableDebuggingMode = "0">
+         {ref(ios_target, IOS, IOS + ".app")}
+      </BuildableProductRunnable>
+   </ProfileAction>
+   <AnalyzeAction buildConfiguration = "Debug"></AnalyzeAction>
+   <ArchiveAction buildConfiguration = "Release" revealArchiveInOrganizer = "YES"></ArchiveAction>
+</Scheme>
+'''
+    with open(os.path.join(proj_dir, "xcshareddata", "xcschemes", f"{IOS}.xcscheme"), "w") as f:
+        f.write(ios_scheme)
+
     n_app = len(build_files[(APP, "sources")])
     n_test = len(build_files[(TESTS, "sources")])
-    print(f"Generated {APP}.xcodeproj — {n_app} app sources, {n_test} test sources, {len(objects)} objects")
+    n_ios = len(build_files[(IOS, "sources")])
+    print(f"Generated {APP}.xcodeproj — {n_app} app sources, {n_test} test sources, {n_ios} iOS sources, {len(objects)} objects")
 
 
 if __name__ == "__main__":

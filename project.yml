@@ -5,6 +5,7 @@ options:
   bundleIdPrefix: app.prettyshot
   deploymentTarget:
     macOS: "14.0"
+    iOS: "17.0"
   developmentLanguage: en
 packages:
   PrettyShotCore:
@@ -50,6 +51,82 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         TEST_HOST: $(BUILT_PRODUCTS_DIR)/PrettyShot.app/Contents/MacOS/PrettyShot
         BUNDLE_LOADER: $(TEST_HOST)
+  PrettyShotIOS:
+    type: application
+    platform: iOS
+    sources:
+      - path: PrettyShotIOS
+      - path: PrettyShotIOSKit
+      - path: PrettyShotIOSUI
+    configFiles:
+      Debug: PrettyShotIOS/Handoff.xcconfig
+      Release: PrettyShotIOS/Handoff.xcconfig
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.prettyshot.ios
+        INFOPLIST_FILE: PrettyShotIOS/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+        TARGETED_DEVICE_FAMILY: "1"
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: ""
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) $(PRETTYSHOT_HANDOFF_CONDITION)"
+        MARKETING_VERSION: 0.1.0
+    dependencies:
+      - target: PrettyShotShare
+        embed: true
+      - package: PrettyShotCore
+        product: PrettyShotCore
+  PrettyShotShare:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: PrettyShotShare
+      - path: PrettyShotIOSKit
+      - path: PrettyShotIOSUI
+    configFiles:
+      Debug: PrettyShotShare/Handoff.xcconfig
+      Release: PrettyShotShare/Handoff.xcconfig
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.prettyshot.ios.share
+        INFOPLIST_FILE: PrettyShotShare/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+        TARGETED_DEVICE_FAMILY: "1"
+        SKIP_INSTALL: YES
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: ""
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) $(PRETTYSHOT_HANDOFF_CONDITION)"
+        MARKETING_VERSION: 0.1.0
+    dependencies:
+      - package: PrettyShotCore
+        product: PrettyShotCore
+  PrettyShotIOSTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: PrettyShotIOSTests
+    configFiles:
+      Debug: PrettyShotIOS/Handoff.xcconfig
+      Release: PrettyShotIOS/Handoff.xcconfig
+    dependencies:
+      - target: PrettyShotIOS
+      - package: PrettyShotCore
+        product: PrettyShotCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.prettyshot.ios.tests
+        GENERATE_INFOPLIST_FILE: YES
+        IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+        TARGETED_DEVICE_FAMILY: "1"
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: ""
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) $(PRETTYSHOT_HANDOFF_CONDITION)"
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/PrettyShotIOS.app/PrettyShotIOS
+        BUNDLE_LOADER: $(TEST_HOST)
+        MARKETING_VERSION: 0.1.0
 schemes:
   PrettyShot:
     build:
@@ -61,3 +138,14 @@ schemes:
     test:
       config: Debug
       targets: [PrettyShotTests]
+  PrettyShotIOS:
+    build:
+      targets:
+        PrettyShotIOS: all
+        PrettyShotShare: all
+        PrettyShotIOSTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets: [PrettyShotIOSTests]
