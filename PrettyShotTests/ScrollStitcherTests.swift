@@ -267,6 +267,104 @@ final class ScrollStitcherTests: XCTestCase {
         XCTAssertEqual(assembly.flattenedIfResolved()?.height, 46)
     }
 
+    /// A 1 px scroll inside a mostly blank viewport used to be counted as flicker and dropped.
+    func testOnePixelShiftInBlankFrameStitches() throws {
+        try assertDownwardJoin(
+            ScrollFixtures.sparseViewport(scroll: 0, height: 60, contentRows: 10),
+            ScrollFixtures.sparseViewport(scroll: 1, height: 60, contentRows: 10),
+            shift: 1
+        )
+    }
+
+    /// A 3 px scroll in the same kind of frame must append those rows, not return `.ignored`.
+    func testThreePixelShiftInBlankFrameStitches() throws {
+        try assertDownwardJoin(
+            ScrollFixtures.sparseViewport(scroll: 0, height: 80, contentRows: 16),
+            ScrollFixtures.sparseViewport(scroll: 3, height: 80, contentRows: 16),
+            shift: 3
+        )
+    }
+
+    /// A mid-size scroll across blank space is still a real join.
+    func testMidSizeShiftInBlankFrameStitches() throws {
+        try assertDownwardJoin(
+            ScrollFixtures.sparseViewport(scroll: 0, height: 80, contentRows: 20),
+            ScrollFixtures.sparseViewport(scroll: 10, height: 80, contentRows: 20),
+            shift: 10
+        )
+    }
+
+    /// A 2 px scroll under a fixed bar taller than the sticky cap must not be swallowed.
+    func testTwoPixelShiftBehindFixedBarStitches() throws {
+        try assertDownwardJoin(
+            ScrollFixtures.fixedBarViewport(scroll: 0, height: 80, barRows: 60),
+            ScrollFixtures.fixedBarViewport(scroll: 2, height: 80, barRows: 60),
+            shift: 2
+        )
+    }
+
+    /// A mid-size scroll under that same bar must append, not come back as flicker.
+    func testMidSizeShiftBehindFixedBarStitches() throws {
+        try assertDownwardJoin(
+            ScrollFixtures.fixedBarViewport(scroll: 0, height: 80, barRows: 60),
+            ScrollFixtures.fixedBarViewport(scroll: 12, height: 80, barRows: 60),
+            shift: 12
+        )
+    }
+
+    /// After a segment break the previous direction must not pick an alias on the next run.
+    func testSegmentBreakDoesNotReuseStaleAlias() throws {
+        var stitcher = ScrollStitcher()
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.page(scroll: 0, height: 90, slot: 25)), .seeded)
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.page(scroll: 12, height: 90, slot: 25)), .appended(12))
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.aliasPeriod(scroll: 12)), .unmatched)
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.aliasPeriod(scroll: 42)), .unmatched)
+        let assembly = stitcher.takeAssembly()
+        XCTAssertTrue(assembly.needsReview)
+        XCTAssertNil(assembly.flattenedIfResolved())
+    }
+
+    /// Finalizing the assembly ends the alias memory. The next capture must not reuse it.
+    func testFinalizeDropsStaleAlias() throws {
+        var stitcher = ScrollStitcher()
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.aliasPeriod(scroll: 0)), .seeded)
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.aliasPeriod(scroll: 12)), .appended(12))
+        _ = stitcher.takeAssembly()
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.aliasPeriod(scroll: 12)), .seeded)
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.aliasPeriod(scroll: 42)), .unmatched)
+    }
+
+    /// `beginStitch()` is its own reset. A later reverse alias must stay a seam.
+    func testBeginStitchDropsStaleAlias() throws {
+        var stitcher = ScrollStitcher()
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.aliasPeriod(scroll: 0)), .seeded)
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.aliasPeriod(scroll: 12)), .appended(12))
+        stitcher.beginStitch()
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.aliasPeriod(scroll: 42)), .unmatched)
+    }
+
+    private func assertDownwardJoin(
+        _ first: RGBAImage,
+        _ second: RGBAImage,
+        shift: Int,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws {
+        var stitcher = ScrollStitcher()
+        XCTAssertEqual(stitcher.ingest(first), .seeded, file: file, line: line)
+        XCTAssertEqual(stitcher.ingest(second), .appended(shift), file: file, line: line)
+        let assembly = stitcher.takeAssembly()
+        XCTAssertFalse(assembly.needsReview, file: file, line: line)
+        let image = try XCTUnwrap(assembly.flattenedIfResolved(), file: file, line: line)
+        XCTAssertEqual(image.height, first.height + shift, file: file, line: line)
+        XCTAssertEqual(
+            ScrollFixtures.row(image, image.height - 1),
+            ScrollFixtures.row(second, second.height - 1),
+            file: file,
+            line: line
+        )
+    }
+
     func testStickyDedupeCanBeRestored() throws {
         var stitcher = ScrollStitcher()
         XCTAssertEqual(stitcher.ingest(ScrollFixtures.viewport(scroll: 0)), .seeded)
@@ -887,6 +985,38 @@ private enum ScrollFixtures {
             }
         }
         return RGBAImage(width: width, height: height, pixels: pixels)
+    }
+
+    /// Mostly blank viewport. A short run of unique rows sits at the bottom and scrolls.
+    static func sparseViewport(scroll: Int, height: Int, contentRows: Int) -> RGBAImage {
+        let start = height - contentRows
+        var pixels = [UInt8](repeating: 255, count: width * height * 4)
+        for y in start..<height {
+            let rgb = color(slot: contentSlot + (y - start) + scroll)
+            for x in 0..<width {
+                let i = (y * width + x) * 4
+                pixels[i] = rgb[0]
+                pixels[i + 1] = rgb[1]
+                pixels[i + 2] = rgb[2]
+            }
+        }
+        return RGBAImage(width: width, height: height, pixels: pixels)
+    }
+
+    /// A stationary top bar taller than the sticky cap, with unique content scrolling under it.
+    static func fixedBarViewport(scroll: Int, height: Int, barRows: Int) -> RGBAImage {
+        fill(width: width, height: height) { y in
+            if y < barRows { return y }
+            return contentSlot + y + scroll
+        }
+    }
+
+    /// Period close to the frame height, so one row votes for both `s` and `s - period`.
+    static func aliasPeriod(scroll: Int, height: Int = 90, period: Int = 60) -> RGBAImage {
+        fill(width: width, height: height) { y in
+            let pageY = y + scroll
+            return (pageY % period + period) % period
+        }
     }
 
     /// Inverts a few rows so the frame is not "unchanged", but most of the picture still matches.

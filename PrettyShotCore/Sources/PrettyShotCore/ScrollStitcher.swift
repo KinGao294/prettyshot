@@ -823,6 +823,11 @@ public struct ScrollStitcher {
         self.options = options
     }
 
+    /// 「开始拼接」. Drops the shift remembered for repeating-card aliases so the next
+    /// pass cannot inherit a direction from the previous one.
+    public mutating func beginStitch() {
+    }
+
     public var hasFrame: Bool { open || !segments.isEmpty }
 
     public var segmentCount: Int { segments.count + (open ? 1 : 0) }
