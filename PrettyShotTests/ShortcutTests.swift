@@ -7,6 +7,7 @@ final class ShortcutTests: XCTestCase {
         XCTAssertEqual(HotkeyAction.captureRegion.defaultShortcut.displayString, "⌥⌘1")
         XCTAssertEqual(HotkeyAction.captureWindow.defaultShortcut.displayString, "⌥⌘2")
         XCTAssertEqual(HotkeyAction.captureFullscreen.defaultShortcut.displayString, "⌥⌘3")
+        XCTAssertEqual(HotkeyAction.captureScrolling.defaultShortcut.displayString, "⌥⌘4")
         XCTAssertEqual(HotkeyAction.openHistory.defaultShortcut.displayString, "⌥⌘H")
         XCTAssertEqual(HotkeyAction.pinLatest.defaultShortcut.displayString, "⌥⌘P")
     }
