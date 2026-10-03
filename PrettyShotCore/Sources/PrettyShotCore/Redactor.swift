@@ -19,7 +19,6 @@ public protocol Redactable {
 /// Bakes pixelate / blur regions into a copy of the source (destructive in the export —
 /// the original pixels under a redaction never reach the clipboard or PNG).
 public enum Redactor {
-    /// Reused so the renderer heap is not allocated again on every bake.
     private static let context = CIContext(options: [.cacheIntermediates: false])
 
     /// `geometryScale` maps annotation geometry (full-size image pixels) onto `image`, which may be a
@@ -69,11 +68,7 @@ public enum Redactor {
                 output = effect.cropped(to: ciRect).composited(over: output)
             }
         }
-        return autoreleasepool {
-            let rendered = context.createCGImage(output, from: extent) ?? image
-            context.clearCaches()
-            return rendered
-        }
+        return context.createCGImage(output, from: extent) ?? image
     }
 
     /// Downscaled copy of `image` for cheap live previews.
