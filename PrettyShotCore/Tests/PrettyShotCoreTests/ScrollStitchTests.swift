@@ -115,6 +115,7 @@ final class ScrollStitchTests: XCTestCase {
         let assembly = stitcher.takeAssembly()
         XCTAssertTrue(assembly.needsReview)
         XCTAssertNil(assembly.flattenedIfResolved())
+        XCTAssertNil(assembly.seams.last?.note)
     }
 
     /// A jump much larger than the previous shift stays a seam, even inside one segment.
@@ -123,7 +124,9 @@ final class ScrollStitchTests: XCTestCase {
         XCTAssertEqual(stitcher.ingest(CoreScrollFixtures.aliasPeriod(scroll: 0)), .seeded)
         XCTAssertEqual(stitcher.ingest(CoreScrollFixtures.aliasPeriod(scroll: 12)), .appended(12))
         XCTAssertEqual(stitcher.ingest(CoreScrollFixtures.aliasPeriod(scroll: 42)), .unmatched)
-        XCTAssertTrue(stitcher.takeAssembly().needsReview)
+        let assembly = stitcher.takeAssembly()
+        XCTAssertTrue(assembly.needsReview)
+        XCTAssertNil(assembly.seams.last?.note)
     }
 
     /// Repeating card chrome used to invent a second shift once the scroll passed one card.
@@ -179,6 +182,7 @@ final class ScrollStitchTests: XCTestCase {
         XCTAssertTrue(assembly.needsReview, file: file, line: line)
         XCTAssertNil(assembly.flattenedIfResolved(), file: file, line: line)
         XCTAssertEqual(assembly.seams.count, 1, file: file, line: line)
+        XCTAssertEqual(assembly.seams.first?.note, StitchCopy.blankSeam, file: file, line: line)
     }
 
     private func assertStitchedRows(

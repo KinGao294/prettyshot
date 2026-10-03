@@ -62,13 +62,16 @@ public struct SeamMark: Identifiable, Equatable {
     /// Index into `ScrollAssembly.seams` when this mark is a boundary between segments.
     public var boundaryIndex: Int?
     public var suggestedOverlap: Int?
+    /// Extra line on the seam card. Blank frames use the designer's wording.
+    public var note: String?
 
-    public init(id: String, state: SeamState, y: Int, boundaryIndex: Int?, suggestedOverlap: Int?) {
+    public init(id: String, state: SeamState, y: Int, boundaryIndex: Int?, suggestedOverlap: Int?, note: String? = nil) {
         self.id = id
         self.state = state
         self.y = y
         self.boundaryIndex = boundaryIndex
         self.suggestedOverlap = suggestedOverlap
+        self.note = note
     }
 }
 
@@ -103,6 +106,8 @@ public struct ScrollSeam: Equatable {
     public var kind: Kind
     /// Best-guess overlap (rows) when `kind` is `.needsAlignment`. Not applied until the user says so.
     public var suggestedOverlap: Int?
+    /// Shown in the seam card when this boundary needs a reason, such as a blank frame.
+    public var note: String?
 
     public enum Kind: Equatable {
         case needsAlignment
@@ -110,9 +115,10 @@ public struct ScrollSeam: Equatable {
         case joinedAsIs
     }
 
-    public init(kind: Kind, suggestedOverlap: Int? = nil) {
+    public init(kind: Kind, suggestedOverlap: Int? = nil, note: String? = nil) {
         self.kind = kind
         self.suggestedOverlap = suggestedOverlap
+        self.note = note
     }
 
     public var state: SeamState {
@@ -582,7 +588,8 @@ public struct ScrollAssembly: Equatable {
                     state: seam.state,
                     y: y,
                     boundaryIndex: segmentIndex,
-                    suggestedOverlap: seam.suggestedOverlap
+                    suggestedOverlap: seam.suggestedOverlap,
+                    note: seam.note
                 ))
                 let color: (UInt8, UInt8, UInt8) = seam.isResolved ? (126, 184, 168) : (232, 160, 168)
                 paintLine(at: y, fullHeight: fullHeight, factor: factor, outW: outW, outH: outH, color: color, into: &pixels)
@@ -1057,7 +1064,8 @@ public struct ScrollStitcher {
         // Don't start another full viewport that would blow the cap, and don't clip it into a fake join.
         if pixelHeight > 0, room < frame.height { return .reachedLimit }
         sealOpenSegment()
-        seams.append(ScrollSeam(kind: .needsAlignment, suggestedOverlap: suggested))
+        let note = RowSamples.blankSeamNote(RowSamples.make(frame, options: options))
+        seams.append(ScrollSeam(kind: .needsAlignment, suggestedOverlap: suggested, note: note))
         let savedHeader = lockedHeader
         let savedFooter = lockedFooter
         let savedPending = pendingSticky
@@ -1268,6 +1276,14 @@ private enum RowSamples {
         return (fallbackHeader, fallbackFooter)
     }
 
+    /// A frame that is mostly blank cannot be placed. The seam card says so.
+    static func blankSeamNote(_ rows: [RowSample]) -> String? {
+        guard !rows.isEmpty else { return nil }
+        let detailed = rows.reduce(0) { $0 + ($1.distinctive ? 1 : 0) }
+        guard detailed * 4 <= rows.count else { return nil }
+        return StitchCopy.blankSeam
+    }
+
     static func isFlicker(_ a: [RowSample], _ b: [RowSample], options: ScrollStitcher.Options) -> Bool {
         let count = min(a.count, b.count)
         guard count > 0 else { return false }
@@ -1397,8 +1413,9 @@ private enum RowSamples {
             let nextY = shift > 0 ? y : y + magnitude
             let prevY = shift > 0 ? y + magnitude : y
             guard nextY < height, prevY < height else { break }
-            // One blank side is the edge of a sparse page, not a failed alignment.
-            if prev[prevY].distinctive && next[nextY].distinctive {
+            // Skipping every blank pair lets a 1 px miss score the same as the true shift.
+            // A blank side still counts, including the edge where new content meets white.
+            if prev[prevY].distinctive || next[nextY].distinctive {
                 sum += distance(prev[prevY], next[nextY])
                 n += 1
             }
@@ -1484,11 +1501,24 @@ private enum RowSamples {
 
     private static func resolveAlias(best: ShiftCluster, rivals: [ShiftCluster], prior: Int) -> Int? {
         let candidates = [best] + rivals
+        // Same-quality motion the other way means the page may have reversed.
+        // Confirming the forward alias would stitch that reverse in the wrong direction.
+        let reversed = candidates.contains { candidate in
+            prior != 0
+                && candidate.shift.signum() != prior.signum()
+                && candidate.score <= best.score
+                && candidate.votes >= best.votes
+        }
+        if reversed { return nil }
         guard let preferred = candidates.min(by: { abs($0.shift - prior) < abs($1.shift - prior) }) else {
             return nil
         }
+        // A rival may stand in for best only when it is not a worse match.
+        if preferred.shift != best.shift {
+            guard preferred.score <= best.score, preferred.votes >= best.votes else { return nil }
+        }
         let sameDirection = preferred.shift.signum() == prior.signum() || prior == 0
-        let closeEnough = abs(preferred.shift - prior) <= max(12, abs(prior) * 3)
+        let closeEnough = abs(preferred.shift - prior) <= max(4, abs(prior) / 4)
         return sameDirection && closeEnough ? preferred.shift : nil
     }
 

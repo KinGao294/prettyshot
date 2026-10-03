@@ -353,6 +353,7 @@ final class ScrollStitcherTests: XCTestCase {
         let assembly = stitcher.takeAssembly()
         XCTAssertTrue(assembly.needsReview)
         XCTAssertNil(assembly.flattenedIfResolved())
+        XCTAssertNil(assembly.seams.last?.note)
     }
 
     /// A jump much larger than the previous shift stays a seam, even inside one segment.
@@ -361,7 +362,9 @@ final class ScrollStitcherTests: XCTestCase {
         XCTAssertEqual(stitcher.ingest(ScrollFixtures.aliasPeriod(scroll: 0)), .seeded)
         XCTAssertEqual(stitcher.ingest(ScrollFixtures.aliasPeriod(scroll: 12)), .appended(12))
         XCTAssertEqual(stitcher.ingest(ScrollFixtures.aliasPeriod(scroll: 42)), .unmatched)
-        XCTAssertTrue(stitcher.takeAssembly().needsReview)
+        let assembly = stitcher.takeAssembly()
+        XCTAssertTrue(assembly.needsReview)
+        XCTAssertNil(assembly.seams.last?.note)
     }
 
     private func assertDownwardJoin(
@@ -402,6 +405,7 @@ final class ScrollStitcherTests: XCTestCase {
         XCTAssertTrue(assembly.needsReview, file: file, line: line)
         XCTAssertNil(assembly.flattenedIfResolved(), file: file, line: line)
         XCTAssertEqual(assembly.seams.count, 1, file: file, line: line)
+        XCTAssertEqual(assembly.seams.first?.note, StitchCopy.blankSeam, file: file, line: line)
     }
 
     private func assertStitchedRows(

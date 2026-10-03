@@ -435,6 +435,12 @@ struct StitchPreviewView: View {
                     .foregroundStyle(Palette.muted)
                 Spacer()
             }
+            if let note = mark.note {
+                Text(note)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Palette.charcoal)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if let index = mark.boundaryIndex, selected, model.assembly.seams.indices.contains(index) {
                 Text("重叠 \(Int(model.overlap.rounded())) px（盖住下一段顶部）· 方向键 ±1 px")
                     .font(.system(size: 11))
