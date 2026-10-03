@@ -305,6 +305,15 @@ public struct ScrollAssembly: Equatable {
         duplicateCandidates[index].choice = last.previous
     }
 
+    /// 「还原」 after 「保留一次」. That candidate is unresolved again, so 「待确认」 rises by one.
+    /// 「都保留」 is not a dedupe, and restoring it does not change the count.
+    public mutating func restoreDedupedDuplicateCandidate(_ id: String) {
+        guard let index = duplicateCandidates.firstIndex(where: { $0.id == id }) else { return }
+        guard duplicateCandidates[index].choice == .keepOnce else { return }
+        duplicateCandidates[index].choice = nil
+        duplicateChoiceUndo.removeAll { $0.id == id }
+    }
+
     /// Unaligned seams, unresolved duplicate-segment candidates, and one uncertain sticky band.
     /// The three counts stay separate. Sticky confirmation is not part of 「待确认」.
     public var reviewRemainder: StitchCopy.Remainder {

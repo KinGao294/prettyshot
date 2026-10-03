@@ -392,6 +392,38 @@ final class ScrollStitchTests: XCTestCase {
         XCTAssertFalse(parts.contains("待确认 0"))
     }
 
+    func testRestoreAfterDedupeReturnsDuplicateCandidateToPendingConfirm() {
+        var assembly = ScrollAssembly(
+            seams: [ScrollSeam(kind: .needsAlignment, suggestedOverlap: 4)],
+            pendingSticky: PendingStickyConfirmation(headerRows: 6, footerRows: 0, seamCount: 1, keepOnce: nil),
+            duplicateCandidates: [
+                DuplicateSegmentCandidate(id: "dup-1"),
+                DuplicateSegmentCandidate(id: "dup-2"),
+            ]
+        )
+        XCTAssertEqual(assembly.pendingDuplicateConfirmCount, 2)
+        XCTAssertEqual(assembly.unalignedSeamCount, 1)
+
+        assembly.resolveDuplicateCandidate("dup-1", choice: .keepOnce)
+        XCTAssertEqual(assembly.pendingDuplicateConfirmCount, 1)
+        assembly.resolveDuplicateCandidate("dup-2", choice: .keepBoth)
+        XCTAssertEqual(assembly.pendingDuplicateConfirmCount, 0)
+
+        assembly.restoreDedupedDuplicateCandidate("dup-1")
+        XCTAssertEqual(assembly.pendingDuplicateConfirmCount, 1)
+        XCTAssertNil(assembly.duplicateCandidates.first { $0.id == "dup-1" }?.choice)
+        XCTAssertEqual(
+            assembly.reviewBottomBar,
+            "⚠ 还有 3 处没处理（待对齐 1 · 待确认 1 · 固定栏待确认 1）。为了不拼错，处理完才能继续——不会静默拼接。"
+        )
+        XCTAssertEqual(assembly.unalignedSeamCount, 1)
+        XCTAssertTrue(assembly.pendingSticky?.isUnresolved == true)
+
+        assembly.restoreDedupedDuplicateCandidate("dup-2")
+        XCTAssertEqual(assembly.pendingDuplicateConfirmCount, 1)
+        XCTAssertEqual(assembly.duplicateCandidates.first { $0.id == "dup-2" }?.choice, .keepBoth)
+    }
+
     private static var threeDuplicateCandidates: [DuplicateSegmentCandidate] {
         (1...3).map { DuplicateSegmentCandidate(id: "dup-\($0)") }
     }

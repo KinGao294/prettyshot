@@ -539,6 +539,29 @@ final class ScrollStitcherTests: XCTestCase {
         XCTAssertFalse(onlyCandidates.canCommit)
     }
 
+    @MainActor
+    func testRestoreAfterDedupeRaisesPendingConfirm() {
+        let model = StitchPreviewModel(
+            assembly: ScrollAssembly(
+                duplicateCandidates: [DuplicateSegmentCandidate(id: "dup-1")]
+            ),
+            notice: nil
+        )
+        XCTAssertEqual(model.assembly.pendingDuplicateConfirmCount, 1)
+        model.resolveDuplicateCandidate("dup-1", choice: .keepOnce)
+        XCTAssertEqual(model.assembly.pendingDuplicateConfirmCount, 0)
+        XCTAssertNil(model.assembly.reviewBottomBar)
+
+        model.restoreDuplicateCandidate("dup-1")
+        XCTAssertEqual(model.assembly.pendingDuplicateConfirmCount, 1)
+        XCTAssertNil(model.assembly.duplicateCandidates.first?.choice)
+        XCTAssertEqual(
+            model.assembly.reviewBottomBar,
+            "⚠ 还有 1 处没处理（待确认 1）。为了不拼错，处理完才能继续——不会静默拼接。"
+        )
+        XCTAssertFalse(model.canCommit)
+    }
+
     func testFrameCopyUsesGroupedNumbersAndOmitsEmptyRemainder() {
         XCTAssertEqual(StitchCopy.grouped(17_436), "17,436")
         XCTAssertEqual(StitchCopy.grouped(16_384), "16,384")
