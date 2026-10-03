@@ -83,13 +83,13 @@
 			isa = PBXBuildFile;
 			fileRef = 8138026CAA5EDBADF3A45420;
 		};
-		7CDB12BEEC4AD598AE65D68E = {
-			isa = PBXBuildFile;
-			fileRef = 36989C1F4340563CDEB96E27;
-		};
 		807F140ED71A2CCD466CFB96 = {
 			isa = PBXBuildFile;
 			fileRef = 670C0A67285F4191A98E7296;
+		};
+		81AA448E16013E443F054C03 = {
+			isa = PBXBuildFile;
+			fileRef = 7F714BFD4A534560D5AB827B;
 		};
 		82D06AA773806FC09C30243B = {
 			isa = PBXBuildFile;
@@ -122,10 +122,6 @@
 		9CE3DC85ED4DF02337E0317A = {
 			isa = PBXBuildFile;
 			fileRef = 6B267F5E1A63342993777D51;
-		};
-		A151D24664793446628F8E74 = {
-			isa = PBXBuildFile;
-			fileRef = 5399D768FBDA5E8BFE0A45EE;
 		};
 		A5B08CA1047B1DBA03DACAC9 = {
 			isa = PBXBuildFile;
@@ -224,12 +220,6 @@
 			path = MenuPopover.swift;
 			sourceTree = "<group>";
 		};
-		36989C1F4340563CDEB96E27 = {
-			isa = PBXFileReference;
-			lastKnownFileType = sourcecode.swift;
-			path = ScrollStitcher.swift;
-			sourceTree = "<group>";
-		};
 		433ECE6F44DF17E1F44B7EE2 = {
 			isa = PBXFileReference;
 			lastKnownFileType = sourcecode.swift;
@@ -240,12 +230,6 @@
 			isa = PBXFileReference;
 			lastKnownFileType = sourcecode.swift;
 			path = RendererTests.swift;
-			sourceTree = "<group>";
-		};
-		5399D768FBDA5E8BFE0A45EE = {
-			isa = PBXFileReference;
-			lastKnownFileType = sourcecode.swift;
-			path = StitchCopy.swift;
 			sourceTree = "<group>";
 		};
 		5C99E4A254D82F4E3EC24FB9 = {
@@ -308,6 +292,12 @@
 			isa = PBXFileReference;
 			lastKnownFileType = sourcecode.swift;
 			path = EditorWindowController.swift;
+			sourceTree = "<group>";
+		};
+		7F714BFD4A534560D5AB827B = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = ScrollCaptureGlue.swift;
 			sourceTree = "<group>";
 		};
 		7FA019032B0F80521E3D396E = {
@@ -643,9 +633,8 @@
 			children = (
 				EC1C2ECD42F69BE4CD43D760,
 				D3EA0EE4DA9657223E56BFD3,
+				7F714BFD4A534560D5AB827B,
 				A489AE02B78633C1EAC0E15F,
-				36989C1F4340563CDEB96E27,
-				5399D768FBDA5E8BFE0A45EE,
 				DF9F3D6B47356B3FC0345BBA,
 				069BF8018D99E7006B7E1809,
 			);
@@ -766,9 +755,8 @@
 				807F140ED71A2CCD466CFB96,
 				4258839F5A29D825AE5B9FAC,
 				24CC7979DC1D6DD301A5CBBB,
-				7CDB12BEEC4AD598AE65D68E,
+				81AA448E16013E443F054C03,
 				C271682049BABF0C24323592,
-				A151D24664793446628F8E74,
 				51FB713B87DE914B2C655C88,
 				9A99753F92E4BEDDE7D15E4C,
 				04BD982B535C5E1D9D1FF200,

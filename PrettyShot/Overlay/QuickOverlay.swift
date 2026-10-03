@@ -1,4 +1,5 @@
 import AppKit
+import PrettyShotCore
 import SwiftUI
 
 struct QuickOverlayActions {

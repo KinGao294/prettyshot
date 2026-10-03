@@ -259,8 +259,26 @@ final class AppCoordinator: ObservableObject {
     // MARK: - Quick Overlay
 
     private func showOverlay(for item: HistoryItem, image: CGImage) {
+        if let assembly = history.cachedStitch(for: item) {
+            presentOverlay(for: item, image: image, assembly: assembly)
+            return
+        }
+        // A stitch sidecar is the only reason to touch disk. Load it once, off the main thread.
+        guard item.hasStickyRestore else {
+            presentOverlay(for: item, image: image, assembly: nil)
+            return
+        }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let assembly = await self.history.loadStitchForOverlay(item)
+            self.presentOverlay(for: item, image: image, assembly: assembly)
+        }
+    }
+
+    private func presentOverlay(for item: HistoryItem, image: CGImage, assembly: ScrollAssembly?) {
         let scale = CGFloat(item.scale)
         let dragURL = dragCopy(of: item) ?? history.url(for: item)
+        let chip = stickyChip(from: assembly)
         overlay.show(
             image: ImageCodec.nsImage(Self.overlayPreview(of: image), scale: scale),
             fileURL: dragURL,
@@ -277,8 +295,8 @@ final class AppCoordinator: ObservableObject {
                 save: { [weak self] in self?.save(image: image) },
                 pin: { [weak self] in self?.pins.pin(image: image, scale: scale) },
                 dismiss: { [weak self] in self?.restoreFocus() },
-                stickyChip: stickyChip(for: item),
-                onStickyChip: stickyChip(for: item) == nil ? nil : { [weak self] in
+                stickyChip: chip,
+                onStickyChip: chip == nil ? nil : { [weak self] in
                     self?.handleStickyChip(for: item, fromOverlay: true)
                 }
             )
@@ -286,8 +304,8 @@ final class AppCoordinator: ObservableObject {
     }
 
     /// Deduped stitch offers restore; a restored stitch offers undo. Nil when this image has no sticky bars.
-    private func stickyChip(for item: HistoryItem) -> OverlayStickyChip? {
-        guard let assembly = history.loadStitch(for: item),
+    private func stickyChip(from assembly: ScrollAssembly?) -> OverlayStickyChip? {
+        guard let assembly,
               assembly.hasStickyRepeats,
               assembly.pendingSticky?.isUnresolved != true else { return nil }
         return assembly.dedupeStickyBars ? .deduped : .restored

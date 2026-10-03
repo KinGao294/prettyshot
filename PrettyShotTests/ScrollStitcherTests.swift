@@ -1,4 +1,5 @@
 import CoreGraphics
+import PrettyShotCore
 import XCTest
 @testable import PrettyShot
 
@@ -498,6 +499,39 @@ final class ScrollStitcherTests: XCTestCase {
             "⚠ 还有 1 处没处理（固定栏待确认 1）。为了不拼错，处理完才能继续——不会静默拼接。"
         )
         XCTAssertNil(StitchCopy.bottomBar(.init()))
+    }
+
+    @MainActor
+    func testOverlayStitchLoadIsSharedOffTheMainThread() async throws {
+        var stitcher = ScrollStitcher()
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.viewport(scroll: 0)), .seeded)
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.viewport(scroll: 15)), .appended(15))
+        let assembly = stitcher.takeAssembly()
+        let deduped = try XCTUnwrap(assembly.flattenedIfResolved())
+        let image = try XCTUnwrap(deduped.cgImage())
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("PrettyShotTests-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = HistoryStore(directory: directory, limit: 10)
+        let item = try store.add(image: image, scale: 2, mode: .scrolling)
+        try store.saveStitch(assembly, for: item)
+
+        StitchLoadMetrics.reset()
+        let warm = await store.loadStitchForOverlay(store.items[0])
+        let warmAgain = await store.loadStitchForOverlay(store.items[0])
+        XCTAssertEqual(warm?.flattenedIfResolved()?.height, deduped.height)
+        XCTAssertEqual(warmAgain?.flattenedIfResolved()?.height, deduped.height)
+        XCTAssertEqual(StitchLoadMetrics.diskReads, 0, "a stitch just saved is already in memory")
+
+        let cold = HistoryStore(directory: directory, limit: 10)
+        StitchLoadMetrics.reset()
+        async let first = cold.loadStitchForOverlay(cold.items[0])
+        async let second = cold.loadStitchForOverlay(cold.items[0])
+        let loaded = try XCTUnwrap(await first)
+        let shared = try XCTUnwrap(await second)
+        XCTAssertEqual(loaded.flattenedIfResolved()?.height, shared.flattenedIfResolved()?.height)
+        XCTAssertEqual(StitchLoadMetrics.diskReads, 1, "concurrent overlay loads must share one disk read")
+        XCTAssertFalse(StitchLoadMetrics.lastReadWasMainThread)
     }
 
     func testSeamLoupeIsFullResolutionAndTracksOverlap() throws {

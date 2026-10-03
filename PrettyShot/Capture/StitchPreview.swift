@@ -1,4 +1,5 @@
 import AppKit
+import PrettyShotCore
 import SwiftUI
 
 /// Shown only when a scrolling capture has a seam that was not safe to join by itself.
@@ -154,6 +155,7 @@ final class StitchPreviewModel: ObservableObject {
             return
         }
         assembly.align(seam: selectedBoundary, overlap: Int(clamped.rounded()))
+        refreshOverLimitMessage()
         refresh()
     }
 
@@ -169,6 +171,7 @@ final class StitchPreviewModel: ObservableObject {
         guard let selectedBoundary else { return }
         assembly.joinAsIs(seam: selectedBoundary)
         overlap = 0
+        refreshOverLimitMessage()
         refresh()
     }
 
@@ -221,6 +224,12 @@ final class StitchPreviewModel: ObservableObject {
             assembly.dedupeStickyBars = true
         }
         refresh()
+    }
+
+    /// The restored height changes once a seam is aligned or stacked. Keep line 1 in step with it.
+    private func refreshOverLimitMessage() {
+        guard restoreLimitMessage != nil else { return }
+        restoreLimitMessage = assembly.overLimitLine()
     }
 
     /// Selects the first seam that still needs alignment, for the over-limit primary action.
@@ -313,7 +322,7 @@ struct StitchPreviewView: View {
                 Text(StitchCopy.overLimitNote)
                     .font(.system(size: 12))
                     .foregroundStyle(Palette.muted)
-                HStack(spacing: 8) {
+                HStack(alignment: .top, spacing: 8) {
                     if prompt.primaryExports {
                         Button(prompt.primaryTitle, action: onExportRestored)
                             .buttonStyle(BloomPrimaryButtonStyle())
@@ -322,18 +331,21 @@ struct StitchPreviewView: View {
                             .buttonStyle(BloomPrimaryButtonStyle())
                     }
                     if !prompt.segmentExportEnabled {
-                        Button(StitchCopy.exportSegments) {}
-                            .buttonStyle(LightButtonStyle())
-                            .disabled(true)
-                            .opacity(0.45)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Button(StitchCopy.exportSegments) {}
+                                .buttonStyle(LightButtonStyle())
+                                .disabled(true)
+                                .opacity(0.45)
+                            if let caption = prompt.segmentExportCaption {
+                                Text(caption)
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(Palette.muted)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
                     }
                     Button(StitchCopy.keepDedupe) { model.keepDedupe() }
                         .buttonStyle(LightButtonStyle())
-                }
-                if let caption = prompt.segmentExportCaption {
-                    Text(caption)
-                        .font(.system(size: 11))
-                        .foregroundStyle(Palette.muted)
                 }
             }
         }
