@@ -5,6 +5,9 @@
          <BuildActionEntry buildForTesting = "YES" buildForRunning = "YES" buildForProfiling = "YES" buildForArchiving = "YES" buildForAnalyzing = "YES">
             <BuildableReference BuildableIdentifier = "primary" BlueprintIdentifier = "AF8C5571E67ED7DA244F9FB3" BuildableName = "PrettyShot.app" BlueprintName = "PrettyShot" ReferencedContainer = "container:PrettyShot.xcodeproj"></BuildableReference>
          </BuildActionEntry>
+         <BuildActionEntry buildForTesting = "YES" buildForRunning = "NO" buildForProfiling = "NO" buildForArchiving = "NO" buildForAnalyzing = "YES">
+            <BuildableReference BuildableIdentifier = "primary" BlueprintIdentifier = "6388C3A9559C7543B8886575" BuildableName = "PrettyShotTests.xctest" BlueprintName = "PrettyShotTests" ReferencedContainer = "container:PrettyShot.xcodeproj"></BuildableReference>
+         </BuildActionEntry>
       </BuildActionEntries>
    </BuildAction>
    <TestAction buildConfiguration = "Debug" selectedDebuggerIdentifier = "Xcode.DebuggerFoundation.Debugger.LLDB" selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB" shouldUseLaunchSchemeArgsEnv = "YES" shouldAutocreateTestPlan = "YES">

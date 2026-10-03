@@ -26,6 +26,12 @@ public struct RenderLayout: Equatable {
     public let imageRect: CGRect
     public let crop: CGRect
 
+    public init(canvasSize: CGSize, imageRect: CGRect, crop: CGRect) {
+        self.canvasSize = canvasSize
+        self.imageRect = imageRect
+        self.crop = crop
+    }
+
     /// Canvas (output pixel) point → image pixel point.
     public func imagePoint(fromCanvas p: CGPoint) -> CGPoint {
         CGPoint(x: p.x - imageRect.minX + crop.minX, y: p.y - imageRect.minY + crop.minY)

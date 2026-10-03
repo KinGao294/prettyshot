@@ -154,11 +154,22 @@ final class RenderingGoldenTests: XCTestCase {
         let files = try FileManager.default.contentsOfDirectory(at: sources, includingPropertiesForKeys: nil)
             .filter { $0.pathExtension == "swift" }
         XCTAssertFalse(files.isEmpty)
-        let banned = ["import AppKit", "import UIKit", "NSFont", "NSColor", "NSImage", "UIImage", "UIColor"]
+        let allowed = [
+            "CoreGraphics",
+            "CoreImage",
+            "CoreImage.CIFilterBuiltins",
+            "Foundation",
+        ]
         for file in files {
             let text = try String(contentsOf: file, encoding: .utf8)
-            for token in banned {
-                XCTAssertFalse(text.contains(token), "\(file.lastPathComponent) contains \(token)")
+            let imports = text.split(whereSeparator: \.isNewline).compactMap { line -> String? in
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                guard trimmed.hasPrefix("import ") else { return nil }
+                return String(trimmed.dropFirst("import ".count)).trimmingCharacters(in: .whitespaces)
+            }
+            XCTAssertFalse(imports.isEmpty, "\(file.lastPathComponent) has no imports")
+            for module in imports {
+                XCTAssertTrue(allowed.contains(module), "\(file.lastPathComponent) imports \(module)")
             }
         }
     }

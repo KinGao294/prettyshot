@@ -92,6 +92,14 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             build
 
+      - name: Test Mac app (XCTest)
+        run: |
+          xcodebuild -project PrettyShot.xcodeproj -scheme PrettyShot \
+            -destination 'platform=macOS' \
+            -derivedDataPath build/macos-tests \
+            CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="-" DEVELOPMENT_TEAM="" \
+            test
+
       - name: Package DMG
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
