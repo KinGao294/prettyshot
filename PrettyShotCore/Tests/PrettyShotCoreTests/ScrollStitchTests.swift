@@ -115,7 +115,7 @@ final class ScrollStitchTests: XCTestCase {
         let assembly = stitcher.takeAssembly()
         XCTAssertTrue(assembly.needsReview)
         XCTAssertNil(assembly.flattenedIfResolved())
-        XCTAssertNil(assembly.seams.last?.note)
+        XCTAssertEqual(assembly.seams.last?.note, StitchCopy.reverseSeam)
     }
 
     /// A jump much larger than the previous shift stays a seam, even inside one segment.
@@ -126,7 +126,7 @@ final class ScrollStitchTests: XCTestCase {
         XCTAssertEqual(stitcher.ingest(CoreScrollFixtures.aliasPeriod(scroll: 42)), .unmatched)
         let assembly = stitcher.takeAssembly()
         XCTAssertTrue(assembly.needsReview)
-        XCTAssertNil(assembly.seams.last?.note)
+        XCTAssertEqual(assembly.seams.last?.note, StitchCopy.reverseSeam)
     }
 
     /// One reverse candidate, and it copies rows already on the page. That opens a seam.
@@ -141,7 +141,7 @@ final class ScrollStitchTests: XCTestCase {
         XCTAssertTrue(assembly.needsReview)
         XCTAssertNil(assembly.flattenedIfResolved())
         XCTAssertEqual(assembly.seams.count, 1)
-        XCTAssertEqual(assembly.seams.last?.note, "这里像是往回滚了，确认一下接在哪")
+        XCTAssertEqual(assembly.seams.last?.note, StitchCopy.reverseSeam)
     }
 
     /// Repeating card chrome used to invent a second shift once the scroll passed one card.

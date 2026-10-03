@@ -373,7 +373,7 @@ final class ScrollStitcherTests: XCTestCase {
         let assembly = stitcher.takeAssembly()
         XCTAssertTrue(assembly.needsReview)
         XCTAssertNil(assembly.flattenedIfResolved())
-        XCTAssertNil(assembly.seams.last?.note)
+        XCTAssertEqual(assembly.seams.last?.note, StitchCopy.reverseSeam)
     }
 
     /// A jump much larger than the previous shift stays a seam, even inside one segment.
@@ -384,7 +384,7 @@ final class ScrollStitcherTests: XCTestCase {
         XCTAssertEqual(stitcher.ingest(ScrollFixtures.aliasPeriod(scroll: 42)), .unmatched)
         let assembly = stitcher.takeAssembly()
         XCTAssertTrue(assembly.needsReview)
-        XCTAssertNil(assembly.seams.last?.note)
+        XCTAssertEqual(assembly.seams.last?.note, StitchCopy.reverseSeam)
     }
 
     /// One reverse candidate, and it copies rows already on the page. That opens a seam.
@@ -399,7 +399,7 @@ final class ScrollStitcherTests: XCTestCase {
         XCTAssertTrue(assembly.needsReview)
         XCTAssertNil(assembly.flattenedIfResolved())
         XCTAssertEqual(assembly.seams.count, 1)
-        XCTAssertEqual(assembly.seams.last?.note, "这里像是往回滚了，确认一下接在哪")
+        XCTAssertEqual(assembly.seams.last?.note, StitchCopy.reverseSeam)
     }
 
     private func assertDownwardJoin(

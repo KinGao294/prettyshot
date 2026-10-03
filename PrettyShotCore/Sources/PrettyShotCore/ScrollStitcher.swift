@@ -950,7 +950,8 @@ public struct ScrollStitcher {
             return .ignored
         }
         let suggested = found.map { max(0, frame.height - abs($0.shift)) }
-        return breakUnmatched(frame, suggested: suggested)
+        let reverseNote = found?.reversed == true ? StitchCopy.reverseSeam : nil
+        return breakUnmatched(frame, suggested: suggested, note: reverseNote)
     }
 
     /// Seals the open segment and returns every piece. Call once, when capture ends.
@@ -1054,7 +1055,7 @@ public struct ScrollStitcher {
         return prepend ? .prepended(fitted.height) : .appended(fitted.height)
     }
 
-    private mutating func breakUnmatched(_ frame: RGBAImage, suggested: Int?) -> ScrollIngest {
+    private mutating func breakUnmatched(_ frame: RGBAImage, suggested: Int?, note: String? = nil) -> ScrollIngest {
         let room = ScrollOutputLimit.remainingRows(
             totalHeight: pixelHeight,
             width: frame.width,
@@ -1064,8 +1065,8 @@ public struct ScrollStitcher {
         // Don't start another full viewport that would blow the cap, and don't clip it into a fake join.
         if pixelHeight > 0, room < frame.height { return .reachedLimit }
         sealOpenSegment()
-        let note = RowSamples.blankSeamNote(RowSamples.make(frame, options: options))
-        seams.append(ScrollSeam(kind: .needsAlignment, suggestedOverlap: suggested, note: note))
+        let seamNote = note ?? RowSamples.blankSeamNote(RowSamples.make(frame, options: options))
+        seams.append(ScrollSeam(kind: .needsAlignment, suggestedOverlap: suggested, note: seamNote))
         let savedHeader = lockedHeader
         let savedFooter = lockedFooter
         let savedPending = pendingSticky
@@ -1195,6 +1196,8 @@ private enum RowSamples {
     struct ShiftChoice {
         var shift: Int
         var confident: Bool
+        /// True when this shift was refused because it reverses the last accepted direction.
+        var reversed: Bool = false
     }
 
     static func bestShift(
@@ -1242,14 +1245,22 @@ private enum RowSamples {
                 && rival.score <= best.score + 4
                 && rival.votes * 2 >= best.votes
         }
+        // One candidate used to be trusted even when it reversed the last shift.
+        // An opposite candidate, alone or among the rivals, opens a seam instead.
+        let reversed = lastShift.map { prior in
+            prior != 0 && ([best] + rivals).contains { $0.shift.signum() != prior.signum() }
+        } ?? false
         if rivals.isEmpty {
+            if reversed {
+                return ShiftChoice(shift: best.shift, confident: false, reversed: true)
+            }
             return ShiftChoice(shift: best.shift, confident: true)
         }
         if let prior = lastShift,
            let preferred = resolveAlias(best: best, rivals: Array(rivals), prior: prior) {
             return ShiftChoice(shift: preferred, confident: true)
         }
-        return ShiftChoice(shift: best.shift, confident: false)
+        return ShiftChoice(shift: best.shift, confident: false, reversed: reversed)
     }
 
     /// Header and footer used to score a shift. A stationary edge that is too tall for the

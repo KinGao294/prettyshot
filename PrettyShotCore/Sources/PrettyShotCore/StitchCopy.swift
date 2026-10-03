@@ -20,6 +20,8 @@ public enum StitchCopy {
     public static let restoreHelp = "把去掉的页眉和页脚按接缝插回去"
     /// Shown on the existing seam card when a frame is too blank to align.
     public static let blankSeam = "这一段几乎是空白，看不出该接在哪"
+    /// Shown on that same card when a join would reverse the last shift.
+    public static let reverseSeam = "这里像是往回滚了，确认一下接在哪"
     public static let overLimitNote = "不会悄悄截断。可以分段导出（每段都不超上限），或保持去重。"
 
     /// en_US grouping (comma, groups of three). Does not read `Locale.current`.
