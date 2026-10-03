@@ -813,6 +813,7 @@ public struct ScrollStitcher {
     private var pendingSticky: PendingStickyConfirmation?
     private var stickyRepeats: [StickyRepeat] = []
     /// Last confident vertical shift. Breaks a later alias (period-like cards) in the same direction.
+    /// Cleared when a segment closes, when the assembly is finalized, and in `beginStitch()`.
     private var lastShift: Int?
     /// One shared copy of the sticky bars for the open run. Each seam records these images
     /// instead of cropping a fresh header and footer on every frame.
@@ -826,6 +827,7 @@ public struct ScrollStitcher {
     /// 「开始拼接」. Drops the shift remembered for repeating-card aliases so the next
     /// pass cannot inherit a direction from the previous one.
     public mutating func beginStitch() {
+        lastShift = nil
     }
 
     public var hasFrame: Bool { open || !segments.isEmpty }
@@ -898,16 +900,24 @@ public struct ScrollStitcher {
             }
         }
 
+        // A fixed bar taller than the sticky cap, or a blank margin, must not hide the rows that moved.
+        let match = RowSamples.matchEdges(
+            prevRows,
+            nextRows,
+            fallbackHeader: headerH,
+            fallbackFooter: footerH,
+            options: options
+        )
         let found = RowSamples.bestShift(
             prevRows,
             nextRows,
-            header: headerH,
-            footer: footerH,
+            header: match.header,
+            footer: match.footer,
             lastShift: lastShift,
             options: options
         )
-        if let match = found, match.confident {
-            let outcome = apply(next: frame, shift: match.shift, headerH: headerH, footerH: footerH)
+        if let matchFound = found, matchFound.confident {
+            let outcome = apply(next: frame, shift: matchFound.shift, headerH: match.header, footerH: match.footer)
             switch outcome {
             case .appended, .prepended, .reachedLimit:
                 if lockedHeader == nil {
@@ -917,12 +927,12 @@ public struct ScrollStitcher {
                 if pendingSticky != nil, headerH > 0 || footerH > 0 {
                     pendingSticky?.seamCount += 1
                 }
-                lastShift = match.shift
+                lastShift = matchFound.shift
                 previous = frame
             case .unchanged:
                 break
             case .unmatched:
-                return breakUnmatched(frame, suggested: max(0, frame.height - abs(match.shift)))
+                return breakUnmatched(frame, suggested: max(0, frame.height - abs(matchFound.shift)))
             case .seeded, .ignored:
                 break
             }
@@ -1073,6 +1083,8 @@ public struct ScrollStitcher {
     }
 
     private mutating func sealOpenSegment() {
+        // The next segment, and the next capture after finalize, start without a direction.
+        lastShift = nil
         guard open, canvas.height > 0 else {
             stickyRepeats = []
             return
@@ -1232,17 +1244,90 @@ private enum RowSamples {
         return ShiftChoice(shift: best.shift, confident: false)
     }
 
+    /// Header and footer used to score a shift. A stationary edge that is too tall for the
+    /// sticky cap still has to be left out of the search, or the moving strip never gets a vote.
+    static func matchEdges(
+        _ a: [RowSample],
+        _ b: [RowSample],
+        fallbackHeader: Int,
+        fallbackFooter: Int,
+        options: ScrollStitcher.Options
+    ) -> (header: Int, footer: Int) {
+        var header = stationaryRun(a, b, options: options, fromTop: true)
+        var footer = stationaryRun(a, b, options: options, fromTop: false)
+        let count = min(a.count, b.count)
+        if header + footer >= count {
+            header = 0
+            footer = 0
+        }
+        let candidateHeader = max(fallbackHeader, header)
+        let candidateFooter = max(fallbackFooter, footer)
+        if count - candidateHeader - candidateFooter > options.minOverlapRows {
+            return (candidateHeader, candidateFooter)
+        }
+        return (fallbackHeader, fallbackFooter)
+    }
+
     static func isFlicker(_ a: [RowSample], _ b: [RowSample], options: ScrollStitcher.Options) -> Bool {
         let count = min(a.count, b.count)
         guard count > 0 else { return false }
+        var header = stationaryRun(a, b, options: options, fromTop: true)
+        var footer = stationaryRun(a, b, options: options, fromTop: false)
+        if header + footer > count {
+            header = count
+            footer = 0
+        }
+        // A thin changed strip on a still frame is a flash. Fixed bars are the opposite:
+        // the still edge is large and the part that moved is the page.
+        let moving = count - header - footer
+        if moving * 4 < count {
+            header = 0
+            footer = 0
+        }
         var same = 0
+        var eligible = 0
         for y in 0..<count {
+            if y < header || (footer > 0 && y >= count - footer) { continue }
+            // Blank and low-variance rows match at every scroll. They are not "unchanged content".
+            guard a[y].distinctive || b[y].distinctive else { continue }
+            eligible += 1
             if distance(a[y], b[y]) <= options.matchDistance { same += 1 }
         }
-        return same * 4 >= count * 3
+        guard eligible >= 4 else { return false }
+        return same * 4 >= eligible * 3
     }
 
     // MARK: - Private
+
+    /// Stationary distinctive edge, with no cap. Blank rows do not start it.
+    private static func stationaryRun(
+        _ a: [RowSample],
+        _ b: [RowSample],
+        options: ScrollStitcher.Options,
+        fromTop: Bool
+    ) -> Int {
+        let count = min(a.count, b.count)
+        var confirmed = 0
+        var pendingGaps = 0
+        var sawDetail = false
+        for step in 0..<count {
+            let y = fromTop ? step : (count - 1 - step)
+            let same = distance(a[y], b[y]) <= options.matchDistance
+            let detailed = a[y].distinctive || b[y].distinctive
+            if same && detailed {
+                pendingGaps = 0
+                sawDetail = true
+                confirmed = step + 1
+            } else if same && sawDetail {
+                pendingGaps = 0
+                confirmed = step + 1
+            } else {
+                pendingGaps += 1
+                if pendingGaps > 2 { break }
+            }
+        }
+        return sawDetail ? confirmed : 0
+    }
 
     private static func stickyRun(_ a: [RowSample], _ b: [RowSample], options: ScrollStitcher.Options, fromTop: Bool) -> StickyBand {
         let count = min(a.count, b.count)
@@ -1312,7 +1397,8 @@ private enum RowSamples {
             let nextY = shift > 0 ? y : y + magnitude
             let prevY = shift > 0 ? y + magnitude : y
             guard nextY < height, prevY < height else { break }
-            if prev[prevY].distinctive || next[nextY].distinctive {
+            // One blank side is the edge of a sparse page, not a failed alignment.
+            if prev[prevY].distinctive && next[nextY].distinctive {
                 sum += distance(prev[prevY], next[nextY])
                 n += 1
             }
