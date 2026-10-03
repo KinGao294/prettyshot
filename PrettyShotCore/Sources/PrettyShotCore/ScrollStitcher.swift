@@ -116,6 +116,16 @@ public enum PendingSeamStyle {
     }
 }
 
+/// Rivals of the best shift. These are the thresholds the matcher already uses.
+public enum AliasRival {
+    /// Shifts this close are the same scroll, not a second candidate.
+    public static let shiftGap = 2
+    /// A rival may score this much worse than the best and still count.
+    public static let scoreSlack = 4
+    /// Integer half: `votes * voteFactor >= bestVotes`.
+    public static let voteFactor = 2
+}
+
 /// Colors for a resolved confirmation seam.
 public enum ResolvedSeamStyle {
     /// Mint for 「✓ 已确认」 and 「✓ 手动对齐」.

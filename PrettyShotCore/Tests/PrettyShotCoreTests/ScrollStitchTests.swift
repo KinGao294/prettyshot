@@ -115,10 +115,11 @@ final class ScrollStitchTests: XCTestCase {
         let assembly = stitcher.takeAssembly()
         XCTAssertTrue(assembly.needsReview)
         XCTAssertNil(assembly.flattenedIfResolved())
-        let tie = "找到 2 个得分相同的位移，自动对齐没法确定是哪一个——为了不拼错，先停下来请你确认。"
+        let tie = "找到 2 个都说得通的位移，自动对齐没法确定是哪一个——为了不拼错，先停下来请你确认。"
         let card = try XCTUnwrap(assembly.seams.last).card(number: 1)
         XCTAssertEqual(card.title, "接缝 1 · 待确认：位移无法唯一确定")
         XCTAssertEqual(card.reason, tie)
+        XCTAssertFalse(card.reason?.contains("得分相同") == true)
         XCTAssertNotEqual(card.reason, StitchCopy.reverseSeam)
         XCTAssertFalse(card.reason?.contains("这一段是重复的列表行") == true)
         XCTAssertEqual(card.candidates, ["位移 A · +32 px · 当前", "位移 B · −28 px"])
@@ -133,13 +134,58 @@ final class ScrollStitchTests: XCTestCase {
         XCTAssertEqual(stitcher.ingest(CoreScrollFixtures.aliasPeriod(scroll: 42)), .unmatched)
         let assembly = stitcher.takeAssembly()
         XCTAssertTrue(assembly.needsReview)
-        let tie = "找到 2 个得分相同的位移，自动对齐没法确定是哪一个——为了不拼错，先停下来请你确认。"
+        let tie = "找到 2 个都说得通的位移，自动对齐没法确定是哪一个——为了不拼错，先停下来请你确认。"
         let card = try XCTUnwrap(assembly.seams.last).card(number: 1)
         XCTAssertEqual(card.title, "接缝 1 · 待确认：位移无法唯一确定")
         XCTAssertEqual(card.reason, tie)
+        XCTAssertFalse(card.reason?.contains("得分相同") == true)
         XCTAssertNotEqual(card.reason, StitchCopy.reverseSeam)
         XCTAssertFalse(card.reason?.contains("这一段是重复的列表行") == true)
         XCTAssertEqual(card.candidates, ["位移 A · +30 px · 当前", "位移 B · −30 px"])
+    }
+
+    /// A rival whose score is close, but not equal, still opens the tie card.
+    func testNearScoreOppositeShiftOpensATie() throws {
+        XCTAssertEqual(AliasRival.shiftGap, 2)
+        XCTAssertEqual(AliasRival.scoreSlack, 4)
+        XCTAssertEqual(AliasRival.voteFactor, 2)
+        var stitcher = ScrollStitcher()
+        XCTAssertEqual(stitcher.ingest(CoreScrollFixtures.aliasPeriod(scroll: 0)), .seeded)
+        XCTAssertEqual(stitcher.ingest(CoreScrollFixtures.aliasPeriod(scroll: 12)), .appended(12))
+        XCTAssertEqual(stitcher.ingest(CoreScrollFixtures.aliasPeriodNearMiss()), .unmatched)
+        let assembly = stitcher.takeAssembly()
+        let tie = "找到 2 个都说得通的位移，自动对齐没法确定是哪一个——为了不拼错，先停下来请你确认。"
+        let card = try XCTUnwrap(assembly.seams.last).card(number: 1)
+        XCTAssertEqual(card.label, "待确认")
+        XCTAssertEqual(card.chrome, .amberDashed)
+        XCTAssertEqual(card.title, "接缝 1 · 待确认：位移无法唯一确定")
+        XCTAssertEqual(card.reason, tie)
+        XCTAssertNotEqual(card.reason, StitchCopy.reverseSeam)
+        XCTAssertFalse(card.reason?.contains("得分相同") == true)
+        XCTAssertFalse(card.reason?.contains("这一段是重复的列表行") == true)
+        XCTAssertEqual(card.candidates, ["位移 A · +30 px · 当前", "位移 B · −30 px"])
+        XCTAssertEqual(assembly.unalignedSeamCount, 1)
+        XCTAssertEqual(assembly.pendingDuplicateConfirmCount, 0)
+    }
+
+    /// The equal-score tie is one of the seams the review bar counts as 待对齐.
+    func testTieSeamCountsAsUnalignedAndUsesAmberStyle() throws {
+        var stitcher = ScrollStitcher()
+        XCTAssertEqual(stitcher.ingest(CoreScrollFixtures.aliasPeriod(scroll: 0)), .seeded)
+        XCTAssertEqual(stitcher.ingest(CoreScrollFixtures.aliasPeriod(scroll: 12)), .appended(12))
+        XCTAssertEqual(stitcher.ingest(CoreScrollFixtures.aliasPeriod(scroll: 42)), .unmatched)
+        let assembly = stitcher.takeAssembly()
+        XCTAssertEqual(assembly.unalignedSeamCount, 1)
+        XCTAssertEqual(assembly.pendingDuplicateConfirmCount, 0)
+        let bar = try XCTUnwrap(assembly.reviewBottomBar)
+        XCTAssertTrue(bar.contains("待对齐 1"))
+        XCTAssertFalse(bar.contains("待确认"))
+        let card = try XCTUnwrap(assembly.seams.last).card(number: 1)
+        XCTAssertEqual(card.label, "待确认")
+        XCTAssertEqual(card.chrome, .amberDashed)
+        let preview = try XCTUnwrap(assembly.renderPreview())
+        let mark = try XCTUnwrap(preview.marks.first { $0.boundaryIndex == 0 })
+        XCTAssertGreaterThan(warnPixels(around: mark, in: preview.image), 0)
     }
 
     /// One reverse candidate, and it copies rows already on the page. That opens a seam.
@@ -1001,6 +1047,21 @@ private enum CoreScrollFixtures {
             let pageY = y + scroll
             return (pageY % period + period) % period
         }
+    }
+
+    /// Same period as `aliasPeriod(scroll: 42)`, with the bottom rows nudged so the reverse
+    /// candidate scores a little worse than +30 without leaving the rival threshold.
+    static func aliasPeriodNearMiss(scroll: Int = 42, height: Int = 90, period: Int = 60) -> RGBAImage {
+        let image = aliasPeriod(scroll: scroll, height: height, period: period)
+        var pixels = image.pixels
+        for y in 60..<height {
+            for x in 0..<width {
+                let i = (y * width + x) * 4
+                let red = Int(pixels[i])
+                pixels[i] = UInt8(red >= 12 ? red - 12 : red + 12)
+            }
+        }
+        return RGBAImage(width: width, height: height, pixels: pixels)
     }
 
     /// Solid rows from the stitch palette. The viewport stays shorter than the palette so each
