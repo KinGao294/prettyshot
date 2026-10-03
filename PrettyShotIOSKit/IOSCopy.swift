@@ -81,8 +81,9 @@ enum IOSCopy {
     static let backHome = "返回首页"
 
     /// 帧 11。只出现在分享扩展，且只有能把原文件交给 App 时。主 App 不用这句。
+    /// 交接只拷贝原文件，不带编辑样式，所以这里不写「样式会一起带过去」。
     static let largeTitle = "图片较大，去 App 里处理"
-    static let largeBody = "如果没有自动打开 App：图片已暂存，手动打开 PrettyShot 即可从这里继续。"
+    static let largeBody = "这张图尺寸很大，在分享菜单里按原分辨率导出可能内存不足。为了不丢图，请在 PrettyShot App 中继续。"
     static let continueInApp = "在 App 中继续"
     /// S10c。
     static let handoffProgressTitle = "正在交给 PrettyShot..."
@@ -109,10 +110,23 @@ enum IOSCopy {
     static let cannotHandBody = "原图没动。请在 PrettyShot App 里重新选这张，按原分辨率处理。"
     static let reselectInApp = "改用 PrettyShot App 选图"
     static let handoffRetry = "再试一次"
-    /// L3m / L9m。提醒一直留到图被加回来。
+    /// 帧 63b。图已经暂存，只是没能打开 App。没有「重试」。
+    static func stagedTitle(_ count: Int) -> String { "已暂存 \(count) 张" }
+    static let stagedBody = "打开 PrettyShot 即可继续拼接，图片不会丢。"
+    static let stagedHint = "打开 App 后，首页会出现「继续上次分享」"
+    /// S10f 拉不起 App。停在这一页，不进 S10d。
+    static let pickerOpenFailedHint = "没有打开 PrettyShot。请自己打开 App，在里面选这些图。原图没有被改动，这里没有暂存。"
+    /// L3m / L9m。提醒一直留到每一张缺的图都加回来。
     static let readdShot = "重新加入"
-    static func missingBanner(_ ordinal: Int) -> String { "少了 1 张 · 第 \(ordinal) 张没读出来" }
-    static func missingEditorLine(_ ordinal: Int) -> String { "这张长图少了 1 张（第 \(ordinal) 张没读出来）" }
+    static func missingList(_ ordinals: [Int]) -> String {
+        ordinals.map { "第 \($0) 张" }.joined(separator: "、")
+    }
+    static func missingBanner(_ ordinals: [Int]) -> String {
+        "少了 \(ordinals.count) 张 · \(missingList(ordinals))没读出来"
+    }
+    static func missingEditorLine(_ ordinals: [Int]) -> String {
+        "这张长图少了 \(ordinals.count) 张（\(missingList(ordinals))没读出来）"
+    }
     static func addedBack(ordinal: Int, total: Int) -> String { "已加回第 \(ordinal) 张 · \(total) 张齐了" }
     static let continueStitch = "继续拼接"
     static let dismissPending = "不用了"
@@ -224,7 +238,7 @@ enum IOSCopy {
     static let reDetect = "还原自动"
 
     static let tooLongTitle = "长图太长，建议分段导出"
-    static let tooLongBody = "超过可稳定导出的长度上限（iOS 具体数值等真机实测）。段与段之间不缺内容。"
+    static let tooLongBody = "超过可稳定导出的长度上限。段与段之间不缺内容。"
     static let tooLongCopy = "超大图无法复制到剪贴板，请用「存入相册」。"
     static func saveSegments(_ count: Int) -> String {
         "分 \(count) 段存入相册"

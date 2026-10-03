@@ -31,7 +31,19 @@ struct ShareFlowView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(IOSTheme.paper)
             case .editor:
-                EditorScreen(model: model, showsClose: true, onClose: onCancel, onCopy: onCopy, onSave: onSave)
+                EditorScreen(
+                    model: model,
+                    showsClose: true,
+                    onClose: onCancel,
+                    onCopy: onCopy,
+                    onSave: onSave,
+                    showsPreviewDownsampleChip: PreviewDownsampleChip.shows(
+                        inExtension: true,
+                        pixelWidth: model.pixelWidth,
+                        pixelHeight: model.pixelHeight,
+                        canTransferToApp: canTransferToApp
+                    )
+                )
                     .sheet(isPresented: largeBinding) { largeSheet }
                     .sheet(isPresented: deniedBinding) { deniedSheet }
             case .multi(let classification):
@@ -42,10 +54,12 @@ struct ShareFlowView: View {
                 progressPage(copied: copied, total: total, received: received)
             case .handoffFailed:
                 handoffFailedPage
+            case .stagedAwaitingApp(let count):
+                stagedPage(count: count)
             case .handoffPartial(let received, let missingCount, let firstOrdinal, let loaded):
                 partialPage(received: received, missingCount: missingCount, firstOrdinal: firstOrdinal, loaded: loaded)
-            case .cannotHandOff:
-                cannotHandOffPage
+            case .cannotHandOff(let manualOpenHint):
+                cannotHandOffPage(manualOpenHint: manualOpenHint)
             case .saved(let title, let detail):
                 messagePage(title: title, body: detail)
             }
@@ -181,8 +195,51 @@ struct ShareFlowView: View {
         .background(IOSTheme.paper)
     }
 
+    /// Frame 63b. The files are staged. 「关闭」 and 「好的」 both leave them for A1b. There is no retry.
+    private func stagedPage(count: Int) -> some View {
+        VStack(spacing: 16) {
+            HStack {
+                Button(IOSCopy.close, action: onCancel)
+                    .foregroundStyle(IOSTheme.charcoal)
+                Spacer()
+                Text(IOSCopy.brand)
+                    .font(.system(size: 16.5, weight: .semibold))
+                Spacer()
+                Color.clear.frame(width: 44, height: 44)
+            }
+            Spacer()
+            Image(systemName: "checkmark")
+                .font(.system(size: 36, weight: .semibold))
+                .foregroundStyle(Color(hex: 0x3E8F78))
+                .frame(width: 96, height: 96)
+                .background(Color(hex: 0xD7EBE4), in: Circle())
+            Text(IOSCopy.stagedTitle(count))
+                .font(.system(size: 22, weight: .bold))
+                .foregroundStyle(IOSTheme.charcoal)
+            Text(IOSCopy.stagedBody)
+                .font(.system(size: 15))
+                .multilineTextAlignment(.center)
+                .foregroundStyle(IOSTheme.muted)
+            HStack(alignment: .top, spacing: 6) {
+                Image(systemName: "info.circle")
+                    .font(.system(size: 13))
+                    .foregroundStyle(IOSTheme.muted)
+                Text(IOSCopy.stagedHint)
+                    .font(.system(size: 13))
+                    .foregroundStyle(IOSTheme.muted)
+                    .multilineTextAlignment(.leading)
+            }
+            Button(IOSCopy.readFailedOK, action: onCancel).buttonStyle(BloomButtonStyle())
+            Spacer()
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(IOSTheme.paper)
+    }
+
     /// S10f. No App Group, so the original cannot move. The photo library copy is untouched.
-    private var cannotHandOffPage: some View {
+    /// If opening the app fails, stay on this page. Do not switch to S10d.
+    private func cannotHandOffPage(manualOpenHint: Bool) -> some View {
         VStack(spacing: 16) {
             HStack {
                 Button(IOSCopy.close, action: onCancel)
@@ -201,6 +258,12 @@ struct ShareFlowView: View {
                 .font(.system(size: 15))
                 .multilineTextAlignment(.center)
                 .foregroundStyle(IOSTheme.muted)
+            if manualOpenHint {
+                Text(IOSCopy.pickerOpenFailedHint)
+                    .font(.system(size: 14))
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(IOSTheme.charcoal)
+            }
             Button(IOSCopy.reselectInApp, action: onReselectInApp).buttonStyle(BloomButtonStyle())
             Button(IOSCopy.readFailedOK, action: onCancel)
                 .font(.system(size: 16, weight: .semibold))
@@ -239,18 +302,31 @@ struct ShareFlowView: View {
         .background(IOSTheme.paper)
     }
 
-    /// Frame 14. 「稍后再说」 returns to the editor and keeps the edits.
+    /// Frame 14. No 「前往设置开启」. The settings path stays as a line of text.
+    /// 「稍后再说」 returns to the editor and keeps the edits.
     private var deniedSheet: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text(IOSCopy.deniedTitle).font(.system(size: 21, weight: .bold))
             Text(IOSCopy.deniedBody).font(.system(size: 15))
             Text(IOSCopy.deniedPath).font(.system(size: 13)).foregroundStyle(IOSTheme.muted)
-            Button(IOSCopy.useCopyInstead, action: onCopy).buttonStyle(BloomButtonStyle())
-            Button(IOSCopy.openSettings, action: onOpenSettings).buttonStyle(PlainCardButtonStyle())
-            Button(IOSCopy.later, action: onDismissDenied).buttonStyle(PlainCardButtonStyle())
+            ForEach(PhotoDeniedAction.actions(inApp: false), id: \.self) { action in
+                deniedButton(action)
+            }
         }
         .padding(20)
         .presentationDetents([.medium])
+    }
+
+    @ViewBuilder
+    private func deniedButton(_ action: PhotoDeniedAction) -> some View {
+        switch action {
+        case .useCopyInstead:
+            Button(action.title, action: onCopy).buttonStyle(BloomButtonStyle())
+        case .openSettings:
+            Button(action.title, action: onOpenSettings).buttonStyle(PlainCardButtonStyle())
+        case .later:
+            Button(action.title, action: onDismissDenied).buttonStyle(PlainCardButtonStyle())
+        }
     }
 
     private func messagePage(title: String, body: String) -> some View {
@@ -304,12 +380,14 @@ enum SharePhase: Equatable {
     case saved(title: String, detail: String)
     /// S10c. `copied` files are in the temp copy so far.
     case handoffProgress(copied: Int, total: Int, received: Int)
-    /// S10d.
+    /// S10d. Staging itself failed.
     case handoffFailed
+    /// Frame 63b. Staging succeeded and opening the app did not.
+    case stagedAwaitingApp(count: Int)
     /// S10e. `firstOrdinal` is the 1-based index of the first shot that failed.
     case handoffPartial(received: Int, missingCount: Int, firstOrdinal: Int, loaded: Int)
-    /// S10f.
-    case cannotHandOff
+    /// S10f. `manualOpenHint` is set when the app did not open. The page does not change.
+    case cannotHandOff(manualOpenHint: Bool)
 }
 
 extension ShareClassification {

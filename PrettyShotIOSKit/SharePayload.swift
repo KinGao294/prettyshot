@@ -49,6 +49,33 @@ enum ShareFileGather {
     }
 }
 
+/// Every shot that failed to load. A new pick replaces the previous list instead of leaking it.
+struct MissingShotSession: Equatable {
+    var ordinals: [Int]
+    var expectedTotal: Int
+
+    /// `previous` is discarded. Failures from the last stitch do not carry into this pick.
+    static func beginNewPick(replacing previous: MissingShotSession, failedOrdinals: [Int], loadedCount: Int) -> MissingShotSession {
+        let next = remember(failedOrdinals: failedOrdinals, loadedCount: loadedCount)
+        let carried = next.ordinals.filter { previous.ordinals.contains($0) && !failedOrdinals.contains($0) }
+        return MissingShotSession(ordinals: next.ordinals.filter { !carried.contains($0) }, expectedTotal: next.expectedTotal)
+    }
+
+    static func remember(failedOrdinals: [Int], loadedCount: Int) -> MissingShotSession {
+        let ordinals = failedOrdinals.sorted()
+        return MissingShotSession(ordinals: ordinals, expectedTotal: loadedCount + ordinals.count)
+    }
+
+    /// Drops the earliest missing ordinal. The banner stays while any remain.
+    func addingBackOne() -> (session: MissingShotSession, restored: Int?) {
+        guard let restored = ordinals.first else { return (self, nil) }
+        return (
+            MissingShotSession(ordinals: Array(ordinals.dropFirst()), expectedTotal: expectedTotal),
+            restored
+        )
+    }
+}
+
 struct OrderedShot: Equatable {
     var id: String
     var capturedAt: Date?

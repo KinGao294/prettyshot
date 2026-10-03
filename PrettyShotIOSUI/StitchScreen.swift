@@ -322,9 +322,13 @@ struct StitchScreen: View {
         .buttonStyle(.plain)
     }
 
-    /// Each segment's own pixels. Unresolved seams make `exportWithinLimits` return nothing.
+    /// Beautify each segment with the current default style, then save. Same pass as a merged export.
+    /// Unresolved seams make `exportWithinLimits` return nothing; this path does not use that.
     private func exportSegmentsSeparately() {
-        let images = model.session.assembly.segments.compactMap { $0.image.cgImage() }
+        let images = model.session.assembly.segments.compactMap { segment -> CGImage? in
+            guard let raw = segment.image.cgImage() else { return nil }
+            return SegmentBeautifier.beautify(raw)
+        }
         model.showChoices = false
         if !images.isEmpty {
             onExportSegments(images)

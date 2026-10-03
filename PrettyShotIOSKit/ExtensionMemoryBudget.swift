@@ -1,6 +1,7 @@
 import CoreGraphics
 import Foundation
 import ImageIO
+import PrettyShotCore
 
 /// Share Extension memory plan for AC-I17.
 ///
@@ -12,11 +13,14 @@ import ImageIO
 /// 4. decodes one full-size image, bakes redaction into it, and draws the beautified result
 ///
 /// Export peak is four RGBA buffers at once: the source, the redacted copy, the beautify canvas,
-/// and the shadow transparency layer. There is no tiled render in M3. Two buffers of a 12MP
-/// image fit under 120MB; four do not (about 192MB), so that image is handed to the app.
-/// Editing keeps the file URL plus one preview. Nothing is exported at preview size.
+/// and the shadow transparency layer. The canvas is the laid-out size after padding, not the source.
+/// About 40MB is left for the process itself. There is no tiled render in M3. A 12MP image's four
+/// buffers are about 192MB, so that image is handed to the app. Editing keeps the file URL plus one
+/// preview. Nothing is exported at preview size.
 enum ExtensionMemoryBudget {
     static let limitBytes = 120 * 1024 * 1024
+    /// Left unused so the process, ImageIO, and the shadow layer's allocator overhead still fit.
+    static let headroomBytes = 40 * 1024 * 1024
     static let bytesPerPixel = 4
     static let previewMaxLongSide = 1280
     /// Source + redacted + canvas + shadow layer.
@@ -63,9 +67,38 @@ enum ExtensionMemoryBudget {
         )
     }
 
-    static func plan(pixelCount: Int, canTransferToApp: Bool) -> Plan {
-        let exportBytes = exportPeakBytes(sourcePixels: pixelCount, canvasPixels: pixelCount)
-        if exportBytes <= limitBytes {
+    /// Output pixels from `BeautifyRenderer.layout`, including padding. `scale` defaults to the
+    /// status-bar match so the plan uses the same canvas the export will allocate.
+    static func canvasPixelCount(
+        width: Int,
+        height: Int,
+        style: BackgroundStyle = .default,
+        scale: CGFloat? = nil
+    ) -> Int {
+        guard width > 0, height > 0, let base = onePixel else { return 0 }
+        let resolved = scale ?? (StatusBarCropTable.match(width: width, height: height)?.scale ?? 1)
+        let input = BeautifyInput(
+            base: base,
+            crop: CGRect(x: 0, y: 0, width: CGFloat(width), height: CGFloat(height)),
+            background: style,
+            scale: resolved
+        )
+        let canvas = BeautifyRenderer.layout(for: input).canvasSize
+        return Int(canvas.width.rounded(.up)) * Int(canvas.height.rounded(.up))
+    }
+
+    /// Inline only when the padded four-buffer peak plus `headroomBytes` fits in `limitBytes`.
+    static func plan(
+        pixelWidth: Int,
+        pixelHeight: Int,
+        canTransferToApp: Bool,
+        style: BackgroundStyle = .default,
+        scale: CGFloat? = nil
+    ) -> Plan {
+        let sourcePixels = max(0, pixelWidth) * max(0, pixelHeight)
+        let canvasPixels = canvasPixelCount(width: pixelWidth, height: pixelHeight, style: style, scale: scale)
+        let exportBytes = exportPeakBytes(sourcePixels: sourcePixels, canvasPixels: canvasPixels)
+        if exportBytes + headroomBytes <= limitBytes {
             return .fullResolutionInline
         }
         if canTransferToApp {
@@ -73,6 +106,15 @@ enum ExtensionMemoryBudget {
         }
         return .reselectInApp
     }
+
+    private static let onePixel: CGImage? = {
+        guard let space = CGColorSpace(name: CGColorSpace.sRGB),
+              let context = CGContext(
+                data: nil, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 0,
+                space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+              ) else { return nil }
+        return context.makeImage()
+    }()
 
     struct MemoryHold: Equatable {
         var fullDecodedCopies: Int

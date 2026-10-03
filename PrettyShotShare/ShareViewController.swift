@@ -171,7 +171,7 @@ final class ShareViewController: UIViewController {
             showsLarge = true
         } else {
             showsLarge = false
-            phase = .cannotHandOff
+            phase = .cannotHandOff(manualOpenHint: false)
         }
         refresh()
     }
@@ -179,7 +179,7 @@ final class ShareViewController: UIViewController {
     private func presentCannotHandOff() {
         showsLarge = false
         showsDenied = false
-        phase = .cannotHandOff
+        phase = .cannotHandOff(manualOpenHint: false)
         refresh()
     }
 
@@ -201,6 +201,7 @@ final class ShareViewController: UIViewController {
     }
 
     private func retryHandoff() {
+        ExtensionLaunchRouter.prepareRetry(previousTicketID: stagedTicket?.id, store: store)
         stagedTicket = nil
         if pendingKind == .singleImage {
             beginSingleHandoff()
@@ -245,7 +246,7 @@ final class ShareViewController: UIViewController {
         case .waitingForApp(let ticket), .interrupted(let ticket):
             stagedTicket = ticket
             guard store.canTransferToApp else {
-                phase = .cannotHandOff
+                phase = .cannotHandOff(manualOpenHint: false)
                 refresh()
                 return
             }
@@ -318,17 +319,20 @@ final class ShareViewController: UIViewController {
 
     private func openApp(_ ticket: HandoffTicket) {
         guard let url = URL(string: "prettyshot://handoff") else {
-            phase = .handoffFailed
+            phase = .stagedAwaitingApp(count: ticket.fileNames.count)
             refresh()
             return
         }
         extensionContext?.open(url) { [weak self] success in
             DispatchQueue.main.async {
                 guard let self else { return }
-                switch HandoffTransfer.resolveOpen(succeeded: success, ticket: ticket, store: self.store) {
-                case .waitingForApp:
+                switch ExtensionLaunchRouter.afterHandoffOpen(succeeded: success, ticket: ticket, store: self.store) {
+                case .opened:
                     self.finishSoon()
-                case .interrupted, .failed:
+                case .stagedNeedsManualOpen(let count):
+                    self.phase = .stagedAwaitingApp(count: count)
+                    self.refresh()
+                case .stagingFailed:
                     self.phase = .handoffFailed
                     self.refresh()
                 }
@@ -337,19 +341,21 @@ final class ShareViewController: UIViewController {
     }
 
     /// Opens the in-app photo picker. Does not discard a staged ticket or the shared photo.
+    /// Failure stays on S10f. It does not stage a file and does not switch to S10d.
     private func openPicker() {
         guard let url = URL(string: "prettyshot://pick") else {
-            phase = .cannotHandOff
+            phase = .cannotHandOff(manualOpenHint: true)
             refresh()
             return
         }
         extensionContext?.open(url) { [weak self] success in
             DispatchQueue.main.async {
                 guard let self else { return }
-                if success {
+                switch ExtensionLaunchRouter.afterPickerOpen(succeeded: success) {
+                case .opened:
                     self.finishSoon()
-                } else {
-                    self.phase = .handoffFailed
+                case .stayAndAskToOpenApp:
+                    self.phase = .cannotHandOff(manualOpenHint: true)
                     self.refresh()
                 }
             }

@@ -19,7 +19,7 @@ struct AppRootView: View {
     @State private var showReaddPicker = false
     @State private var readdItem: PhotosPickerItem?
     @State private var showPhotoDenied = false
-    @State private var missingOrdinal: Int?
+    @State private var missingOrdinals: [Int] = []
     @State private var expectedTotal = 0
     private let store: HandoffStore = HandoffStoreFactory.live()
 
@@ -35,7 +35,7 @@ struct AppRootView: View {
                             onClose: { route = nil },
                             onCopy: copyEditor,
                             onSave: saveEditor,
-                            missingLine: missingOrdinal.map { IOSCopy.missingEditorLine($0) },
+                            missingLine: missingOrdinals.isEmpty ? nil : IOSCopy.missingEditorLine(missingOrdinals),
                             onReadd: { showReaddPicker = true }
                         )
                             .navigationBarHidden(true)
@@ -47,7 +47,7 @@ struct AppRootView: View {
                             onBack: { route = nil },
                             onBeautify: openFlattened,
                             onExportSegments: saveSegments,
-                            missingLine: missingOrdinal.map { IOSCopy.missingBanner($0) },
+                            missingLine: missingOrdinals.isEmpty ? nil : IOSCopy.missingBanner(missingOrdinals),
                             onReadd: { showReaddPicker = true }
                         )
                             .navigationBarHidden(true)
@@ -146,9 +146,9 @@ struct AppRootView: View {
 
     private var orderScreen: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if let ordinal = missingOrdinal {
+            if !missingOrdinals.isEmpty {
                 HStack {
-                    Text(IOSCopy.missingBanner(ordinal))
+                    Text(IOSCopy.missingBanner(missingOrdinals))
                         .font(.system(size: 13, weight: .semibold))
                     Spacer()
                     Button(IOSCopy.readdShot) { showReaddPicker = true }
@@ -166,8 +166,15 @@ struct AppRootView: View {
             }
             .environment(\.editMode, .constant(.active))
             Button(IOSCopy.stitchStart) {
-                let images = StitchSourceLoader.images(from: ordered.map(\.data))
-                stitch.ingest(images)
+                let loaded = StitchSourceLoader.load(ordered.map(\.data))
+                if !loaded.missingOrdinals.isEmpty {
+                    missingOrdinals = Array(Set(missingOrdinals + loaded.missingOrdinals)).sorted()
+                }
+                guard loaded.images.count >= 2 else {
+                    route = .error
+                    return
+                }
+                stitch.ingest(loaded.images)
                 route = .stitch
             }
             .buttonStyle(BloomButtonStyle())
@@ -179,7 +186,7 @@ struct AppRootView: View {
 
     /// A1b. 「继续拼接」opens the staged shots. 「不用了」drops the staged copies only.
     private var continueShareBanner: some View {
-        let count = pending.reduce(0) { $0 + $1.fileNames.count + $1.missingShots.count }
+        let count = PendingShareResume.stagedFileCount(pending)
         return VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 10) {
                 Image(systemName: "square.and.arrow.down")
@@ -219,13 +226,20 @@ struct AppRootView: View {
             Text(IOSCopy.deniedTitle).font(.system(size: 21, weight: .bold))
             Text(IOSCopy.deniedBody).font(.system(size: 15))
             Text(IOSCopy.deniedPath).font(.system(size: 13)).foregroundStyle(IOSTheme.muted)
-            Button(IOSCopy.useCopyInstead) {
-                showPhotoDenied = false
-                copyEditor()
+            ForEach(PhotoDeniedAction.actions(inApp: true), id: \.self) { action in
+                switch action {
+                case .useCopyInstead:
+                    Button(action.title) {
+                        showPhotoDenied = false
+                        copyEditor()
+                    }
+                    .buttonStyle(BloomButtonStyle())
+                case .openSettings:
+                    Button(action.title, action: openSettings).buttonStyle(PlainCardButtonStyle())
+                case .later:
+                    Button(action.title) { showPhotoDenied = false }.buttonStyle(PlainCardButtonStyle())
+                }
             }
-            .buttonStyle(BloomButtonStyle())
-            Button(IOSCopy.openSettings, action: openSettings).buttonStyle(PlainCardButtonStyle())
-            Button(IOSCopy.later) { showPhotoDenied = false }.buttonStyle(PlainCardButtonStyle())
         }
         .padding(20)
         .presentationDetents([.medium])
@@ -271,11 +285,18 @@ struct AppRootView: View {
 
     private func loadSingle(_ item: PhotosPickerItem) async {
         do {
-            guard let data = try await item.loadTransferable(type: Data.self) else {
+            guard let data = try await item.loadTransferable(type: Data.self), ImagePrep.fullImage(data) != nil else {
                 await MainActor.run { route = .error }
                 return
             }
             await MainActor.run {
+                let cleared = MissingShotSession.beginNewPick(
+                    replacing: MissingShotSession(ordinals: missingOrdinals, expectedTotal: expectedTotal),
+                    failedOrdinals: [],
+                    loadedCount: 1
+                )
+                missingOrdinals = cleared.ordinals
+                expectedTotal = cleared.expectedTotal
                 editor.load(data)
                 route = .editor
             }
@@ -286,14 +307,30 @@ struct AppRootView: View {
 
     private func loadStitch(_ items: [PhotosPickerItem]) async {
         var files: [ShotFile] = []
+        var failed: [Int] = []
         for (index, item) in items.enumerated() {
-            if let data = try? await item.loadTransferable(type: Data.self) {
+            if let data = try? await item.loadTransferable(type: Data.self), ImagePrep.fullImage(data) != nil {
                 files.append(ShotFile(label: "\(index + 1)", data: data, capturedAt: ImagePrep.captureDate(data)))
+            } else {
+                failed.append(index + 1)
             }
         }
+        let outcome = InAppStitchLoader.outcome(readableCount: files.count, failedOrdinals: failed)
         await MainActor.run {
+            let session = MissingShotSession.beginNewPick(
+                replacing: MissingShotSession(ordinals: missingOrdinals, expectedTotal: expectedTotal),
+                failedOrdinals: failed,
+                loadedCount: files.count
+            )
+            missingOrdinals = session.ordinals
+            expectedTotal = session.expectedTotal
             ordered = files
-            route = files.count >= 2 ? .order : nil
+            switch outcome {
+            case .ready, .missing:
+                route = .order
+            case .failed:
+                route = .error
+            }
         }
     }
 
@@ -314,7 +351,8 @@ struct AppRootView: View {
     }
 
     private func insertReadded(_ data: Data) {
-        guard let ordinal = missingOrdinal else { return }
+        let step = MissingShotSession(ordinals: missingOrdinals, expectedTotal: expectedTotal).addingBackOne()
+        guard let ordinal = step.restored else { return }
         let date = ImagePrep.captureDate(data)
         let shot = ShotFile(label: "", data: data, capturedAt: date)
         let mapped = ordered.map { OrderedShot(id: $0.id.uuidString, capturedAt: $0.capturedAt) }
@@ -330,11 +368,16 @@ struct AppRootView: View {
             ordered[index].label = "\(index + 1)"
         }
         let total = max(expectedTotal, ordered.count)
-        missingOrdinal = nil
-        editor.showToast(IOSCopy.addedBack(ordinal: ordinal, total: total), detail: IOSCopy.toastSavedDetail)
+        missingOrdinals = step.session.ordinals
+        if missingOrdinals.isEmpty {
+            editor.showToast(IOSCopy.addedBack(ordinal: ordinal, total: total), detail: IOSCopy.toastSavedDetail)
+        }
         if route == .stitch || route == .editor {
-            stitch.ingest(StitchSourceLoader.images(from: ordered.map(\.data)))
-            route = .stitch
+            let loaded = StitchSourceLoader.load(ordered.map(\.data))
+            if loaded.images.count >= 2 {
+                stitch.ingest(loaded.images)
+                route = .stitch
+            }
         }
     }
 
@@ -344,7 +387,7 @@ struct AppRootView: View {
     }
 
     private func openPending() {
-        guard let ticket = pending.last else { return }
+        guard let ticket = PendingShareResume.ticket(pending) else { return }
         let urls = (try? store.files(for: ticket.id)) ?? []
         let loaded = urls.enumerated().compactMap { index, url -> ShotFile? in
             guard let data = try? Data(contentsOf: url) else { return nil }
@@ -360,12 +403,12 @@ struct AppRootView: View {
             route = .error
             return
         }
-        if let missing = ticket.missingShots.first {
-            missingOrdinal = missing.ordinal
-            expectedTotal = loaded.count + ticket.missingShots.count
-        } else {
-            missingOrdinal = nil
-        }
+        let session = MissingShotSession.remember(
+            failedOrdinals: ticket.missingShots.map(\.ordinal),
+            loadedCount: loaded.count
+        )
+        missingOrdinals = session.ordinals
+        expectedTotal = session.expectedTotal
         ordered = loaded
         refreshPending()
         if ordered.count >= 2 {

@@ -11,6 +11,8 @@ struct EditorScreen: View {
     var onSave: () -> Void
     var missingLine: String?
     var onReadd: () -> Void = {}
+    /// Extension only, and only for an image that is over the extension memory budget.
+    var showsPreviewDownsampleChip: Bool = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -75,7 +77,7 @@ struct EditorScreen: View {
                 }
                 VStack(alignment: .leading, spacing: 8) {
                     chip
-                    if model.showsDownsampleChip {
+                    if showsPreviewDownsampleChip {
                         chipLabel(IOSCopy.chipDownsampled)
                     }
                 }

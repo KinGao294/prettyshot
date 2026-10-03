@@ -132,6 +132,55 @@ enum HandoffTransfer {
     }
 }
 
+/// What the share extension shows after it tries to open the containing app.
+enum ExtensionLaunchOutcome: Equatable {
+    /// The app opened. The ticket stays until the app confirms.
+    case opened
+    /// Files are already staged. Frame 63b. Closing does not discard them.
+    case stagedNeedsManualOpen(count: Int)
+    /// Nothing usable was staged. Frame 63 (S10d).
+    case stagingFailed
+}
+
+enum PickerLaunchOutcome: Equatable {
+    case opened
+    /// S10f stored nothing. Stay there and ask the user to open the app. Do not switch to S10d.
+    case stayAndAskToOpenApp
+}
+
+enum ExtensionLaunchRouter {
+    static func afterHandoffOpen(succeeded: Bool, ticket: HandoffTicket, store: HandoffStore) -> ExtensionLaunchOutcome {
+        switch HandoffTransfer.resolveOpen(succeeded: succeeded, ticket: ticket, store: store) {
+        case .waitingForApp:
+            return .opened
+        case .interrupted(let staged):
+            return .stagedNeedsManualOpen(count: staged.fileNames.count)
+        case .failed:
+            return .stagingFailed
+        }
+    }
+
+    static func afterPickerOpen(succeeded: Bool) -> PickerLaunchOutcome {
+        succeeded ? .opened : .stayAndAskToOpenApp
+    }
+
+    /// Frame 63 「重试」. Drop the previous ticket before staging another, so two copies do not stack.
+    static func prepareRetry(previousTicketID: String?, store: HandoffStore) {
+        HandoffCancellation.abort(ticketID: previousTicketID, store: store)
+    }
+}
+
+/// A1b. The banner counts the ticket 「继续拼接」 will open, and only the files actually staged.
+enum PendingShareResume {
+    static func ticket(_ pending: [HandoffTicket]) -> HandoffTicket? {
+        pending.last
+    }
+
+    static func stagedFileCount(_ pending: [HandoffTicket]) -> Int {
+        ticket(pending)?.fileNames.count ?? 0
+    }
+}
+
 enum HandoffStoreFactory {
     static let appGroupID = "group.app.prettyshot.ios"
     static let infoKey = "PrettyShotHandoffMode"

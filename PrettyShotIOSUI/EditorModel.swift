@@ -49,11 +49,6 @@ final class EditorModel: ObservableObject {
         StatusBarCropTable.match(width: pixelWidth, height: pixelHeight)
     }
 
-    var showsDownsampleChip: Bool {
-        let longSide = max(pixelWidth, pixelHeight)
-        return longSide > ExtensionMemoryBudget.previewMaxLongSide
-    }
-
     func load(_ data: Data) {
         sourceURL = nil
         encoded = data
@@ -91,7 +86,7 @@ final class EditorModel: ObservableObject {
     /// to reselect it in the app. It never returns a downscaled bitmap.
     func export(canTransferToApp: Bool) -> ExportAttempt? {
         guard pixelCount > 0, sourceURL != nil || !encoded.isEmpty else { return nil }
-        switch ExportFidelityRouter.decide(pixelCount: pixelCount, canTransferToApp: canTransferToApp) {
+        switch ExportFidelityRouter.decide(pixelWidth: pixelWidth, pixelHeight: pixelHeight, canTransferToApp: canTransferToApp) {
         case .handOffOriginal:
             return .handoff
         case .reselectInApp:
