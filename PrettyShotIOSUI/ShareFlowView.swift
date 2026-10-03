@@ -19,6 +19,8 @@ struct ShareFlowView: View {
     var onDismissLarge: () -> Void
     var onDismissDenied: () -> Void
     var onOpenSettings: () -> Void
+    /// S12. Set when the app did not open and nothing was staged. The page stays `.multi`.
+    var showsS12OpenHint = false
 
     var body: some View {
         ZStack {
@@ -81,6 +83,11 @@ struct ShareFlowView: View {
                 .font(.system(size: 14))
                 .foregroundStyle(IOSTheme.muted)
             Button(IOSCopy.multiStitch, action: onStitchInApp).buttonStyle(BloomButtonStyle())
+            if showsS12OpenHint {
+                Text(IOSCopy.s12OpenFailedHint)
+                    .font(.system(size: 14))
+                    .foregroundStyle(IOSTheme.charcoal)
+            }
             if canTransferToApp {
                 Text(IOSCopy.multiFootnote)
                     .font(.system(size: 12))
@@ -210,13 +217,13 @@ struct ShareFlowView: View {
             Spacer()
             Image(systemName: "checkmark")
                 .font(.system(size: 36, weight: .semibold))
-                .foregroundStyle(Color(hex: 0x3E8F78))
+                .foregroundStyle(IOSTheme.stagedCheck)
                 .frame(width: 96, height: 96)
-                .background(Color(hex: 0xD7EBE4), in: Circle())
+                .background(IOSTheme.stagedCircle, in: Circle())
             Text(IOSCopy.stagedTitle(count))
                 .font(.system(size: 22, weight: .bold))
                 .foregroundStyle(IOSTheme.charcoal)
-            Text(IOSCopy.stagedBody)
+            Text(IOSCopy.stagedBody(count: count))
                 .font(.system(size: 15))
                 .multilineTextAlignment(.center)
                 .foregroundStyle(IOSTheme.muted)

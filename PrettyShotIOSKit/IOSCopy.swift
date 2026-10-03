@@ -45,7 +45,7 @@ enum IOSCopy {
     static let chipManualCrop = "手动裁"
     static let chipUndoCrop = "撤回"
     static let chipRemoveAgain = "去除"
-    static let chipDownsampled = "预览已降采样"
+    static let chipDownsampled = "大图 · 预览已降采样"
     static let arrowHint = "在空白处拖一条直线。短于 18pt 的拖动会忽略。"
     static let redactHint = "框选要打码的区域。导出时写入像素，不能还原。"
     static let redactRule = "编辑过程中可以撤销。存入相册或复制之后不能还原。"
@@ -79,6 +79,9 @@ enum IOSCopy {
     static let memoryFailedBody = "可能还在 iCloud 中未下载、格式暂不支持，或图片过大导致内存不足。"
     static let pickAgain = "重新选图"
     static let backHome = "返回首页"
+    /// 选了多张、读出来的不够两张。单张打不开仍用 `memoryFailedTitle`。
+    static let multiUnreadableTitle = "有的图片没读出来"
+    static let multiUnreadableBody = "有的图片还在 iCloud 中未下载，或文件已损坏。不会只用读出来的那张继续。"
 
     /// 帧 11。只出现在分享扩展，且只有能把原文件交给 App 时。主 App 不用这句。
     /// 交接只拷贝原文件，不带编辑样式，所以这里不写「样式会一起带过去」。
@@ -86,7 +89,7 @@ enum IOSCopy {
     static let largeBody = "这张图尺寸很大，在分享菜单里按原分辨率导出可能内存不足。为了不丢图，请在 PrettyShot App 中继续。"
     static let continueInApp = "在 App 中继续"
     /// S10c。
-    static let handoffProgressTitle = "正在交给 PrettyShot..."
+    static let handoffProgressTitle = "正在交给 PrettyShot…"
     static let handoffProgressBody = "图片只在本机暂存，不上传。App 确认收到之前，暂存的副本不会删；相册里的原图始终不动。"
     static let copyingToStaging = "复制到本机暂存区"
     static let cancelHandoffNote = "取消 = 不交接，清掉这次暂存的副本\n相册里的原图没有被改动"
@@ -112,6 +115,10 @@ enum IOSCopy {
     static let handoffRetry = "再试一次"
     /// 帧 63b。图已经暂存，只是没能打开 App。没有「重试」。
     static func stagedTitle(_ count: Int) -> String { "已暂存 \(count) 张" }
+    /// 多张仍是拼接那句。单张不写「拼接」。
+    static func stagedBody(count: Int) -> String {
+        count <= 1 ? "打开 PrettyShot 即可继续，图片不会丢。" : stagedBody
+    }
     static let stagedBody = "打开 PrettyShot 即可继续拼接，图片不会丢。"
     static let stagedHint = "打开 App 后，首页会出现「继续上次分享」"
     /// S10f 拉不起 App。停在这一页，不进 S10d。
@@ -141,6 +148,8 @@ enum IOSCopy {
     static let multiStitch = "在 PrettyShot 中拼成长图"
     static let multiDetail = "拼接在 App 内完成，可以调整顺序、删掉某一张。扩展里不拼接。"
     static let multiFootnote = "若没有自动打开，手动打开 PrettyShot 即可继续。"
+    /// S12。还没暂存就打不开 App 时留在这一页，不跳到 S10f。
+    static let s12OpenFailedHint = "没有打开 PrettyShot。请自己打开 App，从这一页继续。"
     static let multiInlineFootnote = "当前签名不能把这些图交给 App。请打开 PrettyShot，用「拼长图」从相册再选一次。"
     static func pdfShareTitle(count: Int) -> String {
         "收到 \(count) 个整页 PDF"
@@ -154,7 +163,17 @@ enum IOSCopy {
     static let stitchResort = "按时间重排"
     static let stitchStart = "开始拼接"
     static let stitchRemoved = "已移除 1 张 · 原图未删除"
-    static let stitchSizeMismatch = "有的图尺寸不一致，拼接时被跳过。请用同一台手机的竖屏截图。"
+    static func stitchSizeMismatch(ordinals: [Int]) -> String {
+        let listed: String
+        if ordinals.count == 1 {
+            listed = "第 \(ordinals[0]) 张"
+        } else if ordinals.count > 1 {
+            listed = "第 " + ordinals.map(String.init).joined(separator: "、") + " 张"
+        } else {
+            listed = "有的图"
+        }
+        return "\(listed)尺寸不一致，拼接时被跳过。请用同一台手机的竖屏截图。"
+    }
     static let stitchPreviewNote = "预览可以缩小。拼接输入和导出走文件里的像素，这里不降采样。"
     static let keepOnce = "固定栏只保留一次"
     static let keepOnceDetail = "顶栏只留第 1 张 · 底栏只留最后 1 张"
@@ -256,8 +275,19 @@ enum IOSCopy {
     static let pdfPickedStub = "已选中 PDF。光栅化留到下一轮，这一步不会生成长图。"
 
     static let handoffBannerTitle = "继续上次分享"
-    static func handoffBannerDetail(count: Int) -> String {
-        "有 \(count) 张图从分享扩展暂存过来，可以接着拼。"
+    /// One share omits 「次分享」. `shares` is the number of staged batches, not a fixed 2 or 3.
+    static func handoffBannerDetail(count: Int, shares: Int = 1) -> String {
+        if shares <= 1 {
+            return "已暂存 \(count) 张"
+        }
+        return "已暂存 \(count) 张 · 来自 \(shares) 次分享"
+    }
+
+    static func handoffBannerDetail(for pending: [HandoffTicket]) -> String {
+        handoffBannerDetail(
+            count: PendingShareResume.stagedFileCount(pending),
+            shares: pending.count
+        )
     }
 
     static let longEditorChip = "长图"

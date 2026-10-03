@@ -2,6 +2,7 @@ import CoreGraphics
 import Darwin
 import ImageIO
 import PrettyShotCore
+import UIKit
 import XCTest
 @testable import PrettyShotIOS
 
@@ -227,7 +228,7 @@ final class StitchGateCopyTests: XCTestCase {
         XCTAssertEqual(IOSCopy.exportSeparateDetail, "不拼了，分别美化后存入相册")
         XCTAssertEqual(IOSCopy.confirmBlockedNote, "处理完所有「待确认」接缝前，不能进入下一步")
         XCTAssertEqual(IOSCopy.reselectInApp, "改用 PrettyShot App 选图")
-        XCTAssertEqual(IOSCopy.handoffProgressTitle, "正在交给 PrettyShot...")
+        XCTAssertEqual(IOSCopy.handoffProgressTitle, "正在交给 PrettyShot…")
         XCTAssertTrue(IOSCopy.handoffProgressBody.contains("原图始终不动"))
         XCTAssertFalse(IOSCopy.handoffProgressBody.contains("预览尺寸"))
         XCTAssertEqual(IOSCopy.handoffFailedTitle, "没能交给 PrettyShot")
@@ -820,7 +821,7 @@ final class ShareAcceptanceTests: XCTestCase {
         }
         let pending = try store.pendingTickets()
         XCTAssertEqual(PendingShareResume.ticket(pending)?.id, ticket.id)
-        XCTAssertEqual(PendingShareResume.stagedFileCount(pending), 3)
+        XCTAssertEqual(PendingShareResume.stagedFileCount(pending), 4)
         let summed = pending.reduce(0) { $0 + $1.fileNames.count + $1.missingShots.count }
         XCTAssertGreaterThan(summed, 3)
         try store.confirmReceipt(ticketID: ticket.id)
@@ -904,7 +905,7 @@ final class ShareAcceptanceTests: XCTestCase {
         let pending = try stageShares([2, 1])
         XCTAssertEqual(pending.count, 2)
         XCTAssertEqual(PendingShareResume.stagedFileCount(pending), 3)
-        XCTAssertEqual(IOSCopy.handoffBannerDetail(count: 3), "已暂存 3 张 · 来自 2 次分享")
+        XCTAssertEqual(IOSCopy.handoffBannerDetail(for: pending), "已暂存 3 张 · 来自 2 次分享")
         let ordered = pending.sorted { $0.createdAt < $1.createdAt }
         XCTAssertEqual(ordered.map(\.fileNames.count), [2, 1])
     }
@@ -913,7 +914,7 @@ final class ShareAcceptanceTests: XCTestCase {
         let pending = try stageShares([1, 2, 3])
         XCTAssertEqual(pending.count, 3)
         XCTAssertEqual(PendingShareResume.stagedFileCount(pending), 6)
-        XCTAssertEqual(IOSCopy.handoffBannerDetail(count: 6), "已暂存 6 张 · 来自 3 次分享")
+        XCTAssertEqual(IOSCopy.handoffBannerDetail(for: pending), "已暂存 6 张 · 来自 3 次分享")
         let ordered = pending.sorted { $0.createdAt < $1.createdAt }
         XCTAssertEqual(ordered.map(\.fileNames.count), [1, 2, 3])
     }
@@ -1008,7 +1009,7 @@ final class ShareAcceptanceTests: XCTestCase {
 final class FollowUp34CopyTests: XCTestCase {
     func testReaddedFourthIsNamedRatherThanTheSmallestOrdinal() {
         let session = MissingShotSession.remember(failedOrdinals: [2, 4], loadedCount: 2)
-        let step = session.addingBackOne()
+        let step = session.addingBack(ordinal: 4)
         XCTAssertEqual(step.restored, 4)
         XCTAssertEqual(step.session.ordinals, [2])
         XCTAssertEqual(IOSCopy.missingBanner(step.session.ordinals), "少了 1 张 · 第 2 张没读出来")
@@ -1017,17 +1018,30 @@ final class FollowUp34CopyTests: XCTestCase {
 
     func testTwoPickedOneUnreadableUsesTheMultiErrorPage() {
         XCTAssertEqual(InAppStitchLoader.outcome(readableCount: 1, failedOrdinals: [2]), .failed)
-        XCTAssertEqual(IOSCopy.memoryFailedTitle, "有的图片没读出来")
+        XCTAssertEqual(IOSCopy.memoryFailedTitle, "这张图片打不开")
+        XCTAssertEqual(InAppStitchLoader.errorTitle(pickedCount: 2), "有的图片没读出来")
+        XCTAssertEqual(InAppStitchLoader.errorBody(pickedCount: 2), IOSCopy.multiUnreadableBody)
+        XCTAssertTrue(IOSCopy.multiUnreadableBody.contains("不会只用读出来的那张继续"))
+        XCTAssertEqual(InAppStitchLoader.errorTitle(pickedCount: 1), "这张图片打不开")
+        XCTAssertFalse(InAppStitchLoader.reselectOpensMultiPicker(pickedCount: 1))
+        XCTAssertTrue(InAppStitchLoader.reselectOpensMultiPicker(pickedCount: 2))
         XCTAssertEqual(IOSCopy.pickAgain, "重新选图")
     }
 
     func testS12OpenFailureStaysOnS12WithOneHint() {
-        XCTAssertEqual(IOSCopy.multiFootnote, "没有打开 PrettyShot。请自己打开 App，从这一页继续。")
+        XCTAssertEqual(IOSCopy.s12OpenFailedHint, "没有打开 PrettyShot。请自己打开 App，从这一页继续。")
+        XCTAssertEqual(IOSCopy.multiFootnote, "若没有自动打开，手动打开 PrettyShot 即可继续。")
+        XCTAssertEqual(
+            S12Launch.afterOpenFailed(stagedFileCount: 0),
+            .stayOnMultiPage(hint: IOSCopy.s12OpenFailedHint)
+        )
+        XCTAssertEqual(S12Launch.afterOpenFailed(stagedFileCount: 2), .notThisPage)
     }
 
     func testSingleImageStagedBodyOmitsStitchWord() {
         XCTAssertEqual(IOSCopy.stagedTitle(1), "已暂存 1 张")
-        XCTAssertEqual(IOSCopy.stagedBody, "打开 PrettyShot 即可继续，图片不会丢。")
+        XCTAssertEqual(IOSCopy.stagedBody(count: 1), "打开 PrettyShot 即可继续，图片不会丢。")
+        XCTAssertEqual(IOSCopy.stagedBody(count: 3), "打开 PrettyShot 即可继续拼接，图片不会丢。")
         XCTAssertEqual(IOSCopy.stagedHint, "打开 App 后，首页会出现「继续上次分享」")
         XCTAssertEqual(IOSCopy.readFailedOK, "好的")
     }
@@ -1041,11 +1055,62 @@ final class FollowUp34CopyTests: XCTestCase {
         XCTAssertEqual(IOSCopy.chipDownsampled, "大图 · 预览已降采样")
     }
 
-    func testSizeMismatchNamesTheSkippedImage() {
+    func testSizeMismatchNamesTheSkippedImage() throws {
         XCTAssertEqual(
-            IOSCopy.stitchSizeMismatch,
+            IOSCopy.stitchSizeMismatch(ordinals: [2]),
             "第 2 张尺寸不一致，拼接时被跳过。请用同一台手机的竖屏截图。"
         )
-        XCTAssertTrue(IOSCopy.stitchSizeMismatch.contains("第 2 张"))
+        XCTAssertTrue(IOSCopy.stitchSizeMismatch(ordinals: [2]).contains("第 2 张"))
+        XCTAssertEqual(
+            IOSCopy.stitchSizeMismatch(ordinals: [2, 4]),
+            "第 2、4 张尺寸不一致，拼接时被跳过。请用同一台手机的竖屏截图。"
+        )
+        let model = StitchModel()
+        model.ingest([try solid(width: 40, height: 80), try solid(width: 40, height: 120)])
+        XCTAssertEqual(model.skippedOrdinals, [2])
+        XCTAssertEqual(model.note, IOSCopy.stitchSizeMismatch(ordinals: [2]))
+    }
+
+    func testStagedMarkUsesMintInDarkMode() {
+        let light = IOSTheme.stagedCheckColor.resolvedColor(with: UITraitCollection(userInterfaceStyle: .light))
+        let dark = IOSTheme.stagedCheckColor.resolvedColor(with: UITraitCollection(userInterfaceStyle: .dark))
+        var lightRed: CGFloat = 0
+        var lightGreen: CGFloat = 0
+        var lightBlue: CGFloat = 0
+        var lightAlpha: CGFloat = 0
+        var darkRed: CGFloat = 0
+        var darkGreen: CGFloat = 0
+        var darkBlue: CGFloat = 0
+        var darkAlpha: CGFloat = 0
+        XCTAssertTrue(light.getRed(&lightRed, green: &lightGreen, blue: &lightBlue, alpha: &lightAlpha))
+        XCTAssertTrue(dark.getRed(&darkRed, green: &darkGreen, blue: &darkBlue, alpha: &darkAlpha))
+        XCTAssertEqual(lightRed, CGFloat(0x7E) / 255, accuracy: 0.02)
+        XCTAssertEqual(lightGreen, CGFloat(0xB8) / 255, accuracy: 0.02)
+        XCTAssertEqual(lightBlue, CGFloat(0xA8) / 255, accuracy: 0.02)
+        XCTAssertNotEqual(lightRed, darkRed)
+        let circleLight = IOSTheme.stagedCircleColor.resolvedColor(with: UITraitCollection(userInterfaceStyle: .light))
+        let circleDark = IOSTheme.stagedCircleColor.resolvedColor(with: UITraitCollection(userInterfaceStyle: .dark))
+        var circleLightRed: CGFloat = 0
+        var circleLightGreen: CGFloat = 0
+        var circleLightBlue: CGFloat = 0
+        var circleLightAlpha: CGFloat = 0
+        var circleDarkRed: CGFloat = 0
+        var circleDarkGreen: CGFloat = 0
+        var circleDarkBlue: CGFloat = 0
+        var circleDarkAlpha: CGFloat = 0
+        XCTAssertTrue(circleLight.getRed(&circleLightRed, green: &circleLightGreen, blue: &circleLightBlue, alpha: &circleLightAlpha))
+        XCTAssertTrue(circleDark.getRed(&circleDarkRed, green: &circleDarkGreen, blue: &circleDarkBlue, alpha: &circleDarkAlpha))
+        XCTAssertNotEqual(circleLightRed, circleDarkRed)
+    }
+
+    private func solid(width: Int, height: Int) throws -> CGImage {
+        let space = try XCTUnwrap(CGColorSpace(name: CGColorSpace.sRGB))
+        let context = try XCTUnwrap(CGContext(
+            data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
+            space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ))
+        context.setFillColor(CGColor(srgbRed: 0.2, green: 0.5, blue: 0.8, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        return try XCTUnwrap(context.makeImage())
     }
 }

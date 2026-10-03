@@ -15,6 +15,8 @@ final class ShareViewController: UIViewController {
     /// Temp copies from this attempt. Cancel deletes these, not the photo-library originals.
     private var attemptCopies: [URL] = []
     private var gathered: GatheredShareFiles?
+    /// S12. True after a multi-image open failed and nothing was staged.
+    private var showsS12OpenHint = false
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -57,7 +59,8 @@ final class ShareViewController: UIViewController {
                 self?.phase = .editor
                 self?.refresh()
             },
-            onOpenSettings: { [weak self] in self?.openSettings() }
+            onOpenSettings: { [weak self] in self?.openSettings() },
+            showsS12OpenHint: showsS12OpenHint
         )
     }
 
@@ -193,7 +196,15 @@ final class ShareViewController: UIViewController {
 
     private func beginMultiHandoff() {
         if !store.canTransferToApp {
-            presentCannotHandOff()
+            let stagedCount = stagedTicket?.fileNames.count ?? 0
+            switch S12Launch.afterOpenFailed(stagedFileCount: stagedCount) {
+            case .stayOnMultiPage:
+                showsS12OpenHint = true
+                refresh()
+            case .notThisPage:
+                phase = .stagedAwaitingApp(count: stagedCount)
+                refresh()
+            }
             return
         }
         showsLarge = false

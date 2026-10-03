@@ -170,14 +170,42 @@ enum ExtensionLaunchRouter {
     }
 }
 
-/// A1b. The banner counts the ticket 「继续拼接」 will open, and only the files actually staged.
+/// S12. The multi-image page failed to open the app before anything was staged.
+enum S12OpenResult: Equatable {
+    case stayOnMultiPage(hint: String)
+    /// Files are already staged, so this is frame 63b, not S12.
+    case notThisPage
+}
+
+enum S12Launch {
+    static func afterOpenFailed(stagedFileCount: Int) -> S12OpenResult {
+        if stagedFileCount > 0 {
+            return .notThisPage
+        }
+        return .stayOnMultiPage(hint: IOSCopy.s12OpenFailedHint)
+    }
+}
+
+/// A1b. Every staged batch is one list, in share order (oldest first). The count is the files, not the missing shots.
 enum PendingShareResume {
+    static func ordered(_ pending: [HandoffTicket]) -> [HandoffTicket] {
+        pending.sorted { $0.createdAt < $1.createdAt }
+    }
+
     static func ticket(_ pending: [HandoffTicket]) -> HandoffTicket? {
-        pending.last
+        ordered(pending).last
     }
 
     static func stagedFileCount(_ pending: [HandoffTicket]) -> Int {
-        ticket(pending)?.fileNames.count ?? 0
+        ordered(pending).reduce(0) { $0 + $1.fileNames.count }
+    }
+
+    static func fileURLs(_ pending: [HandoffTicket], store: HandoffStore) throws -> [URL] {
+        var urls: [URL] = []
+        for ticket in ordered(pending) {
+            urls.append(contentsOf: try store.files(for: ticket.id))
+        }
+        return urls
     }
 }
 

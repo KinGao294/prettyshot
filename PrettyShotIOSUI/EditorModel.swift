@@ -86,7 +86,13 @@ final class EditorModel: ObservableObject {
     /// to reselect it in the app. It never returns a downscaled bitmap.
     func export(canTransferToApp: Bool) -> ExportAttempt? {
         guard pixelCount > 0, sourceURL != nil || !encoded.isEmpty else { return nil }
-        switch ExportFidelityRouter.decide(pixelWidth: pixelWidth, pixelHeight: pixelHeight, canTransferToApp: canTransferToApp) {
+        switch ExportFidelityRouter.decide(
+            pixelWidth: pixelWidth,
+            pixelHeight: pixelHeight,
+            canTransferToApp: canTransferToApp,
+            style: style,
+            scale: cropMatch.map { CGFloat($0.scale) }
+        ) {
         case .handOffOriginal:
             return .handoff
         case .reselectInApp:

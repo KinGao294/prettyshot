@@ -55,10 +55,8 @@ struct MissingShotSession: Equatable {
     var expectedTotal: Int
 
     /// `previous` is discarded. Failures from the last stitch do not carry into this pick.
-    static func beginNewPick(replacing previous: MissingShotSession, failedOrdinals: [Int], loadedCount: Int) -> MissingShotSession {
-        let next = remember(failedOrdinals: failedOrdinals, loadedCount: loadedCount)
-        let carried = next.ordinals.filter { previous.ordinals.contains($0) && !failedOrdinals.contains($0) }
-        return MissingShotSession(ordinals: next.ordinals.filter { !carried.contains($0) }, expectedTotal: next.expectedTotal)
+    static func beginNewPick(replacing _: MissingShotSession, failedOrdinals: [Int], loadedCount: Int) -> MissingShotSession {
+        remember(failedOrdinals: failedOrdinals, loadedCount: loadedCount)
     }
 
     static func remember(failedOrdinals: [Int], loadedCount: Int) -> MissingShotSession {
@@ -69,9 +67,15 @@ struct MissingShotSession: Equatable {
     /// Drops the earliest missing ordinal. The banner stays while any remain.
     func addingBackOne() -> (session: MissingShotSession, restored: Int?) {
         guard let restored = ordinals.first else { return (self, nil) }
+        return addingBack(ordinal: restored)
+    }
+
+    /// Drops the ordinal the user actually put back, not the smallest one still missing.
+    func addingBack(ordinal: Int) -> (session: MissingShotSession, restored: Int?) {
+        guard ordinals.contains(ordinal) else { return (self, nil) }
         return (
-            MissingShotSession(ordinals: Array(ordinals.dropFirst()), expectedTotal: expectedTotal),
-            restored
+            MissingShotSession(ordinals: ordinals.filter { $0 != ordinal }, expectedTotal: expectedTotal),
+            ordinal
         )
     }
 }
