@@ -15,6 +15,10 @@
 			isa = PBXBuildFile;
 			fileRef = 7BC7E95C1528B971CA3BA5ED;
 		};
+		0AC3DEEC3BA5C7DDC795D277 = {
+			isa = PBXBuildFile;
+			productRef = 8E2055DF5028DDA24BEF8208;
+		};
 		169F0F89A9FB98991CA2D0D4 = {
 			isa = PBXBuildFile;
 			fileRef = 9D00959E0136C01C7D4F6375;
@@ -42,10 +46,6 @@
 		47B41E103578C4772AB05845 = {
 			isa = PBXBuildFile;
 			fileRef = 7FA019032B0F80521E3D396E;
-		};
-		540BBD4694A3CE766C7B28C9 = {
-			isa = PBXBuildFile;
-			fileRef = 91C3478492323714EEA26D8D;
 		};
 		5775DBD34590FE86542E9520 = {
 			isa = PBXBuildFile;
@@ -126,6 +126,10 @@
 		C9FE3B8B3BB52EFF43401B22 = {
 			isa = PBXBuildFile;
 			fileRef = 5C99E4A254D82F4E3EC24FB9;
+		};
+		CD3B8785BC65548348651883 = {
+			isa = PBXBuildFile;
+			productRef = 4FFD0B4253A25343C4C7A949;
 		};
 		DB2CF1F88FA858A2258C1CC6 = {
 			isa = PBXBuildFile;
@@ -304,12 +308,6 @@
 			path = DEVIATIONS.md;
 			sourceTree = "<group>";
 		};
-		91C3478492323714EEA26D8D = {
-			isa = PBXFileReference;
-			lastKnownFileType = sourcecode.swift;
-			path = BackgroundPreset.swift;
-			sourceTree = "<group>";
-		};
 		920C5D19133348D51C686347 = {
 			isa = PBXFileReference;
 			lastKnownFileType = sourcecode.swift;
@@ -425,6 +423,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				0AC3DEEC3BA5C7DDC795D277,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -432,6 +431,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				CD3B8785BC65548348651883,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -472,7 +472,6 @@
 			isa = PBXGroup;
 			children = (
 				DBC897134C734B2D9F3C02A4,
-				91C3478492323714EEA26D8D,
 				F8AC1D0668F18B820EEBA181,
 				C4683F753CEE272A9CD82FB6,
 				920C5D19133348D51C686347,
@@ -615,6 +614,9 @@
 				1FA20F41D0F7F249FC8EA9EF,
 			);
 			name = PrettyShotTests;
+			packageProductDependencies = (
+				4FFD0B4253A25343C4C7A949,
+			);
 			productName = PrettyShotTests;
 			productReference = 65130DA4FE87A4593075136C;
 			productType = "com.apple.product-type.bundle.unit-test";
@@ -632,6 +634,9 @@
 			dependencies = (
 			);
 			name = PrettyShot;
+			packageProductDependencies = (
+				8E2055DF5028DDA24BEF8208,
+			);
 			productName = PrettyShot;
 			productReference = 662CD748C31AFE5840D9B2B4;
 			productType = "com.apple.product-type.application";
@@ -665,6 +670,9 @@
 				"zh-Hans",
 			);
 			mainGroup = 2A44C54E23411059C3A1A1E1;
+			packageReferences = (
+				BA56B22DEB61CA62FCC044A6,
+			);
 			productRefGroup = C863DA5204F95EC573510473;
 			projectDirPath = "";
 			projectRoot = "";
@@ -705,7 +713,6 @@
 				24CC7979DC1D6DD301A5CBBB,
 				9A99753F92E4BEDDE7D15E4C,
 				04BD982B535C5E1D9D1FF200,
-				540BBD4694A3CE766C7B28C9,
 				702B9467B53C9AEB3D54E584,
 				DB2CF1F88FA858A2258C1CC6,
 				A5B08CA1047B1DBA03DACAC9,
@@ -941,6 +948,26 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		BA56B22DEB61CA62FCC044A6 = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = PrettyShotCore;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		4FFD0B4253A25343C4C7A949 = {
+			isa = XCSwiftPackageProductDependency;
+			package = BA56B22DEB61CA62FCC044A6;
+			productName = PrettyShotCore;
+		};
+		8E2055DF5028DDA24BEF8208 = {
+			isa = XCSwiftPackageProductDependency;
+			package = BA56B22DEB61CA62FCC044A6;
+			productName = PrettyShotCore;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 46F86FAA6BBF9AC94A7E4595;
 }

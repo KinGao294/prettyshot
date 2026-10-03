@@ -1,11 +1,17 @@
 import CoreGraphics
 import Foundation
 
-struct GradientStop: Hashable {
-    let hex: UInt32
-    let location: CGFloat
+/// Paper Bloom backgrounds and beautify settings. CoreGraphics only, so macOS and iOS draw the same fill.
+public struct GradientStop: Hashable {
+    public let hex: UInt32
+    public let location: CGFloat
 
-    var cgColor: CGColor {
+    public init(hex: UInt32, location: CGFloat) {
+        self.hex = hex
+        self.location = location
+    }
+
+    public var cgColor: CGColor {
         CGColor(
             srgbRed: CGFloat((hex >> 16) & 0xFF) / 255,
             green: CGFloat((hex >> 8) & 0xFF) / 255,
@@ -16,13 +22,20 @@ struct GradientStop: Hashable {
 }
 
 /// A soft color bloom. Position is in the fill rect (y grows downward); radius is a fraction of the longer side.
-struct RadialWash: Hashable {
-    let hex: UInt32
-    let x: CGFloat
-    let y: CGFloat
-    let radius: CGFloat
+public struct RadialWash: Hashable {
+    public let hex: UInt32
+    public let x: CGFloat
+    public let y: CGFloat
+    public let radius: CGFloat
 
-    func cgColor(alpha: CGFloat) -> CGColor {
+    public init(hex: UInt32, x: CGFloat, y: CGFloat, radius: CGFloat) {
+        self.hex = hex
+        self.x = x
+        self.y = y
+        self.radius = radius
+    }
+
+    public func cgColor(alpha: CGFloat) -> CGColor {
         CGColor(
             srgbRed: CGFloat((hex >> 16) & 0xFF) / 255,
             green: CGFloat((hex >> 8) & 0xFF) / 255,
@@ -33,21 +46,21 @@ struct RadialWash: Hashable {
 }
 
 /// Paper Bloom backgrounds. Linear presets match DESIGN §3.3; `pastel-air` is a corner-bloom wash.
-struct BackgroundPreset: Identifiable, Hashable {
-    let key: String
-    let name: String
-    let localizedName: String
+public struct BackgroundPreset: Identifiable, Hashable {
+    public let key: String
+    public let name: String
+    public let localizedName: String
     /// CSS `linear-gradient` angle in degrees (0 = towards top, 90 = towards right).
-    let angle: Double
-    let stops: [GradientStop]
+    public let angle: Double
+    public let stops: [GradientStop]
     /// Light presets get dark swatch labels.
-    let isLight: Bool
+    public let isLight: Bool
     /// When set, these blooms are painted over `stops.first` instead of the linear gradient.
-    let washes: [RadialWash]
+    public let washes: [RadialWash]
 
-    var id: String { key }
+    public var id: String { key }
 
-    init(key: String, name: String, localizedName: String, angle: Double, stops: [GradientStop], isLight: Bool, washes: [RadialWash] = []) {
+    public init(key: String, name: String, localizedName: String, angle: Double, stops: [GradientStop], isLight: Bool, washes: [RadialWash] = []) {
         self.key = key
         self.name = name
         self.localizedName = localizedName
@@ -57,7 +70,7 @@ struct BackgroundPreset: Identifiable, Hashable {
         self.washes = washes
     }
 
-    static let all: [BackgroundPreset] = [
+    public static let all: [BackgroundPreset] = [
         BackgroundPreset(key: "paper-mist", name: "Paper Mist", localizedName: "纸雾", angle: 145,
                          stops: [.init(hex: 0xF7F2EA, location: 0), .init(hex: 0xE8DFD4, location: 0.48), .init(hex: 0xD9CFC4, location: 1)],
                          isLight: true),
@@ -98,12 +111,12 @@ struct BackgroundPreset: Identifiable, Hashable {
                          ]),
     ]
 
-    static func preset(for key: String?) -> BackgroundPreset? {
+    public static func preset(for key: String?) -> BackgroundPreset? {
         guard let key else { return nil }
         return all.first { $0.key == key }
     }
 
-    var cgGradient: CGGradient? {
+    public var cgGradient: CGGradient? {
         CGGradient(
             colorsSpace: CGColorSpace(name: CGColorSpace.sRGB),
             colors: stops.map(\.cgColor) as CFArray,
@@ -112,7 +125,7 @@ struct BackgroundPreset: Identifiable, Hashable {
     }
 
     /// Fills `rect`. Linear presets match CSS `linear-gradient`; wash presets bloom from several points. Context must be y-down.
-    func fill(_ rect: CGRect, in context: CGContext) {
+    public func fill(_ rect: CGRect, in context: CGContext) {
         context.saveGState()
         context.clip(to: rect)
         if washes.isEmpty {
@@ -153,10 +166,10 @@ struct BackgroundPreset: Identifiable, Hashable {
     }
 }
 
-enum GradientGeometry {
+public enum GradientGeometry {
     /// CSS gradient line for `angle` in a y-down rect: passes through the centre, and is long enough
     /// that the 0%/100% stops touch the corners (|w·sinθ| + |h·cosθ|).
-    static func endpoints(angleDegrees: Double, in rect: CGRect) -> (CGPoint, CGPoint) {
+    public static func endpoints(angleDegrees: Double, in rect: CGRect) -> (CGPoint, CGPoint) {
         let theta = angleDegrees * .pi / 180
         let dx = CGFloat(sin(theta))
         let dy = CGFloat(-cos(theta)) // y-down: 0deg points up
@@ -171,19 +184,46 @@ enum GradientGeometry {
 }
 
 /// Beautify settings. Lengths are in points and scaled by the capture's pixel scale at render time.
-struct BackgroundStyle: Codable, Equatable {
+public struct BackgroundStyle: Codable, Equatable {
     /// `nil` = no background (plain annotated image).
-    var presetKey: String?
-    var padding: Double
-    var radius: Double
-    var shadow: Double
+    public var presetKey: String?
+    public var padding: Double
+    public var radius: Double
+    public var shadow: Double
 
     /// Pastel Air, the last-added wash; padding / radius / shadow match the editor defaults.
-    static let `default` = BackgroundStyle(presetKey: "pastel-air", padding: 28, radius: 12, shadow: 48)
+    public static let `default` = BackgroundStyle(presetKey: "pastel-air", padding: 28, radius: 12, shadow: 48)
 
-    static let paddingRange: ClosedRange<Double> = 8...64
-    static let radiusRange: ClosedRange<Double> = 0...28
-    static let shadowRange: ClosedRange<Double> = 0...80
+    public static let paddingRange: ClosedRange<Double> = 8...64
+    public static let radiusRange: ClosedRange<Double> = 0...28
+    public static let shadowRange: ClosedRange<Double> = 0...80
 
-    var preset: BackgroundPreset? { BackgroundPreset.preset(for: presetKey) }
+    public init(presetKey: String?, padding: Double, radius: Double, shadow: Double) {
+        self.presetKey = presetKey
+        self.padding = padding
+        self.radius = radius
+        self.shadow = shadow
+    }
+
+    public var preset: BackgroundPreset? { BackgroundPreset.preset(for: presetKey) }
+
+    private enum CodingKeys: String, CodingKey {
+        case presetKey, padding, radius, shadow
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        presetKey = try container.decodeIfPresent(String.self, forKey: .presetKey)
+        padding = try container.decode(Double.self, forKey: .padding)
+        radius = try container.decode(Double.self, forKey: .radius)
+        shadow = try container.decode(Double.self, forKey: .shadow)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(presetKey, forKey: .presetKey)
+        try container.encode(padding, forKey: .padding)
+        try container.encode(radius, forKey: .radius)
+        try container.encode(shadow, forKey: .shadow)
+    }
 }

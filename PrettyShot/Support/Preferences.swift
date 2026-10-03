@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import PrettyShotCore
 
 @MainActor
 final class Preferences: ObservableObject {

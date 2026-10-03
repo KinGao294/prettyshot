@@ -152,6 +152,25 @@ def main():
     add(main_group, {"isa": "PBXGroup", "children": doc_refs + [app_group, test_group, products_group],
                      "sourceTree": "<group>"})
 
+    # Local Swift package (macOS + iOS). Static product, so no embed phase.
+    package_ref = add(oid("package", "PrettyShotCore"), {
+        "isa": "XCLocalSwiftPackageReference",
+        "relativePath": "PrettyShotCore",
+    })
+    package_deps = {}
+    for target in (APP, TESTS):
+        dep = add(oid("pkgproduct", target, "PrettyShotCore"), {
+            "isa": "XCSwiftPackageProductDependency",
+            "package": package_ref,
+            "productName": "PrettyShotCore",
+        })
+        bid = add(oid("pkgbuild", target, "PrettyShotCore"), {
+            "isa": "PBXBuildFile",
+            "productRef": dep,
+        })
+        build_files[(target, "frameworks")].append(bid)
+        package_deps[target] = dep
+
     for (target, kind), pid in phases.items():
         isa = {"sources": "PBXSourcesBuildPhase", "frameworks": "PBXFrameworksBuildPhase",
                "resources": "PBXResourcesBuildPhase"}[kind]
@@ -261,6 +280,7 @@ def main():
         "buildRules": [],
         "dependencies": [],
         "name": APP,
+        "packageProductDependencies": [package_deps[APP]],
         "productName": APP,
         "productReference": app_product,
         "productType": "com.apple.product-type.application",
@@ -272,6 +292,7 @@ def main():
         "buildRules": [],
         "dependencies": [dependency],
         "name": TESTS,
+        "packageProductDependencies": [package_deps[TESTS]],
         "productName": TESTS,
         "productReference": test_product,
         "productType": "com.apple.product-type.bundle.unit-test",
@@ -294,6 +315,7 @@ def main():
         "hasScannedForEncodings": 0,
         "knownRegions": ["en", "Base", "zh-Hans"],
         "mainGroup": main_group,
+        "packageReferences": [package_ref],
         "productRefGroup": products_group,
         "projectDirPath": "",
         "projectRoot": "",
@@ -303,7 +325,8 @@ def main():
     # --- Serialize --------------------------------------------------------------
     order = ["PBXBuildFile", "PBXContainerItemProxy", "PBXFileReference", "PBXFrameworksBuildPhase", "PBXGroup",
              "PBXNativeTarget", "PBXProject", "PBXResourcesBuildPhase", "PBXSourcesBuildPhase",
-             "PBXTargetDependency", "XCBuildConfiguration", "XCConfigurationList"]
+             "PBXTargetDependency", "XCBuildConfiguration", "XCConfigurationList",
+             "XCLocalSwiftPackageReference", "XCSwiftPackageProductDependency"]
     out = ["// !$*UTF8*$!", "{", "\tarchiveVersion = 1;", "\tclasses = {", "\t};", "\tobjectVersion = 56;",
            "\tobjects = {"]
     for isa in order:

@@ -15,5 +15,6 @@ xcuserdata/
 
 # Tooling
 .swiftpm/
+.build/
 __pycache__/
 claude-run.log

@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import PrettyShotCore
 
 /// Text currently being typed on the canvas (not yet an annotation).
 struct PendingText: Equatable {

@@ -1,3 +1,4 @@
+import PrettyShotCore
 import XCTest
 @testable import PrettyShot
 

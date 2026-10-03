@@ -1,5 +1,5 @@
 import CoreGraphics
-@testable import PrettyShot
+import XCTest
 
 enum TestImages {
     /// Solid-colour sRGB image, optionally with a contrasting stripe pattern so redactions change pixels.
@@ -20,17 +20,6 @@ enum TestImages {
         return context.makeImage()!
     }
 
-    /// RGBA bytes of one pixel (x, y measured from the top-left).
-    static func pixel(_ image: CGImage, x: Int, y: Int) -> [UInt8] {
-        let space = CGColorSpace(name: CGColorSpace.sRGB)!
-        var data = [UInt8](repeating: 0, count: 4)
-        let context = CGContext(data: &data, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
-                                space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
-        context.draw(image, in: CGRect(x: -x, y: -(image.height - 1 - y), width: image.width, height: image.height))
-        return data
-    }
-
-    /// RGBA bytes, top row first, after drawing through a 8-bit sRGB context.
     static func bytes(_ image: CGImage) -> [UInt8] {
         let width = image.width
         let height = image.height
@@ -43,4 +32,35 @@ enum TestImages {
         context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
         return data
     }
+}
+
+func XCTAssertSamePixels(
+    _ actual: CGImage?,
+    _ expected: CGImage?,
+    _ message: String,
+    file: StaticString = #filePath,
+    line: UInt = #line
+) {
+    guard let actual, let expected else {
+        XCTFail("missing image — \(message)", file: file, line: line)
+        return
+    }
+    XCTAssertEqual(actual.width, expected.width, message, file: file, line: line)
+    XCTAssertEqual(actual.height, expected.height, message, file: file, line: line)
+    guard actual.width == expected.width, actual.height == expected.height else { return }
+    let left = TestImages.bytes(actual)
+    let right = TestImages.bytes(expected)
+    guard left != right else { return }
+    let width = actual.width
+    for index in 0..<min(left.count, right.count) where left[index] != right[index] {
+        let pixel = index / 4
+        let channel = index % 4
+        XCTFail(
+            "\(message): pixel (\(pixel % width), \(pixel / width)) channel \(channel) is \(left[index]), frozen \(right[index])",
+            file: file,
+            line: line
+        )
+        return
+    }
+    XCTFail("\(message): byte length \(left.count) vs \(right.count)", file: file, line: line)
 }
