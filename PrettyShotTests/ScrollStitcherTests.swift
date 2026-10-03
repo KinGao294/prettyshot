@@ -3,7 +3,7 @@ import XCTest
 @testable import PrettyShot
 
 final class ScrollStitcherTests: XCTestCase {
-    func testStickyHeaderAndFooterAreKeptOnce() {
+    func testStickyHeaderAndFooterAreKeptOnce() throws {
         let first = ScrollFixtures.viewport(scroll: 0)
         let mid = ScrollFixtures.viewport(scroll: 15)
         let last = ScrollFixtures.viewport(scroll: 30)
@@ -36,7 +36,7 @@ final class ScrollStitcherTests: XCTestCase {
         }
     }
 
-    func testSmallStepGrowsAndDuplicatesDoNot() {
+    func testSmallStepGrowsAndDuplicatesDoNot() throws {
         var stitcher = ScrollStitcher()
         XCTAssertEqual(stitcher.ingest(ScrollFixtures.page(scroll: 0)), .seeded)
         XCTAssertEqual(stitcher.ingest(ScrollFixtures.page(scroll: 0)), .unchanged)
@@ -51,7 +51,7 @@ final class ScrollStitcherTests: XCTestCase {
         XCTAssertEqual(ScrollFixtures.row(image, 41), ScrollFixtures.color(slot: ScrollFixtures.contentSlot + 41))
     }
 
-    func testUnconfidentSeamIsNotFlattenedUntilTheUserDecides() {
+    func testUnconfidentSeamIsNotFlattenedUntilTheUserDecides() throws {
         let first = ScrollFixtures.page(scroll: 0, slot: 0)
         let second = ScrollFixtures.page(scroll: 0, slot: 80)
 
@@ -90,7 +90,7 @@ final class ScrollStitcherTests: XCTestCase {
         XCTAssertTrue(assembly.renderPreview()?.marks.contains { $0.state == .aligned } == true)
     }
 
-    func testSeveralUnmatchedFramesStaySeparate() {
+    func testSeveralUnmatchedFramesStaySeparate() throws {
         var stitcher = ScrollStitcher()
         XCTAssertEqual(stitcher.ingest(ScrollFixtures.page(scroll: 0, slot: 0)), .seeded)
         XCTAssertEqual(stitcher.ingest(ScrollFixtures.page(scroll: 0, slot: 40)), .unmatched)
@@ -106,7 +106,7 @@ final class ScrollStitcherTests: XCTestCase {
         XCTAssertNil(assembly.flattenedIfResolved())
     }
 
-    func testHeightCapClipsAConfidentJoinAndStops() {
+    func testHeightCapClipsAConfidentJoinAndStops() throws {
         var options = ScrollStitcher.Options()
         options.maxHeight = 50
         var stitcher = ScrollStitcher(options: options)
@@ -116,7 +116,7 @@ final class ScrollStitcherTests: XCTestCase {
         XCTAssertEqual(image.height, 50)
     }
 
-    func testPixelBudgetRefusesAnotherFullViewport() {
+    func testPixelBudgetRefusesAnotherFullViewport() throws {
         var options = ScrollStitcher.Options()
         options.maxPixels = 40 * 45
         var stitcher = ScrollStitcher(options: options)
@@ -130,7 +130,7 @@ final class ScrollStitcherTests: XCTestCase {
         XCTAssertEqual(assembly.flattenedIfResolved()?.height, first.height)
     }
 
-    func testRemainingRowsHonorsHeightAndPixelCaps() {
+    func testRemainingRowsHonorsHeightAndPixelCaps() throws {
         XCTAssertEqual(ScrollOutputLimit.maxHeight, 16_384)
         XCTAssertEqual(ScrollOutputLimit.maxPixels, 24_000_000)
         XCTAssertEqual(ScrollOutputLimit.remainingRows(totalHeight: 0, width: 1600), 15_000)
@@ -142,7 +142,7 @@ final class ScrollStitcherTests: XCTestCase {
         )
     }
 
-    func testCGImageRoundTripKeepsTopRowAtTheTop() {
+    func testCGImageRoundTripKeepsTopRowAtTheTop() throws {
         let width = 8
         let height = 4
         var pixels = [UInt8](repeating: 0, count: width * height * 4)
@@ -157,22 +157,22 @@ final class ScrollStitcherTests: XCTestCase {
         let image = RGBAImage(width: width, height: height, pixels: pixels)
         let cg = try XCTUnwrap(image.cgImage())
         let back = try XCTUnwrap(RGBAImage.fromCGImage(cg))
-        XCTAssertEqual(ScrollFixtures.row(back, 0), (255, 0, 0))
-        XCTAssertEqual(ScrollFixtures.row(back, height - 1), (0, 0, 255))
+        XCTAssertEqual(ScrollFixtures.row(back, 0), [255, 0, 0])
+        XCTAssertEqual(ScrollFixtures.row(back, height - 1), [0, 0, 255])
     }
 
-    func testSourceRectFlipsCocoaSelection() {
+    func testSourceRectFlipsCocoaSelection() throws {
         let screen = CGSize(width: 1440, height: 900)
         let selection = CGRect(x: 100, y: 650, width: 300, height: 200)
         let source = ScrollingCaptureGeometry.sourceRect(selection: selection, screenSize: screen)
         XCTAssertEqual(source, CGRect(x: 100, y: 50, width: 300, height: 200))
     }
 
-    func testAutoScrollShipsDisabled() {
+    func testAutoScrollShipsDisabled() throws {
         XCTAssertFalse(ScrollingCaptureFeature.autoScrollEnabled)
     }
 
-    func testRepeatedRowsAreNotConfident() {
+    func testRepeatedRowsAreNotConfident() throws {
         var stitcher = ScrollStitcher()
         XCTAssertEqual(stitcher.ingest(ScrollFixtures.periodic(scroll: 0)), .seeded)
         let outcome = stitcher.ingest(ScrollFixtures.periodic(scroll: 25))
@@ -197,7 +197,7 @@ final class ScrollStitcherTests: XCTestCase {
         }
     }
 
-    func testSlowScrollKeepsRowsThatLookedUnchanged() {
+    func testSlowScrollKeepsRowsThatLookedUnchanged() throws {
         var stitcher = ScrollStitcher()
         XCTAssertEqual(stitcher.ingest(ScrollFixtures.gradient(scroll: 0)), .seeded)
         XCTAssertEqual(stitcher.ingest(ScrollFixtures.gradient(scroll: 1)), .unchanged)
@@ -209,7 +209,7 @@ final class ScrollStitcherTests: XCTestCase {
         XCTAssertEqual(ScrollFixtures.row(image, 13), ScrollFixtures.gradientColor(scroll: 2, y: 11))
     }
 
-    func testUpwardScrollPrepends() {
+    func testUpwardScrollPrepends() throws {
         var stitcher = ScrollStitcher()
         XCTAssertEqual(stitcher.ingest(ScrollFixtures.page(scroll: 20)), .seeded)
         XCTAssertEqual(stitcher.ingest(ScrollFixtures.page(scroll: 0)), .prepended(20))
@@ -221,7 +221,7 @@ final class ScrollStitcherTests: XCTestCase {
         XCTAssertEqual(ScrollFixtures.row(image, 59), ScrollFixtures.color(slot: ScrollFixtures.contentSlot + 59))
     }
 
-    func testSmallCaptureNoiseStillStitchesTheTrueShift() {
+    func testSmallCaptureNoiseStillStitchesTheTrueShift() throws {
         var stitcher = ScrollStitcher()
         let first = ScrollFixtures.page(scroll: 0)
         let second = ScrollFixtures.noised(ScrollFixtures.page(scroll: 8), amplitude: 2)
@@ -232,7 +232,7 @@ final class ScrollStitcherTests: XCTestCase {
         XCTAssertEqual(assembly.flattenedIfResolved()?.height, 48)
     }
 
-    func testStickyDedupeCanBeRestored() {
+    func testStickyDedupeCanBeRestored() throws {
         var stitcher = ScrollStitcher()
         XCTAssertEqual(stitcher.ingest(ScrollFixtures.viewport(scroll: 0)), .seeded)
         XCTAssertEqual(stitcher.ingest(ScrollFixtures.viewport(scroll: 15)), .appended(15))
@@ -246,7 +246,7 @@ final class ScrollStitcherTests: XCTestCase {
         XCTAssertEqual(assembly.flattenedIfResolved()?.height, 90)
     }
 
-    func testSeamLoupeIsFullResolutionAndTracksOverlap() {
+    func testSeamLoupeIsFullResolutionAndTracksOverlap() throws {
         var stitcher = ScrollStitcher()
         XCTAssertEqual(stitcher.ingest(ScrollFixtures.page(scroll: 0, slot: 0)), .seeded)
         XCTAssertEqual(stitcher.ingest(ScrollFixtures.page(scroll: 0, slot: 80)), .unmatched)
@@ -276,14 +276,14 @@ private enum ScrollFixtures {
         return !(r == g && g == b)
     }
 
-    static func color(slot: Int) -> (UInt8, UInt8, UInt8) {
+    static func color(slot: Int) -> [UInt8] {
         let index = palette[slot % palette.count]
-        return (levels[index % 5], levels[(index / 5) % 5], levels[index / 25])
+        return [levels[index % 5], levels[(index / 5) % 5], levels[index / 25]]
     }
 
-    static func row(_ image: RGBAImage, _ y: Int) -> (UInt8, UInt8, UInt8) {
+    static func row(_ image: RGBAImage, _ y: Int) -> [UInt8] {
         let i = y * image.width * 4
-        return (image.pixels[i], image.pixels[i + 1], image.pixels[i + 2])
+        return [image.pixels[i], image.pixels[i + 1], image.pixels[i + 2]]
     }
 
     static func viewport(scroll: Int) -> RGBAImage {
@@ -307,19 +307,19 @@ private enum ScrollFixtures {
     static func gradient(scroll: Int, height: Int = 12) -> RGBAImage {
         var pixels = [UInt8](repeating: 255, count: width * height * 4)
         for y in 0..<height {
-            let (r, g, b) = gradientColor(scroll: scroll, y: y)
+            let rgb = gradientColor(scroll: scroll, y: y)
             for x in 0..<width {
                 let i = (y * width + x) * 4
-                pixels[i] = r
-                pixels[i + 1] = g
-                pixels[i + 2] = b
+                pixels[i] = rgb[0]
+                pixels[i + 1] = rgb[1]
+                pixels[i + 2] = rgb[2]
             }
         }
         return RGBAImage(width: width, height: height, pixels: pixels)
     }
 
-    static func gradientColor(scroll: Int, y: Int) -> (UInt8, UInt8, UInt8) {
-        (UInt8(20 + (y + scroll) * 15), 180, 40)
+    static func gradientColor(scroll: Int, y: Int) -> [UInt8] {
+        [UInt8(20 + (y + scroll) * 15), 180, 40]
     }
 
     static func noised(_ image: RGBAImage, amplitude: Int) -> RGBAImage {
@@ -337,12 +337,12 @@ private enum ScrollFixtures {
     private static func fill(width: Int, height: Int, slot: (Int) -> Int) -> RGBAImage {
         var pixels = [UInt8](repeating: 255, count: width * height * 4)
         for y in 0..<height {
-            let (r, g, b) = color(slot: slot(y))
+            let rgb = color(slot: slot(y))
             for x in 0..<width {
                 let i = (y * width + x) * 4
-                pixels[i] = r
-                pixels[i + 1] = g
-                pixels[i + 2] = b
+                pixels[i] = rgb[0]
+                pixels[i + 1] = rgb[1]
+                pixels[i + 2] = rgb[2]
                 pixels[i + 3] = 255
             }
         }
