@@ -829,7 +829,8 @@ private enum CoreScrollFixtures {
     }
 
     static func neighboringColor(_ page: Int) -> [UInt8] {
-        [UInt8(20 + page * 6), UInt8(30 + page * 3), 160]
+        // Step sums to 9, so a neighbor is distance 3. Stays inside UInt8 for this fixture's pages.
+        [UInt8(20 + page * 4), UInt8(page * 5), 160]
     }
 
     /// Card chrome repeats every 20 rows. The scroll is longer than one card, so chrome votes twice.
