@@ -755,12 +755,14 @@ final class ScrollStitcherTests: XCTestCase {
         model.select(boundary: 0)
         model.overlap = 4
         model.finishManualAlignment()
+        // Seam 0 is 接缝 1 and crops the top of the next segment, so that candidate is cleared.
+        // The card names 接缝 1, the same seam as the toast.
         XCTAssertEqual(model.assembly.duplicateUndoCount, 0)
         XCTAssertEqual(model.assembly.duplicateCandidates.count, 1)
         XCTAssertNil(model.assembly.duplicateCandidates[0].choice)
         XCTAssertTrue(model.assembly.duplicateCandidates[0].seamMoved)
         XCTAssertEqual(model.assembly.duplicateCandidates[0].movedSeamNumber, 1)
-        XCTAssertEqual(model.assembly.duplicateCandidates[0].locationLine, "接缝 2 下方 · 2 行 · 接缝动过，需要重选")
+        XCTAssertEqual(model.assembly.duplicateCandidates[0].locationLine, "接缝 1 下方 · 2 行 · 接缝动过，需要重选")
         XCTAssertEqual(model.assembly.pendingDuplicateConfirmCount, 1)
         XCTAssertEqual(model.assembly.previewPrimaryTitle, "先确认 1 处重复段")
         XCTAssertFalse(model.canCommit)
@@ -782,12 +784,14 @@ final class ScrollStitcherTests: XCTestCase {
         model.resolveDuplicateCandidate(id, choice: .keepOnce)
         model.select(boundary: 0)
         model.restoreAutoAlignment()
+        // Restoring seam 0 away from the stored overlap crops the next segment, so that choice is cleared.
+        // The card names 接缝 1, the same seam as the toast.
         XCTAssertEqual(model.assembly.duplicateUndoCount, 0)
         XCTAssertEqual(model.assembly.duplicateCandidates.count, 1)
         XCTAssertNil(model.assembly.duplicateCandidates[0].choice)
         XCTAssertTrue(model.assembly.duplicateCandidates[0].seamMoved)
         XCTAssertEqual(model.assembly.duplicateCandidates[0].movedSeamNumber, 1)
-        XCTAssertEqual(model.assembly.duplicateCandidates[0].locationLine, "接缝 2 下方 · 2 行 · 接缝动过，需要重选")
+        XCTAssertEqual(model.assembly.duplicateCandidates[0].locationLine, "接缝 1 下方 · 2 行 · 接缝动过，需要重选")
         XCTAssertEqual(model.assembly.pendingDuplicateConfirmCount, 1)
         XCTAssertFalse(model.canCommit)
         XCTAssertNil(model.assembly.flattenedIfResolved())
@@ -1097,7 +1101,7 @@ final class ScrollStitcherTests: XCTestCase {
         XCTAssertNil(cleared.choice)
         XCTAssertTrue(cleared.seamMoved)
         XCTAssertEqual(cleared.movedSeamNumber, 2)
-        XCTAssertEqual(cleared.locationLine, "接缝 3 下方 · 2 行 · 接缝动过，需要重选")
+        XCTAssertEqual(cleared.locationLine, "接缝 2 下方 · 2 行 · 接缝动过，需要重选")
         XCTAssertEqual(
             StitchCopy.duplicateSeamMovedNote(seam: 2),
             "接缝 2 动过，这里之前的选择已清掉，需要重选。"
@@ -1138,8 +1142,35 @@ final class ScrollStitcherTests: XCTestCase {
         let belowSeamTwo = try XCTUnwrap(model.assembly.duplicateCandidates.first { $0.seamNumber == 3 })
         XCTAssertEqual(belowSeamTwo.segmentIndex, 1)
         XCTAssertNil(belowSeamTwo.choice)
-        XCTAssertTrue(belowSeamTwo.locationLine.hasSuffix("· 接缝动过，需要重选"))
+        XCTAssertEqual(belowSeamTwo.locationLine, "接缝 2 下方 · 2 行 · 接缝动过，需要重选")
         XCTAssertTrue(model.duplicateMarks.contains { $0.id == belowSeamTwo.id })
+    }
+
+    @MainActor
+    func testUpwardScrollChoiceSurvivesFinishOnThePreview() throws {
+        var stitcher = ScrollStitcher()
+        let lower = slotted(Array(8..<32))
+        var upper = Array(0..<24)
+        upper[6] = 8
+        upper[7] = 9
+        XCTAssertEqual(stitcher.ingest(lower), .seeded)
+        guard case .prepended(let rows) = stitcher.ingest(slotted(upper)) else {
+            XCTFail("scroll up should prepend")
+            return
+        }
+        XCTAssertEqual(rows, 8)
+        let model = StitchPreviewModel(assembly: stitcher.takeAssembly(), notice: nil)
+        let before = try XCTUnwrap(model.assembly.duplicateCandidates.first)
+        XCTAssertEqual(model.assembly.duplicateCandidates.count, 1)
+        model.resolveDuplicateCandidate(before.id, choice: .keepOnce)
+        model.finishManualAlignment()
+        let after = try XCTUnwrap(model.assembly.duplicateCandidates.first)
+        XCTAssertEqual(after.id, before.id)
+        XCTAssertEqual(after.choice, .keepOnce)
+        XCTAssertFalse(after.seamMoved)
+        XCTAssertEqual(after.handledLine, "✓ 已处理 · 只保留一次")
+        XCTAssertEqual(model.assembly.pendingDuplicateConfirmCount, 0)
+        XCTAssertTrue(model.canCommit)
     }
 
     private static func seamAdjacentAssembly() throws -> ScrollAssembly {
