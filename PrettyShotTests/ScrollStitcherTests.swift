@@ -1149,12 +1149,12 @@ final class ScrollStitcherTests: XCTestCase {
     @MainActor
     func testUpwardScrollChoiceSurvivesFinishOnThePreview() throws {
         var stitcher = ScrollStitcher()
-        let lower = slotted(Array(8..<32))
+        let lower = Self.slotted(Array(8..<32))
         var upper = Array(0..<24)
         upper[6] = 8
         upper[7] = 9
         XCTAssertEqual(stitcher.ingest(lower), .seeded)
-        guard case .prepended(let rows) = stitcher.ingest(slotted(upper)) else {
+        guard case .prepended(let rows) = stitcher.ingest(Self.slotted(upper)) else {
             XCTFail("scroll up should prepend")
             return
         }
