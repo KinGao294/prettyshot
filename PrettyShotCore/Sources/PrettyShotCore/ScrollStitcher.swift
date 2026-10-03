@@ -116,6 +116,12 @@ public enum PendingSeamStyle {
     }
 }
 
+/// Colors for a resolved confirmation seam. These are not the Mint and gray from the design yet.
+public enum ResolvedSeamStyle {
+    public static let mint: UInt32 = 0
+    public static let direct: UInt32 = 0
+}
+
 /// What the review window shows for one seam. The pending reverse seam uses the amber dashed label.
 public struct SeamCard: Equatable {
     public enum Chrome: Equatable {
@@ -130,19 +136,23 @@ public struct SeamCard: Equatable {
     public var title: String?
     public var reason: String?
     public var candidates: [String]
+    /// Label ink. Unset until a resolved confirmation seam picks Mint or gray.
+    public var labelColor: UInt32
 
     public init(
         label: String,
         chrome: Chrome,
         title: String? = nil,
         reason: String? = nil,
-        candidates: [String] = []
+        candidates: [String] = [],
+        labelColor: UInt32 = 0
     ) {
         self.label = label
         self.chrome = chrome
         self.title = title
         self.reason = reason
         self.candidates = candidates
+        self.labelColor = labelColor
     }
 }
 

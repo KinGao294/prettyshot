@@ -460,6 +460,151 @@ final class ScrollStitcherTests: XCTestCase {
         XCTAssertEqual(warnRows, 3)
     }
 
+    /// 按此对齐 on the auto-selected 「当前」 shift confirms it.
+    func testAligningTheAutoSelectedShiftShowsConfirmed() throws {
+        var assembly = try openShiftTie()
+        let seam = try XCTUnwrap(assembly.seams.first)
+        let current = try XCTUnwrap(seam.candidateLines.first { $0.contains("当前") })
+        let frameHeight = try XCTUnwrap(assembly.segments.last).image.height
+        let suggested = try XCTUnwrap(seam.suggestedOverlap)
+        XCTAssertEqual(suggested, frameHeight - shiftPixels(in: current))
+        assembly.align(seam: 0, overlap: suggested)
+        let card = assembly.seams[0].card(number: 1)
+        XCTAssertEqual(card.label, "✓ 已确认")
+        XCTAssertEqual(card.labelColor, 0x4F8F7E)
+        XCTAssertEqual(ResolvedSeamStyle.mint, 0x4F8F7E)
+        XCTAssertEqual(card.chrome, .plain)
+        XCTAssertNil(card.title)
+        XCTAssertTrue(card.candidates.isEmpty)
+        XCTAssertEqual(assembly.unalignedSeamCount, 0)
+        try assertResolvedSeamHasNoAmber(assembly)
+    }
+
+    /// Picking 位移 B, then aligning, is 「✓ 手动对齐」.
+    func testAligningADifferentCandidateShowsManualAlignment() throws {
+        var picked = try openShiftTie()
+        let seam = try XCTUnwrap(picked.seams.first)
+        let other = try XCTUnwrap(seam.candidateLines.first { !$0.contains("当前") })
+        let frameHeight = try XCTUnwrap(picked.segments.last).image.height
+        let overlap = frameHeight - shiftPixels(in: other)
+        XCTAssertNotEqual(overlap, seam.suggestedOverlap)
+        picked.align(seam: 0, overlap: overlap)
+        let pickedCard = picked.seams[0].card(number: 1)
+        XCTAssertEqual(pickedCard.label, "✓ 手动对齐")
+        XCTAssertEqual(pickedCard.labelColor, 0x4F8F7E)
+        XCTAssertEqual(ResolvedSeamStyle.mint, 0x4F8F7E)
+        XCTAssertEqual(pickedCard.chrome, .plain)
+        XCTAssertNil(pickedCard.title)
+        XCTAssertTrue(pickedCard.candidates.isEmpty)
+        try assertResolvedSeamHasNoAmber(picked)
+    }
+
+    /// Moving the overlap slider, then aligning, is also 「✓ 手动对齐」.
+    func testAligningAfterMovingTheSliderShowsManualAlignment() throws {
+        var slid = try openShiftTie()
+        let suggested = try XCTUnwrap(slid.seams[0].suggestedOverlap)
+        slid.align(seam: 0, overlap: suggested + 4)
+        let slidCard = slid.seams[0].card(number: 1)
+        XCTAssertEqual(slidCard.label, "✓ 手动对齐")
+        XCTAssertEqual(slidCard.labelColor, 0x4F8F7E)
+        XCTAssertEqual(slidCard.chrome, .plain)
+        XCTAssertNil(slidCard.title)
+        XCTAssertTrue(slidCard.candidates.isEmpty)
+        try assertResolvedSeamHasNoAmber(slid)
+    }
+
+    /// 按原样拼接 leaves a neutral gray 「直接拼」 label and a plain seam.
+    func testJoiningAsIsShowsDirectStitch() throws {
+        var assembly = try openShiftTie()
+        assembly.joinAsIs(seam: 0)
+        let card = assembly.seams[0].card(number: 1)
+        XCTAssertEqual(card.label, "直接拼")
+        XCTAssertEqual(card.labelColor, 0x5C5751)
+        XCTAssertEqual(ResolvedSeamStyle.direct, 0x5C5751)
+        XCTAssertEqual(card.chrome, .plain)
+        XCTAssertNil(card.title)
+        XCTAssertTrue(card.candidates.isEmpty)
+        XCTAssertEqual(assembly.unalignedSeamCount, 0)
+        try assertResolvedSeamHasNoAmber(assembly)
+    }
+
+    /// 恢复自动对齐 puts a resolved confirmation seam back on the amber 「待确认」 card.
+    func testRestoreAutoAlignmentReturnsToPendingConfirmation() throws {
+        var assembly = try openShiftTie()
+        let suggested = try XCTUnwrap(assembly.seams[0].suggestedOverlap)
+        assembly.align(seam: 0, overlap: suggested)
+        assembly.restoreAutoAlignment(seam: 0)
+        XCTAssertEqual(assembly.seams[0].kind, .needsAlignment)
+        let card = assembly.seams[0].card(number: 1)
+        XCTAssertEqual(card.label, "待确认")
+        XCTAssertEqual(card.chrome, .amberDashed)
+        XCTAssertEqual(card.title, "接缝 1 · 待确认：位移无法唯一确定")
+        XCTAssertFalse(card.candidates.isEmpty)
+        XCTAssertEqual(assembly.unalignedSeamCount, 1)
+        XCTAssertEqual(assembly.pendingDuplicateConfirmCount, 0)
+        let preview = try XCTUnwrap(assembly.renderPreview())
+        let mark = try XCTUnwrap(preview.marks.first { $0.boundaryIndex == 0 })
+        XCTAssertGreaterThan(warnPixels(around: mark, in: preview.image), 0)
+    }
+
+    private func openShiftTie() throws -> ScrollAssembly {
+        var stitcher = ScrollStitcher()
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.aliasPeriod(scroll: 106)), .seeded)
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.aliasPeriod(scroll: 118)), .appended(12))
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.aliasPeriod(scroll: 90)), .unmatched)
+        let assembly = stitcher.takeAssembly()
+        let seam = try XCTUnwrap(assembly.seams.first)
+        XCTAssertEqual(seam.card(number: 1).label, "待确认")
+        XCTAssertEqual(seam.card(number: 1).chrome, .amberDashed)
+        return assembly
+    }
+
+    private func shiftPixels(in line: String) -> Int {
+        Int(line.filter(\.isNumber)) ?? -1
+    }
+
+    private func assertResolvedSeamHasNoAmber(
+        _ assembly: ScrollAssembly,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws {
+        let preview = try XCTUnwrap(assembly.renderPreview(), file: file, line: line)
+        let mark = try XCTUnwrap(preview.marks.first { $0.boundaryIndex == 0 }, file: file, line: line)
+        XCTAssertEqual(amberPixels(around: mark, in: preview.image), 0, file: file, line: line)
+    }
+
+    private func amberPixels(around mark: SeamMark, in image: RGBAImage) -> Int {
+        let ambers: [(UInt8, UInt8, UInt8)] = [
+            (0xE3, 0xB2, 0x6B),
+            (0xE8, 0xA3, 0x3D),
+        ]
+        var count = 0
+        for dy in -2...2 {
+            let row = mark.y + dy
+            guard row >= 0, row < image.height else { continue }
+            for x in 0..<image.width {
+                let i = (row * image.width + x) * 4
+                let sample = (image.pixels[i], image.pixels[i + 1], image.pixels[i + 2])
+                if ambers.contains(sample) { count += 1 }
+            }
+        }
+        return count
+    }
+
+    private func warnPixels(around mark: SeamMark, in image: RGBAImage) -> Int {
+        let warn = (UInt8(0xE3), UInt8(0xB2), UInt8(0x6B))
+        var count = 0
+        for dy in -2...2 {
+            let row = mark.y + dy
+            guard row >= 0, row < image.height else { continue }
+            for x in 0..<image.width {
+                let i = (row * image.width + x) * 4
+                if (image.pixels[i], image.pixels[i + 1], image.pixels[i + 2]) == warn { count += 1 }
+            }
+        }
+        return count
+    }
+
     private func assertDownwardJoin(
         _ first: RGBAImage,
         _ second: RGBAImage,
