@@ -7,11 +7,47 @@ enum HandoffKind: String, Codable, Equatable {
     case pdf
 }
 
+struct MissingShot: Codable, Equatable {
+    /// 1-based position in the share, in capture order. 「第 3 张」 is 3.
+    var ordinal: Int
+}
+
 struct HandoffTicket: Codable, Equatable, Identifiable {
     var id: String
     var kind: HandoffKind
     var fileNames: [String]
     var createdAt: Date
+    var missingShots: [MissingShot]
+
+    init(id: String, kind: HandoffKind, fileNames: [String], createdAt: Date, missingShots: [MissingShot] = []) {
+        self.id = id
+        self.kind = kind
+        self.fileNames = fileNames
+        self.createdAt = createdAt
+        self.missingShots = missingShots
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        kind = try container.decode(HandoffKind.self, forKey: .kind)
+        fileNames = try container.decode([String].self, forKey: .fileNames)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        missingShots = try container.decodeIfPresent([MissingShot].self, forKey: .missingShots) ?? []
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(kind, forKey: .kind)
+        try container.encode(fileNames, forKey: .fileNames)
+        try container.encode(createdAt, forKey: .createdAt)
+        try container.encode(missingShots, forKey: .missingShots)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, kind, fileNames, createdAt, missingShots
+    }
 }
 
 enum HandoffError: Error, Equatable {
@@ -31,16 +67,28 @@ protocol HandoffStore: AnyObject {
     /// True when another process (the containing app) can read what `stage` wrote.
     var canTransferToApp: Bool { get }
     var persistsAcrossProcesses: Bool { get }
-    func stage(copying files: [URL], kind: HandoffKind) throws -> HandoffTicket
+    func stage(copying files: [URL], kind: HandoffKind, missingShots: [MissingShot]) throws -> HandoffTicket
     func pendingTickets() throws -> [HandoffTicket]
     func files(for ticketID: String) throws -> [URL]
     func discard(ticketID: String) throws
 }
 
 extension HandoffStore {
+    func stage(copying files: [URL], kind: HandoffKind) throws -> HandoffTicket {
+        try stage(copying: files, kind: kind, missingShots: [])
+    }
+
     /// Removes a ticket only after the app has read the files. An interrupted open must not call this.
     func confirmReceipt(ticketID: String) throws {
         try discard(ticketID: ticketID)
+    }
+}
+
+enum HandoffCancellation {
+    /// User aborted the handoff. Deletes the staged copies only. Callers must not delete the photo-library original.
+    static func abort(ticketID: String?, store: HandoffStore) {
+        guard let ticketID else { return }
+        try? store.discard(ticketID: ticketID)
     }
 }
 
@@ -56,12 +104,18 @@ enum HandoffReceipt: Equatable {
 
 enum HandoffTransfer {
     /// Copies `files` as-is. Does not decode bitmaps and does not delete the sources.
-    static func persist(copying files: [URL], kind: HandoffKind, store: HandoffStore, fileManager: FileManager = .default) -> HandoffReceipt {
+    static func persist(
+        copying files: [URL],
+        kind: HandoffKind,
+        store: HandoffStore,
+        missingShots: [MissingShot] = [],
+        fileManager: FileManager = .default
+    ) -> HandoffReceipt {
         if files.isEmpty || files.contains(where: { !fileManager.fileExists(atPath: $0.path) }) {
             return .failed(.unreadable)
         }
         do {
-            let ticket = try store.stage(copying: files, kind: kind)
+            let ticket = try store.stage(copying: files, kind: kind, missingShots: missingShots)
             return .waitingForApp(ticket)
         } catch let error as HandoffError {
             return .failed(error)
@@ -133,7 +187,7 @@ final class DirectoryHandoffStore: HandoffStore {
         self.fileManager = fileManager
     }
 
-    func stage(copying files: [URL], kind: HandoffKind) throws -> HandoffTicket {
+    func stage(copying files: [URL], kind: HandoffKind, missingShots: [MissingShot]) throws -> HandoffTicket {
         if files.isEmpty { throw HandoffError.unreadable }
         let id = UUID().uuidString
         let folder = root.appendingPathComponent(id, isDirectory: true)
@@ -150,7 +204,7 @@ final class DirectoryHandoffStore: HandoffStore {
                 try fileManager.copyItem(at: file, to: destination)
                 names.append(safe)
             }
-            let ticket = HandoffTicket(id: id, kind: kind, fileNames: names, createdAt: Date())
+            let ticket = HandoffTicket(id: id, kind: kind, fileNames: names, createdAt: Date(), missingShots: missingShots)
             let data = try JSONEncoder().encode(ticket)
             try data.write(to: folder.appendingPathComponent("manifest.json"), options: .atomic)
             return ticket
@@ -230,8 +284,8 @@ final class InlineHandoffStore: HandoffStore {
         directory = DirectoryHandoffStore(root: root, fileManager: fileManager)
     }
 
-    func stage(copying files: [URL], kind: HandoffKind) throws -> HandoffTicket {
-        try directory.stage(copying: files, kind: kind)
+    func stage(copying files: [URL], kind: HandoffKind, missingShots: [MissingShot]) throws -> HandoffTicket {
+        try directory.stage(copying: files, kind: kind, missingShots: missingShots)
     }
 
     func pendingTickets() throws -> [HandoffTicket] {

@@ -26,6 +26,58 @@ struct ShareClassification: Equatable {
     }
 }
 
+struct GatheredShareFiles {
+    var loaded: [(ordinal: Int, url: URL)]
+    var missingOrdinals: [Int]
+
+    var loadedCount: Int { loaded.count }
+}
+
+enum ShareFileGather {
+    /// `copies` is one entry per image or PDF, in share order. A nil URL is a shot that did not load.
+    static func gather(_ copies: [(ordinal: Int, url: URL?)]) -> GatheredShareFiles {
+        var loaded: [(ordinal: Int, url: URL)] = []
+        var missing: [Int] = []
+        for copy in copies {
+            if let url = copy.url {
+                loaded.append((copy.ordinal, url))
+            } else {
+                missing.append(copy.ordinal)
+            }
+        }
+        return GatheredShareFiles(loaded: loaded, missingOrdinals: missing)
+    }
+}
+
+struct OrderedShot: Equatable {
+    var id: String
+    var capturedAt: Date?
+}
+
+enum ShotOrdering {
+    /// Puts a re-added shot back by capture time. Without a date, it goes in the missing slot.
+    static func inserting(_ shot: OrderedShot, into shots: [OrderedShot], missingOrdinal: Int) -> [OrderedShot] {
+        if shot.capturedAt != nil {
+            return (shots + [shot]).sorted { lhs, rhs in
+                switch (lhs.capturedAt, rhs.capturedAt) {
+                case let (left?, right?):
+                    return left < right
+                case (.some, .none):
+                    return true
+                case (.none, .some):
+                    return false
+                case (.none, .none):
+                    return false
+                }
+            }
+        }
+        var next = shots
+        let index = min(max(missingOrdinal - 1, 0), next.count)
+        next.insert(shot, at: index)
+        return next
+    }
+}
+
 /// Share-sheet routing. Single image stays in the extension; several images or a PDF go to stitch.
 enum SharePayloadParser {
     static func classify(_ attachments: [ShareAttachment]) -> ShareClassification {

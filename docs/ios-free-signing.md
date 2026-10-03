@@ -44,9 +44,10 @@ Bundle ID：主 App `app.prettyshot.ios`，扩展 `app.prettyshot.ios.share`。U
 3. PrettyShotIOS 和 PrettyShotShare 两个 target 都选 Signing & Capabilities → Automatically manage signing，Team 选这个 Personal Team。
 4. **不要**在还是 inline 的时候勾 App Groups。两份 `Handoff.xcconfig` 保持默认。
 5. 如果 Bundle ID 已被别人占用，只改这两个 target 的 Bundle ID，扩展必须是主 App 的子 ID（例如 `app.prettyshot.ios.kin` 和 `app.prettyshot.ios.kin.share`），并同步改 URL scheme 的 `CFBundleURLName`。
-6. 选自己的 iPhone，Run。手机上：设置 → 通用 → VPN 与设备管理，信任这台开发者。
-7. 7 天后描述文件过期。重新 Run 一次。设备或 App ID 名额满了，用 Xcode → Window → Devices and Simulators 删掉旧的描述文件 / App，再装。
-8. 扩展交不出原图时（默认 inline 就是这样），出现「改用 PrettyShot App 选图」。它打开 App 里的照片选择器，按原分辨率重新选。扩展里不提供「按预览尺寸保存」。单张图在内存预算内仍可在扩展里编辑、复制、存入相册，导出是原分辨率 PNG。
+6. iOS 16 及以上，第一次安装开发版之前：设置 → 隐私与安全性 → 开发者模式，打开它，然后按提示重启手机。没开的话 Xcode Run 会失败。
+7. 选自己的 iPhone，Run。手机上：设置 → 通用 → VPN 与设备管理，信任这台开发者。
+8. 7 天后描述文件过期。重新 Run 一次。设备或 App ID 名额满了，用 Xcode → Window → Devices and Simulators 删掉旧的描述文件 / App，再装。
+9. 扩展交不出原图时（默认 inline 就是这样），出现 S10f「改用 PrettyShot App 选图」。它打开 App 里的照片选择器，按原分辨率重新选。扩展里不提供「按预览尺寸保存」。内存预算按四份全尺寸缓冲（原图、打码图、画布、阴影层）计算；超过约 120MB 且能交接时走「在 App 中继续」，不能交接时走 S10f。普通截图仍在扩展里按原分辨率导出。
 
 ## 若要试 App Group
 

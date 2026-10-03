@@ -9,10 +9,25 @@ struct EditorScreen: View {
     var onClose: () -> Void
     var onCopy: () -> Void
     var onSave: () -> Void
+    var missingLine: String?
+    var onReadd: () -> Void = {}
 
     var body: some View {
         VStack(spacing: 0) {
             topBar
+            if let missingLine {
+                HStack(spacing: 8) {
+                    Text(missingLine)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(IOSTheme.charcoal)
+                    Spacer(minLength: 8)
+                    Button(IOSCopy.readdShot, action: onReadd)
+                        .font(.system(size: 13, weight: .semibold))
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                .background(IOSTheme.warn.opacity(0.22))
+            }
             canvas
             tabBar
             panel

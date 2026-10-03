@@ -14,6 +14,7 @@ final class StitchModel: ObservableObject {
     @Published var manualAlign = false
     @Published var note = ""
     @Published var flattened: CGImage?
+    @Published var scrollToDuplicate: String?
 
     func ingest(_ images: [CGImage]) {
         var stitcher = ScrollStitcher()
@@ -56,7 +57,8 @@ final class StitchModel: ObservableObject {
         case .sticky:
             showSticky = true
         case .duplicates:
-            break
+            scrollToDuplicate = session.assembly.duplicateCandidates.first(where: \.isUnresolved)?.id
+                ?? session.assembly.duplicateCandidates.first?.id
         case .ready:
             flattened = session.assembly.flattenedIfResolved()?.cgImage()
         }
@@ -110,6 +112,8 @@ struct StitchScreen: View {
     var onBack: () -> Void
     var onBeautify: (CGImage) -> Void
     var onExportSegments: ([CGImage]) -> Void
+    var missingLine: String?
+    var onReadd: () -> Void = {}
 
     var body: some View {
         VStack(spacing: 0) {
@@ -122,6 +126,10 @@ struct StitchScreen: View {
             }
             .padding(.horizontal, 16)
             .frame(height: 52)
+            if let missingLine {
+                missingBanner(missingLine)
+            }
+            ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
                     if let preview = model.preview {
@@ -151,9 +159,15 @@ struct StitchScreen: View {
                     Text(IOSCopy.keepOnceDetail).font(.system(size: 12)).foregroundStyle(IOSTheme.muted)
                     ForEach(model.session.assembly.duplicateCandidates) { candidate in
                         duplicateCard(candidate)
+                            .id(candidate.id)
                     }
                 }
                 .padding(16)
+            }
+            .onChange(of: model.scrollToDuplicate) { _, id in
+                guard let id else { return }
+                withAnimation { proxy.scrollTo(id, anchor: .center) }
+            }
             }
             VStack(spacing: 10) {
                 if let bar = model.session.gate.bottomBar {
@@ -183,6 +197,23 @@ struct StitchScreen: View {
         .sheet(isPresented: $model.showChoices) { choiceSheet }
         .sheet(isPresented: $model.showSticky) { stickySheet }
         .sheet(isPresented: $model.showOverLimit) { overLimitSheet }
+    }
+
+    private func missingBanner(_ line: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.circle")
+                .foregroundStyle(IOSTheme.warn)
+            Text(line)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(IOSTheme.charcoal)
+            Spacer(minLength: 8)
+            Button(IOSCopy.readdShot, action: onReadd)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(IOSTheme.charcoal)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(IOSTheme.warn.opacity(0.22))
     }
 
     private func duplicateCard(_ candidate: DuplicateSegmentCandidate) -> some View {

@@ -84,14 +84,39 @@ enum IOSCopy {
     static let largeTitle = "图片较大，去 App 里处理"
     static let largeBody = "如果没有自动打开 App：图片已暂存，手动打开 PrettyShot 即可从这里继续。"
     static let continueInApp = "在 App 中继续"
-    /// S10c。帧还在画，先按说明做。
-    static let handoffProgressTitle = "正在交给 PrettyShot"
-    static let handoffProgressBody = "原图还在，没有改动。"
-    /// S10d。扩展交不出原图时的兜底，主按钮打开 App 内的照片选择器。
-    static let reselectTitle = "请在 App 里重新选图"
+    /// S10c。
+    static let handoffProgressTitle = "正在交给 PrettyShot..."
+    static let handoffProgressBody = "图片只在本机暂存，不上传。App 确认收到之前，暂存的副本不会删；相册里的原图始终不动。"
+    static let copyingToStaging = "复制到本机暂存区"
+    static let cancelHandoffNote = "取消 = 不交接，清掉这次暂存的副本\n相册里的原图没有被改动"
+    static func receivedShots(_ count: Int) -> String { "收到 \(count) 张截图" }
+    static func progressCount(done: Int, total: Int) -> String { "第 \(done) / \(total) 张" }
+    /// S10d。交接试过但失败。主按钮是重试，文字按钮才是回 App 选图。
+    static let handoffFailedTitle = "没能交给 PrettyShot"
+    static let handoffFailedBody = "暂存时出错了（可能是本机空间不足，或分享被系统中断）。原图没有被改动。"
+    /// S10e。
+    static let partialEyebrow = "张数对不上"
+    static func partialTitle(received: Int, missing: Int) -> String {
+        "收到 \(received) 张，有 \(missing) 张没读出来"
+    }
+    static func partialFailure(_ ordinal: Int) -> String {
+        "第 \(ordinal) 张读取失败（可能还在 iCloud 中未下载，或文件已损坏）。原图没有被改动。不会悄悄少拼一张：继续前先告诉你少了哪一张。"
+    }
+    static func continuePartial(_ loaded: Int) -> String { "用读出的 \(loaded) 张继续" }
+    static func retryReadsAll(_ total: Int) -> String { "重试会重新读取全部 \(total) 张" }
+    /// S10f。免费签名或没有 App Group，扩展交不出原图。
+    static let cannotHandTitle = "这张图没法从分享菜单直接交给 App"
+    static let cannotHandBody = "原图没动。请在 PrettyShot App 里重新选这张，按原分辨率处理。"
     static let reselectInApp = "改用 PrettyShot App 选图"
-    static let reselectBody = "原图没有被改动。请在 PrettyShot App 里重新选择这张图，按原分辨率继续。"
     static let handoffRetry = "再试一次"
+    /// L3m / L9m。提醒一直留到图被加回来。
+    static let readdShot = "重新加入"
+    static func missingBanner(_ ordinal: Int) -> String { "少了 1 张 · 第 \(ordinal) 张没读出来" }
+    static func missingEditorLine(_ ordinal: Int) -> String { "这张长图少了 1 张（第 \(ordinal) 张没读出来）" }
+    static func addedBack(ordinal: Int, total: Int) -> String { "已加回第 \(ordinal) 张 · \(total) 张齐了" }
+    static let continueStitch = "继续拼接"
+    static let dismissPending = "不用了"
+    static let bannerFootnote = "暂存只在本机 · 相册里的原图没动"
 
     // MARK: - 分享多张 · 帧 12 S11
 

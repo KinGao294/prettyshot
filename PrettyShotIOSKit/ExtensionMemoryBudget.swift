@@ -11,15 +11,16 @@ import ImageIO
 /// 3. releases that preview before the export decode
 /// 4. decodes one full-size image, bakes redaction into it, and draws the beautified result
 ///
-/// Full resolution stays inline while two RGBA copies fit under the cap (12MP × 2 × 4 = 96MB).
-/// Editing and handoff keep the file URL or encoded bytes plus one preview. They do not decode
-/// a second full-size bitmap. A larger image is handed off as that original file. If the
-/// extension cannot hand it to the app, the user reselects it there. There is no downscaled export.
+/// Export peak is four RGBA buffers at once: the source, the redacted copy, the beautify canvas,
+/// and the shadow transparency layer. There is no tiled render in M3. Two buffers of a 12MP
+/// image fit under 120MB; four do not (about 192MB), so that image is handed to the app.
+/// Editing keeps the file URL plus one preview. Nothing is exported at preview size.
 enum ExtensionMemoryBudget {
     static let limitBytes = 120 * 1024 * 1024
     static let bytesPerPixel = 4
     static let previewMaxLongSide = 1280
-    static let fullSizeCopiesWhileExporting = 2
+    /// Source + redacted + canvas + shadow layer.
+    static let fullSizeCopiesWhileExporting = 4
     static let forbiddenSimultaneousFullSizeCopies = 3
 
     enum Plan: Equatable {
@@ -47,17 +48,23 @@ enum ExtensionMemoryBudget {
         )
     }
 
-    /// Full export after the preview is released: one source decode and one output.
+    /// Bytes for the buffers that are alive together during a shadowed, redacted export.
+    /// Canvas and the shadow layer use the output size; pass the source size when the canvas is not known yet.
+    static func exportPeakBytes(sourcePixels: Int, canvasPixels: Int) -> Int {
+        rgbaBytes(pixels: sourcePixels, copies: 2) + rgbaBytes(pixels: canvasPixels, copies: 2)
+    }
+
+    /// Full export after the preview is released. Counts the real peak, not two source copies.
     static func fullExportHold(pixelCount: Int) -> MemoryHold {
         MemoryHold(
             fullDecodedCopies: fullSizeCopiesWhileExporting,
-            estimatedBytes: rgbaBytes(pixels: pixelCount, copies: fullSizeCopiesWhileExporting),
+            estimatedBytes: exportPeakBytes(sourcePixels: pixelCount, canvasPixels: pixelCount),
             passesFileWithoutDecode: false
         )
     }
 
     static func plan(pixelCount: Int, canTransferToApp: Bool) -> Plan {
-        let exportBytes = rgbaBytes(pixels: pixelCount, copies: fullSizeCopiesWhileExporting)
+        let exportBytes = exportPeakBytes(sourcePixels: pixelCount, canvasPixels: pixelCount)
         if exportBytes <= limitBytes {
             return .fullResolutionInline
         }
@@ -124,6 +131,22 @@ enum ImagePrep {
         let height = (props[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue
         guard let width, let height, width > 0, height > 0 else { return nil }
         return (width, height)
+    }
+
+    /// Capture time from the file header, used to put a re-added shot back in order.
+    static func captureDate(_ data: Data) -> Date? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] else { return nil }
+        let exif = props[kCGImagePropertyExifDictionary] as? [CFString: Any]
+        let tiff = props[kCGImagePropertyTIFFDictionary] as? [CFString: Any]
+        let raw = (exif?[kCGImagePropertyExifDateTimeOriginal] as? String)
+            ?? (tiff?[kCGImagePropertyTIFFDateTime] as? String)
+        guard let raw else { return nil }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyy:MM:dd HH:mm:ss"
+        return formatter.date(from: raw)
     }
 
     private static func downsample(_ source: CGImageSource, maxLongSide: Int) -> CGImage? {
