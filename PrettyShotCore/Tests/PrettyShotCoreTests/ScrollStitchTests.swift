@@ -179,8 +179,10 @@ final class ScrollStitchTests: XCTestCase {
     /// Before is the old stop path: the open parts, the seal `verticalJoin`, and the `Data` copy inside `cgImage` were alive together (3 full RGBA buffers).
     func testLongCaptureStopPeakStaysUnderTwoImages() throws {
         let width = 1440
-        let viewport = 100
-        let shift = 50
+        // Viewport plus one shift stays inside one palette period (~120), so the true
+        // shift is the only perfect match. A taller window wraps and looks ambiguous.
+        let viewport = 80
+        let shift = 40
         let target = 20_000
         var options = ScrollStitcher.Options()
         options.maxHeight = target
