@@ -428,6 +428,79 @@ final class ExtensionMemoryBudgetTests: XCTestCase {
         return info.phys_footprint
     }
 
+    /// Default padding stays inside the extension. Padding 64 on the same pixels must hand off.
+    /// 2250×2250 is just under the gate at padding 28 and over it at padding 64 (scale 1, plus 40MB).
+    func testLargePaddingHandsOffWhileDefaultStaysInTheExtension() throws {
+        let width = 2250
+        let height = 2250
+        XCTAssertEqual(
+            ExtensionMemoryBudget.plan(pixelWidth: width, pixelHeight: height, canTransferToApp: true),
+            .fullResolutionInline
+        )
+        let wide = BackgroundStyle(presetKey: "pastel-air", padding: 64, radius: 12, shadow: 48)
+        XCTAssertEqual(
+            ExtensionMemoryBudget.plan(pixelWidth: width, pixelHeight: height, canTransferToApp: true, style: wide),
+            .handoffToApp
+        )
+        let model = EditorModel()
+        model.load(try png(width: width, height: height))
+        model.removeStatusBar = false
+        model.style = wide
+        let attempt = try XCTUnwrap(model.export(canTransferToApp: true))
+        guard case .handoff = attempt else {
+            XCTFail("export must use the current padding, got \(attempt)")
+            return
+        }
+    }
+
+    /// 1320×2868 with redaction is inside the gate, so the extension keeps it.
+    /// The sample is `ledger_phys_footprint_peak`, the lifetime high-water mark.
+    func testInsideGateScreenshotStaysInTheExtension() throws {
+        let width = 1320
+        let height = 2868
+        XCTAssertEqual(
+            ExtensionMemoryBudget.plan(pixelWidth: width, pixelHeight: height, canTransferToApp: true),
+            .fullResolutionInline
+        )
+        XCTAssertEqual(
+            ExtensionMemoryBudget.plan(pixelWidth: width, pixelHeight: height, canTransferToApp: false),
+            .fullResolutionInline
+        )
+        let source = try solidImage(width: width, height: height)
+        let beforePeak = ledgerPhysFootprintPeak()
+        let redacted = Redactor.apply(
+            [PixelRedaction(rect: CGRect(x: 40, y: 200, width: 120, height: 80))],
+            to: source,
+            scale: 3
+        )
+        let canvas = try XCTUnwrap(BeautifyRenderer.render(BeautifyInput(
+            base: redacted,
+            crop: CGRect(x: 0, y: 0, width: redacted.width, height: redacted.height),
+            background: BackgroundStyle.default,
+            scale: 3
+        )))
+        let encoded = try XCTUnwrap(ShotEncoder.pngData(canvas))
+        let afterPeak = ledgerPhysFootprintPeak()
+        print("PRETTYSHOT_LEDGER_PEAK 1320x2868 before=\(beforePeak) after=\(afterPeak) encodedBytes=\(encoded.count)")
+        XCTAssertGreaterThan(afterPeak, 0)
+        XCTAssertGreaterThanOrEqual(afterPeak, beforePeak)
+        XCTAssertGreaterThan(encoded.count, 100_000)
+        XCTAssertEqual(source.width, width)
+        XCTAssertEqual(redacted.width, width)
+    }
+
+    private func ledgerPhysFootprintPeak() -> Int64 {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
+        let result = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+            }
+        }
+        guard result == KERN_SUCCESS else { return 0 }
+        return info.ledger_phys_footprint_peak
+    }
+
     private func png(width: Int, height: Int) throws -> Data {
         let space = try XCTUnwrap(CGColorSpace(name: CGColorSpace.sRGB))
         let context = try XCTUnwrap(CGContext(
@@ -827,6 +900,57 @@ final class ShareAcceptanceTests: XCTestCase {
         XCTAssertGreaterThan(styled.height, raw.height)
     }
 
+    func testTwoSharesMergeInShareOrder() throws {
+        let pending = try stageShares([2, 1])
+        XCTAssertEqual(pending.count, 2)
+        XCTAssertEqual(PendingShareResume.stagedFileCount(pending), 3)
+        XCTAssertEqual(IOSCopy.handoffBannerDetail(count: 3), "已暂存 3 张 · 来自 2 次分享")
+        let ordered = pending.sorted { $0.createdAt < $1.createdAt }
+        XCTAssertEqual(ordered.map(\.fileNames.count), [2, 1])
+    }
+
+    func testThreeSharesMergeInShareOrder() throws {
+        let pending = try stageShares([1, 2, 3])
+        XCTAssertEqual(pending.count, 3)
+        XCTAssertEqual(PendingShareResume.stagedFileCount(pending), 6)
+        XCTAssertEqual(IOSCopy.handoffBannerDetail(count: 6), "已暂存 6 张 · 来自 3 次分享")
+        let ordered = pending.sorted { $0.createdAt < $1.createdAt }
+        XCTAssertEqual(ordered.map(\.fileNames.count), [1, 2, 3])
+    }
+
+    func testOneShareBannerOmitsTheShareCount() {
+        XCTAssertEqual(IOSCopy.handoffBannerDetail(count: 4), "已暂存 4 张")
+        XCTAssertFalse(IOSCopy.handoffBannerDetail(count: 4).contains("次分享"))
+    }
+
+    func testBeginNewPickDropsPreviousOrdinals() {
+        let previous = MissingShotSession.remember(failedOrdinals: [2, 5], loadedCount: 4)
+        let next = MissingShotSession.beginNewPick(replacing: previous, failedOrdinals: [9], loadedCount: 2)
+        XCTAssertEqual(next.ordinals, [9])
+        XCTAssertEqual(next.expectedTotal, 3)
+        XCTAssertFalse(next.ordinals.contains(2))
+        XCTAssertFalse(next.ordinals.contains(5))
+    }
+
+    private func stageShares(_ counts: [Int]) throws -> [HandoffTicket] {
+        let tmp = try makeTemp()
+        addTeardownBlock { try? FileManager.default.removeItem(at: tmp) }
+        let source = try patternedPNG(width: 4, height: 3, directory: tmp)
+        let store = InlineHandoffStore(root: tmp.appendingPathComponent("inbox", isDirectory: true))
+        for (index, count) in counts.enumerated() {
+            if index > 0 {
+                Thread.sleep(forTimeInterval: 0.05)
+            }
+            let files = Array(repeating: source.url, count: count)
+            let receipt = HandoffTransfer.persist(copying: files, kind: .stitch, store: store)
+            guard case .waitingForApp = receipt else {
+                XCTFail("expected a staged share, got \(receipt)")
+                continue
+            }
+        }
+        return try store.pendingTickets()
+    }
+
     private func makeTemp() throws -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("accept-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
@@ -878,5 +1002,50 @@ final class ShareAcceptanceTests: XCTestCase {
         ))
         context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
         return buffer
+    }
+}
+
+final class FollowUp34CopyTests: XCTestCase {
+    func testReaddedFourthIsNamedRatherThanTheSmallestOrdinal() {
+        let session = MissingShotSession.remember(failedOrdinals: [2, 4], loadedCount: 2)
+        let step = session.addingBackOne()
+        XCTAssertEqual(step.restored, 4)
+        XCTAssertEqual(step.session.ordinals, [2])
+        XCTAssertEqual(IOSCopy.missingBanner(step.session.ordinals), "少了 1 张 · 第 2 张没读出来")
+        XCTAssertEqual(IOSCopy.addedBack(ordinal: 4, total: 4), "已加回第 4 张 · 4 张齐了")
+    }
+
+    func testTwoPickedOneUnreadableUsesTheMultiErrorPage() {
+        XCTAssertEqual(InAppStitchLoader.outcome(readableCount: 1, failedOrdinals: [2]), .failed)
+        XCTAssertEqual(IOSCopy.memoryFailedTitle, "有的图片没读出来")
+        XCTAssertEqual(IOSCopy.pickAgain, "重新选图")
+    }
+
+    func testS12OpenFailureStaysOnS12WithOneHint() {
+        XCTAssertEqual(IOSCopy.multiFootnote, "没有打开 PrettyShot。请自己打开 App，从这一页继续。")
+    }
+
+    func testSingleImageStagedBodyOmitsStitchWord() {
+        XCTAssertEqual(IOSCopy.stagedTitle(1), "已暂存 1 张")
+        XCTAssertEqual(IOSCopy.stagedBody, "打开 PrettyShot 即可继续，图片不会丢。")
+        XCTAssertEqual(IOSCopy.stagedHint, "打开 App 后，首页会出现「继续上次分享」")
+        XCTAssertEqual(IOSCopy.readFailedOK, "好的")
+    }
+
+    func testHandoffProgressUsesEllipsis() {
+        XCTAssertEqual(IOSCopy.handoffProgressTitle, "正在交给 PrettyShot…")
+        XCTAssertFalse(IOSCopy.handoffProgressTitle.contains("..."))
+    }
+
+    func testDownsampleChipHasLargeImagePrefix() {
+        XCTAssertEqual(IOSCopy.chipDownsampled, "大图 · 预览已降采样")
+    }
+
+    func testSizeMismatchNamesTheSkippedImage() {
+        XCTAssertEqual(
+            IOSCopy.stitchSizeMismatch,
+            "第 2 张尺寸不一致，拼接时被跳过。请用同一台手机的竖屏截图。"
+        )
+        XCTAssertTrue(IOSCopy.stitchSizeMismatch.contains("第 2 张"))
     }
 }
