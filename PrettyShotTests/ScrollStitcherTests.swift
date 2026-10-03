@@ -171,6 +171,92 @@ final class ScrollStitcherTests: XCTestCase {
     func testAutoScrollShipsDisabled() {
         XCTAssertFalse(ScrollingCaptureFeature.autoScrollEnabled)
     }
+
+    func testRepeatedRowsAreNotConfident() {
+        var stitcher = ScrollStitcher()
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.periodic(scroll: 0)), .seeded)
+        let outcome = stitcher.ingest(ScrollFixtures.periodic(scroll: 25))
+        XCTAssertEqual(outcome, .unmatched)
+        let assembly = stitcher.takeAssembly()
+        XCTAssertTrue(assembly.needsReview)
+        XCTAssertNil(assembly.flattenedIfResolved())
+        XCTAssertEqual(assembly.seams.first?.kind, .needsAlignment)
+
+        var resolved = assembly
+        resolved.align(seam: 0, overlap: 25)
+        XCTAssertFalse(resolved.needsReview)
+        XCTAssertNotNil(resolved.flattenedIfResolved())
+        resolved.align(seam: 0, overlap: 10)
+        XCTAssertEqual(resolved.flattenedIfResolved()?.height, 180 + 180 - 10)
+        resolved.restoreAutoAlignment(seam: 0)
+        let suggested = resolved.seams[0].suggestedOverlap ?? 0
+        if case .aligned(let overlap) = resolved.seams[0].kind {
+            XCTAssertEqual(overlap, suggested)
+        } else {
+            XCTFail("restore auto alignment should leave the seam aligned")
+        }
+    }
+
+    func testSlowScrollKeepsRowsThatLookedUnchanged() {
+        var stitcher = ScrollStitcher()
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.gradient(scroll: 0)), .seeded)
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.gradient(scroll: 1)), .unchanged)
+        XCTAssertEqual(stitcher.pixelHeight, 12)
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.gradient(scroll: 2)), .appended(2))
+        let image = try XCTUnwrap(stitcher.takeAssembly().flattenedIfResolved())
+        XCTAssertEqual(image.height, 14)
+        XCTAssertEqual(ScrollFixtures.row(image, 0), ScrollFixtures.gradientColor(scroll: 0, y: 0))
+        XCTAssertEqual(ScrollFixtures.row(image, 13), ScrollFixtures.gradientColor(scroll: 2, y: 11))
+    }
+
+    func testUpwardScrollPrepends() {
+        var stitcher = ScrollStitcher()
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.page(scroll: 20)), .seeded)
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.page(scroll: 0)), .prepended(20))
+        let assembly = stitcher.takeAssembly()
+        XCTAssertFalse(assembly.needsReview)
+        let image = try XCTUnwrap(assembly.flattenedIfResolved())
+        XCTAssertEqual(image.height, 60)
+        XCTAssertEqual(ScrollFixtures.row(image, 0), ScrollFixtures.color(slot: ScrollFixtures.contentSlot))
+        XCTAssertEqual(ScrollFixtures.row(image, 59), ScrollFixtures.color(slot: ScrollFixtures.contentSlot + 59))
+    }
+
+    func testSmallCaptureNoiseStillStitchesTheTrueShift() {
+        var stitcher = ScrollStitcher()
+        let first = ScrollFixtures.page(scroll: 0)
+        let second = ScrollFixtures.noised(ScrollFixtures.page(scroll: 8), amplitude: 2)
+        XCTAssertEqual(stitcher.ingest(first), .seeded)
+        XCTAssertEqual(stitcher.ingest(second), .appended(8))
+        let assembly = stitcher.takeAssembly()
+        XCTAssertFalse(assembly.needsReview)
+        XCTAssertEqual(assembly.flattenedIfResolved()?.height, 48)
+    }
+
+    func testStickyDedupeCanBeRestored() {
+        var stitcher = ScrollStitcher()
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.viewport(scroll: 0)), .seeded)
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.viewport(scroll: 15)), .appended(15))
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.viewport(scroll: 30)), .appended(15))
+        var assembly = stitcher.takeAssembly()
+        XCTAssertTrue(assembly.hasStickyRepeats)
+        XCTAssertEqual(assembly.flattenedIfResolved()?.height, 90)
+        assembly.dedupeStickyBars = false
+        XCTAssertEqual(assembly.flattenedIfResolved()?.height, 90 + 2 * (ScrollFixtures.header + ScrollFixtures.footer))
+        assembly.dedupeStickyBars = true
+        XCTAssertEqual(assembly.flattenedIfResolved()?.height, 90)
+    }
+
+    func testSeamLoupeIsFullResolutionAndTracksOverlap() {
+        var stitcher = ScrollStitcher()
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.page(scroll: 0, slot: 0)), .seeded)
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.page(scroll: 0, slot: 80)), .unmatched)
+        let assembly = stitcher.takeAssembly()
+        let first = try XCTUnwrap(assembly.seamLoupe(boundary: 0, overlap: 0))
+        let second = try XCTUnwrap(assembly.seamLoupe(boundary: 0, overlap: 12))
+        XCTAssertEqual(first.width, ScrollFixtures.width)
+        XCTAssertLessThanOrEqual(first.height, 72 + 36)
+        XCTAssertNotEqual(first.pixels, second.pixels)
+    }
 }
 
 private enum ScrollFixtures {
@@ -211,6 +297,41 @@ private enum ScrollFixtures {
 
     static func page(scroll: Int, height: Int = 40, slot: Int = contentSlot) -> RGBAImage {
         fill(width: width, height: height) { y in slot + scroll + y }
+    }
+
+    /// Same distinctive row repeated every `period` rows, shifted by `scroll`.
+    static func periodic(scroll: Int, height: Int = 180, period: Int = 60) -> RGBAImage {
+        fill(width: width, height: height) { y in (y + scroll) % period }
+    }
+
+    static func gradient(scroll: Int, height: Int = 12) -> RGBAImage {
+        var pixels = [UInt8](repeating: 255, count: width * height * 4)
+        for y in 0..<height {
+            let (r, g, b) = gradientColor(scroll: scroll, y: y)
+            for x in 0..<width {
+                let i = (y * width + x) * 4
+                pixels[i] = r
+                pixels[i + 1] = g
+                pixels[i + 2] = b
+            }
+        }
+        return RGBAImage(width: width, height: height, pixels: pixels)
+    }
+
+    static func gradientColor(scroll: Int, y: Int) -> (UInt8, UInt8, UInt8) {
+        (UInt8(20 + (y + scroll) * 15), 180, 40)
+    }
+
+    static func noised(_ image: RGBAImage, amplitude: Int) -> RGBAImage {
+        var copy = image
+        for index in stride(from: 0, to: copy.pixels.count, by: 4) {
+            for channel in 0..<3 {
+                let delta = ((index + channel) * 17 % (amplitude * 2 + 1)) - amplitude
+                let mixed = Int(copy.pixels[index + channel]) + delta
+                copy.pixels[index + channel] = UInt8(min(255, max(0, mixed)))
+            }
+        }
+        return copy
     }
 
     private static func fill(width: Int, height: Int, slot: (Int) -> Int) -> RGBAImage {

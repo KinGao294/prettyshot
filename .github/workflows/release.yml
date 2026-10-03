@@ -49,6 +49,16 @@ jobs:
           fi
           echo "Tag ${GITHUB_REF_NAME} matches MARKETING_VERSION ${versions}"
 
+      - name: Test
+        if: github.event_name == 'pull_request'
+        run: |
+          xcodebuild test -project PrettyShot.xcodeproj -scheme PrettyShot \
+            -configuration Debug -derivedDataPath build-test \
+            -destination 'platform=macOS' \
+            CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="-" DEVELOPMENT_TEAM="" \
+            CODE_SIGNING_REQUIRED=NO \
+            test
+
       - name: Build (Release, universal, ad-hoc signed)
         run: |
           xcodebuild -project PrettyShot.xcodeproj -scheme PrettyShot \

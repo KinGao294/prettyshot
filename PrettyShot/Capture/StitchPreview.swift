@@ -13,6 +13,7 @@ final class StitchPreviewController: NSObject, NSWindowDelegate {
     private let model: StitchPreviewModel
     private var window: NSWindow?
     private var didFinish = false
+    private var keyMonitor: Any?
 
     init(review: ScrollingReview) {
         model = StitchPreviewModel(assembly: review.assembly, notice: review.notice)
@@ -38,14 +39,34 @@ final class StitchPreviewController: NSObject, NSWindowDelegate {
         window.delegate = self
         window.center()
         self.window = window
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self else { return event }
+            return self.handleKey(event)
+        }
         NSApp.activate()
         window.makeKeyAndOrderFront(nil)
     }
 
     func windowWillClose(_ notification: Notification) {
+        if let keyMonitor {
+            NSEvent.removeMonitor(keyMonitor)
+            self.keyMonitor = nil
+        }
         guard !didFinish else { return }
         didFinish = true
         onDiscard?()
+    }
+
+    private func handleKey(_ event: NSEvent) -> NSEvent? {
+        guard window?.isKeyWindow == true, model.selectedBoundary != nil else { return event }
+        let delta: Int
+        switch event.keyCode {
+        case 123, 125: delta = -1
+        case 124, 126: delta = 1
+        default: return event
+        }
+        model.nudgeOverlap(by: delta)
+        return nil
     }
 
     private func commit() {
@@ -71,6 +92,7 @@ final class StitchPreviewModel: ObservableObject {
     @Published var marks: [SeamMark] = []
     @Published var selectedBoundary: Int?
     @Published var overlap: Double = 0
+    @Published var loupe: NSImage?
     let notice: String?
 
     init(assembly: ScrollAssembly, notice: String?) {
@@ -88,7 +110,7 @@ final class StitchPreviewModel: ObservableObject {
 
     var overlapRange: ClosedRange<Double> {
         guard let selectedBoundary, assembly.segments.indices.contains(selectedBoundary + 1) else { return 0...0 }
-        let limit = max(0, assembly.segments[selectedBoundary + 1].image.height - 1)
+        let limit = max(0, assembly.displayedSegmentHeight(selectedBoundary + 1) - 1)
         return 0...Double(limit)
     }
 
@@ -96,24 +118,41 @@ final class StitchPreviewModel: ObservableObject {
         guard let rendered = assembly.renderPreview() else {
             preview = nil
             marks = []
+            loupe = nil
             return
         }
         marks = rendered.marks
         if let cg = rendered.image.cgImage() {
             preview = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
         }
+        refreshLoupe()
     }
 
     func select(boundary: Int) {
         guard assembly.seams.indices.contains(boundary) else { return }
         selectedBoundary = boundary
         overlap = Double(assembly.seams[boundary].editorOverlap)
+        refreshLoupe()
+    }
+
+    /// Dragging applies the overlap immediately so the overview and the 1:1 crop stay in sync.
+    func updateOverlap(_ value: Double) {
+        let clamped = min(max(value, overlapRange.lowerBound), overlapRange.upperBound)
+        overlap = clamped
+        guard let selectedBoundary else {
+            refreshLoupe()
+            return
+        }
+        assembly.align(seam: selectedBoundary, overlap: Int(clamped.rounded()))
+        refresh()
+    }
+
+    func nudgeOverlap(by delta: Int) {
+        updateOverlap(overlap + Double(delta))
     }
 
     func alignSelected() {
-        guard let selectedBoundary else { return }
-        assembly.align(seam: selectedBoundary, overlap: Int(overlap.rounded()))
-        refresh()
+        updateOverlap(overlap)
     }
 
     func joinSelectedAsIs() {
@@ -121,6 +160,27 @@ final class StitchPreviewModel: ObservableObject {
         assembly.joinAsIs(seam: selectedBoundary)
         overlap = 0
         refresh()
+    }
+
+    func restoreAutoAlignment() {
+        guard let selectedBoundary else { return }
+        let suggested = assembly.seams[selectedBoundary].suggestedOverlap ?? 0
+        updateOverlap(Double(suggested))
+    }
+
+    func setDedupeStickyBars(_ enabled: Bool) {
+        assembly.dedupeStickyBars = enabled
+        refresh()
+    }
+
+    private func refreshLoupe() {
+        guard let selectedBoundary,
+              let image = assembly.seamLoupe(boundary: selectedBoundary, overlap: Int(overlap.rounded())),
+              let cg = image.cgImage() else {
+            loupe = nil
+            return
+        }
+        loupe = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
     }
 }
 
@@ -165,6 +225,20 @@ struct StitchPreviewView: View {
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(Palette.bloomDeep)
             }
+            if model.assembly.hasStickyRepeats {
+                HStack(spacing: 12) {
+                    Toggle("固定栏只保留一次", isOn: Binding(
+                        get: { model.assembly.dedupeStickyBars },
+                        set: { model.setDedupeStickyBars($0) }
+                    ))
+                    .toggleStyle(.switch)
+                    .font(.system(size: 12))
+                    Button("还原固定栏") { model.setDedupeStickyBars(false) }
+                        .buttonStyle(LightButtonStyle())
+                        .disabled(!model.assembly.dedupeStickyBars)
+                        .help("把去掉的页眉和页脚按接缝插回去")
+                }
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
@@ -180,17 +254,31 @@ struct StitchPreviewView: View {
     }
 
     private var preview: some View {
-        ScrollView {
-            if let preview = model.preview {
-                Image(nsImage: preview)
-                    .resizable()
-                    .interpolation(.medium)
-                    .aspectRatio(contentMode: .fit)
-                    .padding(16)
-            } else {
-                Text("没有可预览的画面")
-                    .foregroundStyle(Palette.muted)
-                    .padding(24)
+        VStack(spacing: 0) {
+            if let loupe = model.loupe {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("接缝 1:1 · 偏移 \(Int(model.overlap.rounded())) px")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(Palette.muted)
+                    Image(nsImage: loupe)
+                        .interpolation(.none)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 12)
+            }
+            ScrollView {
+                if let preview = model.preview {
+                    Image(nsImage: preview)
+                        .resizable()
+                        .interpolation(.medium)
+                        .aspectRatio(contentMode: .fit)
+                        .padding(16)
+                } else {
+                    Text("没有可预览的画面")
+                        .foregroundStyle(Palette.muted)
+                        .padding(24)
+                }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -224,17 +312,23 @@ struct StitchPreviewView: View {
                 Spacer()
             }
             if let index = mark.boundaryIndex, selected, model.assembly.seams.indices.contains(index) {
-                if !model.assembly.seams[index].isResolved {
-                    Text("重叠 \(Int(model.overlap.rounded())) px（盖住下一段顶部）")
-                        .font(.system(size: 11))
-                        .foregroundStyle(Palette.charcoal)
-                    Slider(value: $model.overlap, in: model.overlapRange)
-                    HStack {
-                        Button("按此对齐", action: onAlign)
-                            .buttonStyle(LightButtonStyle())
-                        Button("按原样拼接", action: onJoin)
-                            .buttonStyle(LightButtonStyle())
-                    }
+                Text("重叠 \(Int(model.overlap.rounded())) px（盖住下一段顶部）· 方向键 ±1 px")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Palette.charcoal)
+                Slider(
+                    value: Binding(
+                        get: { model.overlap },
+                        set: { model.updateOverlap($0) }
+                    ),
+                    in: model.overlapRange
+                )
+                HStack {
+                    Button("按此对齐", action: onAlign)
+                        .buttonStyle(LightButtonStyle())
+                    Button("按原样拼接", action: onJoin)
+                        .buttonStyle(LightButtonStyle())
+                    Button("恢复自动对齐", action: { model.restoreAutoAlignment() })
+                        .buttonStyle(LightButtonStyle())
                 }
             }
         }

@@ -300,13 +300,18 @@ private final class RegionFramePump: NSObject, SCStreamOutput, SCStreamDelegate 
     func start(filter: SCContentFilter, configuration: SCStreamConfiguration) async throws {
         let stream = SCStream(filter: filter, configuration: configuration, delegate: self)
         try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: queue)
+        if lock.withLock({ stopped }) { return }
         try await stream.startCapture()
-        let alreadyStopped = lock.withLock { stopped }
-        if alreadyStopped {
-            try? await stream.stopCapture()
-            return
+        // stop() may have run while startCapture was in flight, before `stream` was published.
+        // Publish and observe `stopped` under the same lock, and stop an unpublished stream here.
+        let shouldStop = lock.withLock { () -> Bool in
+            if stopped { return true }
+            self.stream = stream
+            return false
         }
-        self.stream = stream
+        if shouldStop {
+            try? await stream.stopCapture()
+        }
     }
 
     func stop() {

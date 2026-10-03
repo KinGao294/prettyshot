@@ -73,22 +73,15 @@ struct RGBAImage: Equatable {
                 space: space,
                 bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
             ) else { return false }
-            // Bitmap row 0 is the bottom of the context. Draw upright, then flip below.
+            // Quartz origin is the bottom-left, so an unflipped draw writes the image's top
+            // into the last buffer row. Flip the CTM once; the buffer is then top-down.
             context.interpolationQuality = .none
+            context.translateBy(x: 0, y: CGFloat(height))
+            context.scaleBy(x: 1, y: -1)
             context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
             return true
         }
         guard drawn else { return nil }
-        let rowBytes = width * 4
-        for y in 0..<(height / 2) {
-            let top = y * rowBytes
-            let bottom = (height - 1 - y) * rowBytes
-            for offset in 0..<rowBytes {
-                let index = top + offset
-                let other = bottom + offset
-                storage.swapAt(index, other)
-            }
-        }
         return RGBAImage(width: width, height: height, pixels: storage)
     }
 
@@ -191,10 +184,19 @@ struct SeamMark: Identifiable, Equatable {
     var suggestedOverlap: Int?
 }
 
+/// Header/footer pixels removed at one confident join, so dedupe can be turned back off.
+struct StickyRepeat: Equatable {
+    /// Y in the deduped segment where the bars were taken out (between the old slice and the new one).
+    var seamY: Int
+    var header: RGBAImage
+    var footer: RGBAImage
+}
+
 struct ScrollSegment: Equatable {
     var image: RGBAImage
-    /// Y positions, in `image`, where a confident join added new rows.
+    /// Y positions, in the deduped `image`, where a confident join added new rows.
     var confidentSeamYs: [Int]
+    var stickyRepeats: [StickyRepeat] = []
 }
 
 struct ScrollSeam: Equatable {
@@ -236,20 +238,95 @@ struct ScrollAssembly: Equatable {
     var segments: [ScrollSegment] = []
     /// `seams[i]` sits between `segments[i]` and `segments[i + 1]`.
     var seams: [ScrollSeam] = []
+    /// When true, sticky header/footer pixels are kept once. Turning this off splices them back in.
+    var dedupeStickyBars = true
 
     var needsReview: Bool { seams.contains { !$0.isResolved } }
 
+    var hasStickyRepeats: Bool {
+        segments.contains { segment in
+            segment.stickyRepeats.contains { $0.header.height > 0 || $0.footer.height > 0 }
+        }
+    }
+
     var confidentSeamCount: Int { segments.reduce(0) { $0 + $1.confidentSeamYs.count } }
+
+    func displayedSegmentHeight(_ index: Int) -> Int {
+        guard segments.indices.contains(index) else { return 0 }
+        return presented(segments[index]).image.height
+    }
 
     mutating func align(seam index: Int, overlap: Int) {
         guard seams.indices.contains(index), segments.indices.contains(index + 1) else { return }
-        let limit = max(0, segments[index + 1].image.height - 1)
+        let limit = max(0, presented(segments[index + 1]).image.height - 1)
         seams[index].kind = .aligned(overlap: min(max(0, overlap), limit))
+    }
+
+    /// Puts the overlap back on the automatic suggestion and marks the seam aligned.
+    /// The capture itself never applies that suggestion until the user asks.
+    mutating func restoreAutoAlignment(seam index: Int) {
+        guard seams.indices.contains(index) else { return }
+        align(seam: index, overlap: seams[index].suggestedOverlap ?? 0)
     }
 
     mutating func joinAsIs(seam index: Int) {
         guard seams.indices.contains(index) else { return }
         seams[index].kind = .joinedAsIs
+    }
+
+    /// 1:1 crop around a boundary. The rows the overlap hides are drawn at partial alpha
+    /// over the bottom of the upper segment so the offset is visible while dragging.
+    func seamLoupe(boundary: Int, overlap: Int, band: Int = 72) -> RGBAImage? {
+        guard segments.indices.contains(boundary), segments.indices.contains(boundary + 1) else { return nil }
+        let upper = presented(segments[boundary]).image
+        let lower = presented(segments[boundary + 1]).image
+        guard upper.width > 0, upper.width == lower.width, upper.height > 0, lower.height > 0 else { return nil }
+        let cropW = min(upper.width, 420)
+        let x0 = max(0, (upper.width - cropW) / 2)
+        let overlap = min(max(0, overlap), max(0, lower.height - 1))
+        let topBand = min(max(1, band), upper.height)
+        let botBand = min(band / 2, max(0, lower.height - overlap))
+        let ghost = min(overlap, topBand)
+        let height = topBand + botBand
+        guard height > 0 else { return nil }
+        var pixels = [UInt8](repeating: 0, count: cropW * height * 4)
+
+        func blend(from image: RGBAImage, srcY: Int, dstY: Int, alpha: Int?) {
+            guard srcY >= 0, srcY < image.height, dstY >= 0, dstY < height else { return }
+            let src = (srcY * image.width + x0) * 4
+            let dst = dstY * cropW * 4
+            guard src + cropW * 4 <= image.pixels.count, dst + cropW * 4 <= pixels.count else { return }
+            for x in 0..<cropW {
+                let s = src + x * 4
+                let d = dst + x * 4
+                if let alpha {
+                    for channel in 0..<3 {
+                        let base = Int(pixels[d + channel])
+                        let over = Int(image.pixels[s + channel])
+                        pixels[d + channel] = UInt8((base * (255 - alpha) + over * alpha) / 255)
+                    }
+                } else {
+                    pixels[d] = image.pixels[s]
+                    pixels[d + 1] = image.pixels[s + 1]
+                    pixels[d + 2] = image.pixels[s + 2]
+                }
+                pixels[d + 3] = 255
+            }
+        }
+
+        for row in 0..<topBand {
+            blend(from: upper, srcY: upper.height - topBand + row, dstY: row, alpha: nil)
+        }
+        if ghost > 0 {
+            let ghostStart = overlap - ghost
+            for row in 0..<ghost {
+                blend(from: lower, srcY: ghostStart + row, dstY: topBand - ghost + row, alpha: 115)
+            }
+        }
+        for row in 0..<botBand {
+            blend(from: lower, srcY: overlap + row, dstY: topBand + row, alpha: nil)
+        }
+        return RGBAImage(width: cropW, height: height, pixels: pixels)
     }
 
     /// Nil while any seam still needs a decision — a wrong stitch is never returned implicitly.
@@ -264,9 +341,9 @@ struct ScrollAssembly: Equatable {
     func exportChunks() -> [RGBAImage] {
         guard let first = segments.first else { return [] }
         var chunks: [RGBAImage] = []
-        var current: [RGBAImage] = [first.image]
+        var current: [RGBAImage] = [presented(first).image]
         for index in seams.indices where segments.indices.contains(index + 1) {
-            let next = segments[index + 1].image
+            let next = presented(segments[index + 1]).image
             switch seams[index].kind {
             case .needsAlignment:
                 if let joined = RGBAImage.verticalJoin(current) { chunks.append(joined) }
@@ -327,7 +404,8 @@ struct ScrollAssembly: Equatable {
         for (segmentIndex, segment) in segments.enumerated() where segmentIndex < layout.pieces.count {
             let piece = layout.pieces[segmentIndex]
             let origin = origins[segmentIndex]
-            for (offset, seamY) in segment.confidentSeamYs.enumerated() where seamY >= piece.start {
+            let confidentYs = presented(segment).confidentSeamYs
+            for (offset, seamY) in confidentYs.enumerated() where seamY >= piece.start {
                 let y = origin + (seamY - piece.start)
                 marks.append(SeamMark(id: "seg\(segmentIndex)-ok\(offset)", state: .ok, y: y, boundaryIndex: nil, suggestedOverlap: nil))
                 paintLine(at: y, fullHeight: fullHeight, factor: factor, outW: outW, outH: outH, color: (126, 184, 168), into: &pixels)
@@ -354,11 +432,34 @@ struct ScrollAssembly: Equatable {
         var start: Int
     }
 
+    /// Dedupe-off view of a segment: repeated sticky bars spliced back at each confident seam.
+    private func presented(_ segment: ScrollSegment) -> (image: RGBAImage, confidentSeamYs: [Int]) {
+        let repeats = segment.stickyRepeats.filter { $0.header.height > 0 || $0.footer.height > 0 }
+        guard !dedupeStickyBars, !repeats.isEmpty else {
+            return (segment.image, segment.confidentSeamYs)
+        }
+        var image = segment.image
+        var ys = segment.confidentSeamYs
+        for rep in repeats.sorted(by: { $0.seamY > $1.seamY }) {
+            let extra = rep.footer.height + rep.header.height
+            guard extra > 0 else { continue }
+            let y = min(max(0, rep.seamY), image.height)
+            var parts: [RGBAImage] = []
+            if y > 0 { parts.append(image.crop(rows: 0..<y)) }
+            if rep.footer.height > 0 { parts.append(rep.footer) }
+            if rep.header.height > 0 { parts.append(rep.header) }
+            if y < image.height { parts.append(image.crop(rows: y..<image.height)) }
+            if let joined = RGBAImage.verticalJoin(parts) { image = joined }
+            ys = ys.map { $0 >= rep.seamY ? $0 + extra : $0 }
+        }
+        return (image, ys)
+    }
+
     private func layoutPieces() -> (pieces: [Piece], fullHeight: Int) {
         guard let first = segments.first else { return ([], 0) }
-        var pieces = [Piece(image: first.image, start: 0)]
+        var pieces = [Piece(image: presented(first).image, start: 0)]
         for index in seams.indices where segments.indices.contains(index + 1) {
-            let next = segments[index + 1].image
+            let next = presented(segments[index + 1]).image
             let start: Int
             switch seams[index].kind {
             case .needsAlignment, .joinedAsIs:
@@ -432,6 +533,7 @@ struct ScrollStitcher {
     private var previous: RGBAImage?
     private var lockedHeader: Int?
     private var lockedFooter: Int?
+    private var stickyRepeats: [StickyRepeat] = []
 
     init(options: Options = Options()) {
         self.options = options
@@ -466,7 +568,7 @@ struct ScrollStitcher {
         let prevRows = RowSamples.make(prev, options: options)
         let nextRows = RowSamples.make(frame, options: options)
         if RowSamples.isUnchanged(prevRows, nextRows, options: options) {
-            previous = frame
+            // Keep the last incorporated frame. Replacing it would drop the 1–2 px this frame revealed.
             return .unchanged
         }
 
@@ -497,7 +599,7 @@ struct ScrollStitcher {
                 }
                 previous = frame
             case .unchanged:
-                previous = frame
+                break
             case .unmatched:
                 return breakUnmatched(frame, suggested: max(0, frame.height - abs(match.shift)))
             case .seeded, .ignored:
@@ -551,6 +653,8 @@ struct ScrollStitcher {
 
         // Split only once the new strip is known to fit, so a rejected frame cannot slice the seed.
         splitSeedIfNeeded(headerH: headerH, footerH: footerH)
+        let repeatHeader = header ?? RGBAImage(width: next.width, height: 0, pixels: [])
+        let repeatFooter = footer ?? RGBAImage(width: next.width, height: 0, pixels: [])
         if footerH > 0 {
             footer = next.crop(rows: (next.height - footerH)..<next.height)
         }
@@ -568,14 +672,23 @@ struct ScrollStitcher {
             clipped = true
         }
         let seamY = (header?.height ?? 0) + parts.reduce(0) { $0 + $1.height }
+        let joinY: Int
         if prepend {
             let added = fitted.height
             confidentYs = confidentYs.map { $0 + added }
-            confidentYs.append((header?.height ?? 0) + added)
+            stickyRepeats = stickyRepeats.map {
+                StickyRepeat(seamY: $0.seamY + added, header: $0.header, footer: $0.footer)
+            }
+            joinY = (header?.height ?? 0) + added
+            confidentYs.append(joinY)
             parts.insert(fitted, at: 0)
         } else {
+            joinY = seamY
             confidentYs.append(seamY)
             parts.append(fitted)
+        }
+        if repeatHeader.height > 0 || repeatFooter.height > 0 {
+            stickyRepeats.append(StickyRepeat(seamY: joinY, header: repeatHeader, footer: repeatFooter))
         }
         if clipped { return .reachedLimit }
         return prepend ? .prepended(fitted.height) : .appended(fitted.height)
@@ -599,13 +712,17 @@ struct ScrollStitcher {
         lockedHeader = nil
         lockedFooter = nil
         confidentYs = []
+        stickyRepeats = []
         unmatchedBreaks += 1
         return .unmatched
     }
 
     private mutating func sealOpenSegment() {
-        guard previous != nil, let image = openImage(), image.height > 0 else { return }
-        segments.append(ScrollSegment(image: image, confidentSeamYs: confidentYs))
+        guard previous != nil, let image = openImage(), image.height > 0 else {
+            stickyRepeats = []
+            return
+        }
+        segments.append(ScrollSegment(image: image, confidentSeamYs: confidentYs, stickyRepeats: stickyRepeats))
         header = nil
         footer = nil
         parts = []
@@ -613,6 +730,7 @@ struct ScrollStitcher {
         lockedHeader = nil
         lockedFooter = nil
         confidentYs = []
+        stickyRepeats = []
     }
 
     private func openImage() -> RGBAImage? {
@@ -746,13 +864,18 @@ private enum RowSamples {
             }
         }
 
-        guard let best = scored.min(by: { $0.value < $1.value }) else { return nil }
-        let rivals = scored.filter { $0.key != best.key }
-        if let second = rivals.min(by: { $0.value < $1.value }), best.value > 3, second.value < best.value + 5 {
-            // A close second guess is not safe to bake in. Hand the hint to the review UI instead.
-            return ShiftChoice(shift: best.key, confident: false)
+        let ranked = scored.sorted { lhs, rhs in
+            if lhs.value != rhs.value { return lhs.value < rhs.value }
+            let left = abs(lhs.key)
+            let right = abs(rhs.key)
+            if left != right { return left < right }
+            return lhs.key > rhs.key
         }
-        return ShiftChoice(shift: best.key, confident: true)
+        guard let best = ranked.first else { return nil }
+        // A tied or near-tied second shift — including several perfect scores of 0 — is not safe.
+        // Dictionary order is not a tie-break; repeated list rows must stay unconfirmed.
+        let ambiguous = ranked.dropFirst().contains { $0.value <= best.value + 4 }
+        return ShiftChoice(shift: best.key, confident: !ambiguous)
     }
 
     // MARK: - Private

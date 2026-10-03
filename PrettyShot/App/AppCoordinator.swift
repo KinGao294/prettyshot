@@ -75,6 +75,10 @@ final class AppCoordinator: ObservableObject {
             cancelCapture()
             return
         }
+        if stitchPreview != nil {
+            ToastPresenter.shared.show("请先完成或关闭拼接预览", style: .info, duration: 3)
+            return
+        }
         // Sample before anything below (popover close, HUD) can activate PrettyShot.
         let focusTarget = focusTarget(for: trigger)
         statusItem?.closePopover()
@@ -199,12 +203,18 @@ final class AppCoordinator: ObservableObject {
             guard let self else { return }
             self.stitchPreview = nil
             var first: (HistoryItem, CGImage)?
+            var failed = 0
             for image in images {
-                if let item = try? self.history.add(image: image, scale: review.scale, mode: .scrolling), first == nil {
-                    first = (item, image)
+                do {
+                    let item = try self.history.add(image: image, scale: review.scale, mode: .scrolling)
+                    if first == nil { first = (item, image) }
+                } catch {
+                    failed += 1
                 }
             }
-            if images.count > 1 {
+            if failed > 0 {
+                ToastPresenter.shared.show("有 \(failed) 段没有写入历史", style: .error, duration: 4)
+            } else if images.count > 1 {
                 ToastPresenter.shared.show("已把 \(images.count) 段分别放进历史", style: .success, duration: 4)
             }
             if let first {
