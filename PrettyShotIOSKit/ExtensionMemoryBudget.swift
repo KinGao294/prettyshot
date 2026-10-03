@@ -5,26 +5,26 @@ import PrettyShotCore
 
 /// Share Extension memory plan for AC-I17.
 ///
-/// A 12MP RGBA buffer is 12e6 × 4 = 48MB. Three of them (source, redacted copy, canvas) are 144MB,
+/// A 12MP RGBA buffer is 12e6 × 4 = 48MB. Five of them are 240MB,
 /// over the ~120MB extension cap. The extension therefore:
 /// 1. reads pixel size from the image header, without decoding a bitmap
 /// 2. keeps one downscaled preview (long side ≤ 1280) while editing
 /// 3. releases that preview before the export decode
 /// 4. decodes one full-size image, bakes redaction into it, and draws the beautified result
 ///
-/// Export peak is four RGBA buffers at once: the source, the redacted copy, the beautify canvas,
-/// and the shadow transparency layer. The canvas is the laid-out size after padding, not the source.
-/// About 40MB is left for the process itself. There is no tiled render in M3. A 12MP image's four
-/// buffers are about 192MB, so that image is handed to the app. Editing keeps the file URL plus one
-/// preview. Nothing is exported at preview size.
+/// Export peak is five RGBA buffers at once: the source, the redacted copy, the beautify canvas,
+/// the shadow transparency layer, and one extra canvas-sized buffer. The canvas is the laid-out
+/// size after padding, not the source. About 40MB is left for the process itself. There is no tiled
+/// render in M3. A 12MP image's five buffers are about 240MB, so that image is handed to the app.
+/// Editing keeps the file URL plus one preview. Nothing is exported at preview size.
 enum ExtensionMemoryBudget {
     static let limitBytes = 120 * 1024 * 1024
     /// Left unused so the process, ImageIO, and the shadow layer's allocator overhead still fit.
     static let headroomBytes = 40 * 1024 * 1024
     static let bytesPerPixel = 4
     static let previewMaxLongSide = 1280
-    /// Source + redacted + canvas + shadow layer.
-    static let fullSizeCopiesWhileExporting = 4
+    /// Source + redacted + canvas + shadow layer + one extra canvas buffer.
+    static let fullSizeCopiesWhileExporting = 5
     static let forbiddenSimultaneousFullSizeCopies = 3
 
     enum Plan: Equatable {
@@ -55,7 +55,7 @@ enum ExtensionMemoryBudget {
     /// Bytes for the buffers that are alive together during a shadowed, redacted export.
     /// Canvas and the shadow layer use the output size; pass the source size when the canvas is not known yet.
     static func exportPeakBytes(sourcePixels: Int, canvasPixels: Int) -> Int {
-        rgbaBytes(pixels: sourcePixels, copies: 2) + rgbaBytes(pixels: canvasPixels, copies: 2)
+        rgbaBytes(pixels: sourcePixels, copies: 2) + rgbaBytes(pixels: canvasPixels, copies: 3)
     }
 
     /// Full export after the preview is released. Counts the real peak, not two source copies.
@@ -87,7 +87,7 @@ enum ExtensionMemoryBudget {
         return Int(canvas.width.rounded(.up)) * Int(canvas.height.rounded(.up))
     }
 
-    /// Inline only when the padded four-buffer peak plus `headroomBytes` fits in `limitBytes`.
+    /// Inline only when the padded five-buffer peak plus `headroomBytes` fits in `limitBytes`.
     static func plan(
         pixelWidth: Int,
         pixelHeight: Int,

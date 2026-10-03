@@ -59,9 +59,10 @@ enum IOSCopy {
     // MARK: - 导出 · 帧 10 / 14 / 32 / 33
 
     static let toastSaved = "已存入相册"
-    static let toastSavedDetail = "原图未改动"
-    /// In-app save line. Not frame 10. Still the short line until the copy is split.
-    static let inAppSavedDetail = "原图未改动"
+    /// Frame 10, extension only. The in-app line is `inAppSavedDetail`.
+    static let toastSavedDetail = "原图未改动 · 即将返回"
+    /// In-app save line. Not frame 10.
+    static let inAppSavedDetail = "原图未改动 · 已存为新图片"
     static let toastCopied = "已复制"
     static let toastCopiedDetail = "可直接粘贴到聊天、备忘录等"
     static let photoUsage = "用于把美化后的图片存为一张新照片。PrettyShot 不会读取、修改或删除你已有的照片。"
@@ -82,8 +83,8 @@ enum IOSCopy {
     static let pickAgain = "重新选图"
     static let backHome = "返回首页"
     /// 选了多张、读出来的不够两张。单张打不开仍用 `memoryFailedTitle`。
-    static let multiUnreadableTitle = "有的图片没读出来"
-    static let multiUnreadableBody = "有的图片还在 iCloud 中未下载，或文件已损坏。不会只用读出来的那张继续。"
+    static let multiUnreadableTitle = "有图片没读出来"
+    static let multiUnreadableBody = "可能还在 iCloud 中未下载，或文件已损坏。拼长图至少要 2 张，请重新选图。相册里的原图没动。"
 
     /// 帧 11。只出现在分享扩展，且只有能把原文件交给 App 时。主 App 不用这句。
     /// 交接只拷贝原文件，不带编辑样式，所以这里不写「样式会一起带过去」。
@@ -137,9 +138,9 @@ enum IOSCopy {
         "这张长图少了 \(ordinals.count) 张（\(missingList(ordinals))没读出来）"
     }
     static func addedBack(ordinal: Int, total: Int) -> String { "已加回第 \(ordinal) 张 · \(total) 张齐了" }
-    /// Partial re-add. Still uses the all-back sentence, so the banner count is not in the toast.
+    /// One shot is back and others are still missing. The banner stays until the last one returns.
     static func addedBackStillMissing(ordinal: Int, stillMissing: Int) -> String {
-        "已加回第 \(ordinal) 张 · \(stillMissing) 张齐了"
+        "已加回第 \(ordinal) 张 · 还少 \(stillMissing) 张"
     }
     static let continueStitch = "继续拼接"
     static let dismissPending = "不用了"
@@ -154,9 +155,10 @@ enum IOSCopy {
     static let multiStitch = "在 PrettyShot 中拼成长图"
     static let multiDetail = "拼接在 App 内完成，可以调整顺序、删掉某一张。扩展里不拼接。"
     static let multiFootnote = "若没有自动打开，手动打开 PrettyShot 即可继续。"
-    /// S12。还没暂存就打不开 App 时留在这一页，不跳到 S10f。
-    static let s12OpenFailedHint = "没有打开 PrettyShot。请自己打开 App，从这一页继续。"
-    static let multiInlineFootnote = "当前签名不能把这些图交给 App。请打开 PrettyShot，用「拼长图」从相册再选一次。"
+    /// Frame 13. The app did not open from the read-failed page.
+    static let s12OpenFailedHint = "没能打开 PrettyShot。请从主屏幕打开它，在 App 里选图。"
+    /// S10f when a multi-image or PDF share cannot be handed off.
+    static let multiInlineFootnote = "这些图没法从分享菜单交给 App · 原图没动。请打开 PrettyShot，用「拼长图」从相册再选一次。"
     static func pdfShareTitle(count: Int) -> String {
         "收到 \(count) 个整页 PDF"
     }
@@ -305,29 +307,30 @@ enum IOSCopy {
     }
 }
 
-/// Frame 10 in the extension. The delay and the button flag are still the current page.
+/// Frame 10 in the extension. No buttons; the extension dismisses itself.
 enum ExtensionSavedToast {
-    static let dismissAfter: TimeInterval = 1.2
-    static let hasButtons = true
+    static let dismissAfter: TimeInterval = 1.6
+    static let hasButtons = false
 }
 
-/// Frame 11 / 11a. The body ignores session edits, and the grey footer is still reported as shown.
+/// Frame 11 / 11a. The grey 「如果没有自动打开」footer is not part of this frame.
 enum LargeHandoff {
+    static let editedNote = "App 会打开原图，样式和标注要重新调一下。"
+
     static func body(changedStyle: Bool, changedCrop: Bool, addedArrow: Bool, addedRedaction: Bool) -> String {
-        _ = (changedStyle, changedCrop, addedArrow, addedRedaction)
-        return IOSCopy.largeBody
+        let edited = changedStyle || changedCrop || addedArrow || addedRedaction
+        return edited ? IOSCopy.largeBody + editedNote : IOSCopy.largeBody
     }
 
-    static func showsManualOpenFooter() -> Bool { true }
+    static func showsManualOpenFooter() -> Bool { false }
 
-    /// Cancel currently drops the edits instead of returning to the editor with them.
+    /// Cancel returns to the editor and keeps the edits from this session.
     static func editsSurviveCancel(
         padding: Int,
         arrowCount: Int,
         redactionCount: Int,
         removeStatusBar: Bool
     ) -> (padding: Int, arrowCount: Int, redactionCount: Int, removeStatusBar: Bool) {
-        _ = (padding, arrowCount, redactionCount, removeStatusBar)
-        return (28, 0, 0, true)
+        (padding, arrowCount, redactionCount, removeStatusBar)
     }
 }

@@ -40,6 +40,14 @@ final class EditorModel: ObservableObject {
     private var encoded = Data()
     /// Set when the extension loaded a file URL. Handoff copies this file and does not keep a second decoded bitmap.
     private var sourceURL: URL?
+    /// Style and crop at the moment this image was opened. A remembered style applied before load is the baseline.
+    private var openingStyle = BackgroundStyle.default
+    private var openingRemoveStatusBar = true
+
+    var changedStyleThisSession: Bool { style != openingStyle }
+    var changedCropThisSession: Bool { removeStatusBar != openingRemoveStatusBar }
+    var addedArrowThisSession: Bool { !arrows.isEmpty }
+    var addedRedactionThisSession: Bool { !redactions.isEmpty }
     private var undoStack: [Snapshot] = []
     private var redoStack: [Snapshot] = []
 
@@ -54,6 +62,7 @@ final class EditorModel: ObservableObject {
         encoded = data
         applySize(ImagePrep.pixelSize(data))
         refreshPreview()
+        markSessionBaseline()
     }
 
     /// Keeps the file. Pixel size comes from the header; the only decoded image is the preview.
@@ -62,6 +71,12 @@ final class EditorModel: ObservableObject {
         encoded = Data()
         applySize(ImagePrep.pixelSize(fileURL))
         refreshPreview()
+        markSessionBaseline()
+    }
+
+    private func markSessionBaseline() {
+        openingStyle = style
+        openingRemoveStatusBar = removeStatusBar
     }
 
     func refreshPreview() {

@@ -21,8 +21,7 @@ final class StitchModel: ObservableObject {
         var stitcher = ScrollStitcher()
         var skipped: [Int] = []
         for (index, image) in images.enumerated() {
-            let ordinal = index + 1
-            _ = ordinals
+            let ordinal = ordinals.count == images.count ? ordinals[index] : index + 1
             guard let frame = RGBAImage.fromCGImage(image) else {
                 skipped.append(ordinal)
                 continue

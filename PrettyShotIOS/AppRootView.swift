@@ -182,7 +182,7 @@ struct AppRootView: View {
                     route = .error
                     return
                 }
-                stitch.ingest(loaded.images)
+                ingestLoaded(loaded, from: ordered)
                 route = .stitch
             }
             .buttonStyle(BloomButtonStyle())
@@ -330,7 +330,13 @@ struct AppRootView: View {
         var failed: [Int] = []
         for (index, item) in items.enumerated() {
             if let data = try? await item.loadTransferable(type: Data.self), ImagePrep.fullImage(data) != nil {
-                files.append(ShotFile(label: "\(index + 1)", data: data, capturedAt: ImagePrep.captureDate(data)))
+                let ordinal = index + 1
+                files.append(ShotFile(
+                    label: "\(ordinal)",
+                    data: data,
+                    capturedAt: ImagePrep.captureDate(data),
+                    originalOrdinal: ordinal
+                ))
             } else {
                 failed.append(index + 1)
             }
@@ -382,10 +388,12 @@ struct AppRootView: View {
         guard step.restored == ordinal else { return }
         readdOrdinal = nil
         let date = ImagePrep.captureDate(data)
-        let shot = ShotFile(label: "", data: data, capturedAt: date)
-        let mapped = ordered.map { OrderedShot(id: $0.id.uuidString, capturedAt: $0.capturedAt) }
+        let shot = ShotFile(label: "\(ordinal)", data: data, capturedAt: date, originalOrdinal: ordinal)
+        let mapped = ordered.map {
+            OrderedShot(id: $0.id.uuidString, capturedAt: $0.capturedAt, globalOrdinal: $0.originalOrdinal)
+        }
         let placed = ShotOrdering.inserting(
-            OrderedShot(id: shot.id.uuidString, capturedAt: date),
+            OrderedShot(id: shot.id.uuidString, capturedAt: date, globalOrdinal: ordinal),
             into: mapped,
             missingOrdinal: ordinal
         )
@@ -393,20 +401,33 @@ struct AppRootView: View {
         byID[shot.id.uuidString] = shot
         ordered = placed.compactMap { byID[$0.id] }
         for index in ordered.indices {
-            ordered[index].label = "\(index + 1)"
+            ordered[index].label = "\(ordered[index].originalOrdinal)"
         }
         let total = max(expectedTotal, ordered.count)
         missingOrdinals = step.session.ordinals
         if missingOrdinals.isEmpty {
-            editor.showToast(IOSCopy.addedBack(ordinal: ordinal, total: total), detail: IOSCopy.toastSavedDetail)
+            editor.showToast(IOSCopy.addedBack(ordinal: ordinal, total: total), detail: IOSCopy.inAppSavedDetail)
+        } else {
+            editor.showToast(
+                IOSCopy.addedBackStillMissing(ordinal: ordinal, stillMissing: missingOrdinals.count),
+                detail: IOSCopy.inAppSavedDetail
+            )
         }
         if route == .stitch || route == .editor {
             let loaded = StitchSourceLoader.load(ordered.map(\.data))
             if loaded.images.count >= 2 {
-                stitch.ingest(loaded.images)
+                ingestLoaded(loaded, from: ordered)
                 route = .stitch
             }
         }
+    }
+
+    private func ingestLoaded(_ loaded: LoadedStitchSources, from files: [ShotFile]) {
+        let missingIndexes = Set(loaded.missingOrdinals)
+        let ordinals = files.enumerated().compactMap { index, file -> Int? in
+            missingIndexes.contains(index + 1) ? nil : file.originalOrdinal
+        }
+        stitch.ingest(loaded.images, ordinals: ordinals)
     }
 
     private func openSettings() {
@@ -417,30 +438,28 @@ struct AppRootView: View {
     private func openPending() {
         let tickets = PendingShareResume.ordered(pending)
         guard !tickets.isEmpty else { return }
-        let urls: [URL]
+        let data: [Data]
         do {
-            urls = try PendingShareResume.fileURLs(tickets, store: store)
+            data = try ReceiptConfirmation.imageData(of: tickets, store: store)
         } catch {
             route = .error
             return
         }
-        let loaded = urls.enumerated().compactMap { index, url -> ShotFile? in
-            guard let data = try? Data(contentsOf: url) else { return nil }
-            return ShotFile(label: "\(index + 1)", data: data, capturedAt: ImagePrep.captureDate(data))
-        }
-        guard !urls.isEmpty, loaded.count == urls.count else {
-            route = .error
+        guard !data.isEmpty else {
+            refreshPending()
             return
+        }
+        let ordinals = PendingShareResume.globalFileOrdinals(tickets)
+        let loaded = data.enumerated().map { index, blob in
+            let ordinal = index < ordinals.count ? ordinals[index] : index + 1
+            return ShotFile(
+                label: "\(ordinal)",
+                data: blob,
+                capturedAt: ImagePrep.captureDate(blob),
+                originalOrdinal: ordinal
+            )
         }
         let missing = tickets.flatMap { $0.missingShots.map(\.ordinal) }
-        do {
-            for ticket in tickets {
-                try store.confirmReceipt(ticketID: ticket.id)
-            }
-        } catch {
-            route = .error
-            return
-        }
         let session = MissingShotSession.remember(
             failedOrdinals: missing,
             loadedCount: loaded.count
@@ -475,7 +494,7 @@ struct AppRootView: View {
             if PhotoSaveRouter.route(for: status) == .offerCopy {
                 showPhotoDenied = true
             } else {
-                editor.showToast(IOSCopy.toastSaved, detail: IOSCopy.toastSavedDetail)
+                editor.showToast(IOSCopy.toastSaved, detail: IOSCopy.inAppSavedDetail)
             }
         }
     }
@@ -494,7 +513,7 @@ struct AppRootView: View {
             PhotoLibrarySaver.savePNG(blob) { _ in
                 remaining -= 1
                 if remaining == 0 {
-                    editor.showToast(IOSCopy.toastSegments(blobs.count), detail: IOSCopy.toastSavedDetail)
+                    editor.showToast(IOSCopy.toastSegments(blobs.count), detail: IOSCopy.inAppSavedDetail)
                 }
             }
         }
@@ -506,6 +525,8 @@ private struct ShotFile: Identifiable {
     var label: String
     var data: Data
     var capturedAt: Date? = nil
+    /// Original 1-based position. Re-adding inserts by this, never by capture time.
+    var originalOrdinal: Int = 0
 }
 
 private enum AppRoute: Hashable {

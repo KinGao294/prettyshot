@@ -163,8 +163,9 @@ enum ExtensionLaunchRouter {
     }
 
     static func afterPickerOpen(succeeded: Bool, fromReadFailedPage: Bool = false) -> PickerLaunchOutcome {
-        _ = fromReadFailedPage
-        return succeeded ? .opened : .stayAndAskToOpenApp
+        if succeeded { return .opened }
+        if fromReadFailedPage { return .stayOnReadFailedPage }
+        return .stayAndAskToOpenApp
     }
 
     /// Frame 63 「重试」. Drop the previous ticket before staging another, so two copies do not stack.
@@ -187,7 +188,7 @@ enum S12Launch {
         if stagedFileCount > 0 {
             return .notThisPage
         }
-        return .stayOnMultiPage(hint: IOSCopy.s12OpenFailedHint)
+        return .reselectOnS10f
     }
 }
 
@@ -202,27 +203,67 @@ enum PendingShareResume {
     }
 
     static func stagedFileCount(_ pending: [HandoffTicket]) -> Int {
-        ordered(pending).reduce(0) { $0 + $1.fileNames.count }
+        ordered(pending).reduce(0) { count, ticket in
+            ticket.kind == .pdf ? count : count + ticket.fileNames.count
+        }
     }
 
     static func fileURLs(_ pending: [HandoffTicket], store: HandoffStore) throws -> [URL] {
         var urls: [URL] = []
-        for ticket in ordered(pending) {
+        for ticket in ordered(pending) where ticket.kind != .pdf {
             urls.append(contentsOf: try store.files(for: ticket.id))
         }
         return urls
     }
+
+    /// 1-based positions of image files across every share. `pending` must already use global missing ordinals
+    /// (the list `pendingTickets()` returns). PDFs occupy a slot but are not emitted.
+    static func globalFileOrdinals(_ pending: [HandoffTicket]) -> [Int] {
+        var offset = 0
+        var ordinals: [Int] = []
+        for ticket in ordered(pending) {
+            let span = ticket.fileNames.count + ticket.missingShots.count
+            let localMissing = Set(ticket.missingShots.map { $0.ordinal - offset })
+            if ticket.kind != .pdf, span > 0 {
+                for position in 1...span where !localMissing.contains(position) {
+                    ordinals.append(offset + position)
+                }
+            }
+            offset += span
+        }
+        return ordinals
+    }
+
+    /// Missing ordinals stored on disk are local to each share. Readers see one continuous list.
+    static func withGlobalMissingOrdinals(_ tickets: [HandoffTicket]) -> [HandoffTicket] {
+        var offset = 0
+        var result: [HandoffTicket] = []
+        for ticket in tickets {
+            var copy = ticket
+            copy.missingShots = ticket.missingShots.map { MissingShot(ordinal: $0.ordinal + offset) }
+            result.append(copy)
+            offset += ticket.fileNames.count + ticket.missingShots.count
+        }
+        return result
+    }
 }
 
-/// Confirms each ticket, then reads it. A later delete throws the images away.
+/// Reads every image first, then confirms. A later delete still returns the bytes already read.
 enum ReceiptConfirmation {
     static func imageData(of tickets: [HandoffTicket], store: HandoffStore) throws -> [Data] {
+        let ordered = PendingShareResume.ordered(tickets)
         var data: [Data] = []
-        for ticket in PendingShareResume.ordered(tickets) {
+        for ticket in ordered where ticket.kind != .pdf {
             let urls = try store.files(for: ticket.id)
-            try store.confirmReceipt(ticketID: ticket.id)
             for url in urls {
                 data.append(try Data(contentsOf: url))
+            }
+        }
+        for ticket in ordered {
+            do {
+                try store.confirmReceipt(ticketID: ticket.id)
+            } catch {
+                return data
             }
         }
         return data
@@ -324,7 +365,8 @@ final class DirectoryHandoffStore: HandoffStore {
                   let ticket = try? JSONDecoder().decode(HandoffTicket.self, from: data) else { continue }
             tickets.append(ticket)
         }
-        return tickets.sorted { $0.createdAt < $1.createdAt }
+        let sorted = tickets.sorted { $0.createdAt < $1.createdAt }
+        return PendingShareResume.withGlobalMissingOrdinals(sorted)
     }
 
     func files(for ticketID: String) throws -> [URL] {
