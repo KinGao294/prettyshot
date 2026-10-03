@@ -129,6 +129,21 @@ final class ScrollStitchTests: XCTestCase {
         XCTAssertNil(assembly.seams.last?.note)
     }
 
+    /// One reverse candidate, and it copies rows already on the page. That opens a seam.
+    func testReverseSingleCandidateFalseMatchOpensSeam() throws {
+        var stitcher = ScrollStitcher()
+        XCTAssertEqual(stitcher.ingest(CoreScrollFixtures.page(scroll: 0, height: 48, slot: 0)), .seeded)
+        XCTAssertEqual(stitcher.ingest(CoreScrollFixtures.page(scroll: 12, height: 48, slot: 0)), .appended(12))
+        let outcome = stitcher.ingest(CoreScrollFixtures.falseReverse())
+        XCTAssertNotEqual(outcome, .ignored)
+        XCTAssertEqual(outcome, .unmatched)
+        let assembly = stitcher.takeAssembly()
+        XCTAssertTrue(assembly.needsReview)
+        XCTAssertNil(assembly.flattenedIfResolved())
+        XCTAssertEqual(assembly.seams.count, 1)
+        XCTAssertEqual(assembly.seams.last?.note, "这里像是往回滚了，确认一下接在哪")
+    }
+
     /// Repeating card chrome used to invent a second shift once the scroll passed one card.
     func testRepeatingCardChromeWithCompetingCandidatesStitchesTrueShift() throws {
         let shift = 28
@@ -757,6 +772,23 @@ private enum CoreScrollFixtures {
             if y < barRows { return y }
             return contentSlot + y + scroll
         }
+    }
+
+    /// Next downward page, with the previous page's top rows copied into the bottom.
+    /// The copy is the only alignment, and it points backward.
+    static func falseReverse(previousOrigin: Int = 12, height: Int = 48, reverse: Int = 16) -> RGBAImage {
+        var pixels = [UInt8](repeating: 255, count: width * height * 4)
+        for y in 0..<height {
+            let slot = y < reverse ? previousOrigin + 12 + y : previousOrigin + (y - reverse)
+            let rgb = color(slot: slot)
+            for x in 0..<width {
+                let i = (y * width + x) * 4
+                pixels[i] = rgb[0]
+                pixels[i + 1] = rgb[1]
+                pixels[i + 2] = rgb[2]
+            }
+        }
+        return RGBAImage(width: width, height: height, pixels: pixels)
     }
 
     static func aliasPeriod(scroll: Int, height: Int = 90, period: Int = 60) -> RGBAImage {
