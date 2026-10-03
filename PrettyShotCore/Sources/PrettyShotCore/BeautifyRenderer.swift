@@ -68,7 +68,10 @@ public enum BeautifyRenderer {
         let canvas = CGRect(origin: .zero, size: layout.canvasSize)
 
         context.saveGState()
-        context.interpolationQuality = .high
+        // A 1:1 device blit does not resample. High quality still allocates a filter
+        // buffer beside the shadow layer; nearest-neighbor matches those pixels.
+        // Scaled draws (and a zoomed editor canvas) keep the high-quality filter.
+        context.interpolationQuality = imageIsOneToOneDeviceBlit(input, context: context) ? .none : .high
 
         let imageClip: CGPath
         if let preset = input.background.preset {
@@ -95,6 +98,7 @@ public enum BeautifyRenderer {
             drawBase(input, layout: layout, clip: imageClip, in: context)
         }
 
+        context.interpolationQuality = .high
         context.saveGState()
         context.addPath(imageClip)
         context.clip()
@@ -138,8 +142,28 @@ public enum BeautifyRenderer {
         context.saveGState()
         context.translateBy(x: rect.minX, y: rect.maxY)
         context.scaleBy(x: 1, y: -1)
-        context.draw(image, in: CGRect(origin: .zero, size: rect.size))
+        let dest = CGRect(origin: .zero, size: rect.size)
+        if isDevicePixelBlit(image, in: dest, context: context) {
+            context.interpolationQuality = .none
+        }
+        context.draw(image, in: dest)
         context.restoreGState()
+    }
+
+    private static func isDevicePixelBlit(_ image: CGImage, in rect: CGRect, context: CGContext) -> Bool {
+        let device = context.convertToDeviceSpace(rect)
+        return abs(abs(device.width) - CGFloat(image.width)) < 0.01
+            && abs(abs(device.height) - CGFloat(image.height)) < 0.01
+    }
+
+    /// True when `base` lands on exactly its own pixels in device space, so no resampling happens.
+    private static func imageIsOneToOneDeviceBlit(_ input: BeautifyInput, context: CGContext) -> Bool {
+        let layout = BeautifyRenderer.layout(for: input)
+        let size = input.baseSize ?? CGSize(width: input.base.width, height: input.base.height)
+        let rect = CGRect(origin: layout.canvasPoint(fromImage: .zero), size: size)
+        let device = context.convertToDeviceSpace(rect)
+        return abs(abs(device.width) - CGFloat(input.base.width)) < 0.01
+            && abs(abs(device.height) - CGFloat(input.base.height)) < 0.01
     }
 
     private static func drawBase(_ input: BeautifyInput, layout: RenderLayout, clip: CGPath, in context: CGContext) {
