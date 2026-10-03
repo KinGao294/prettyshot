@@ -159,14 +159,14 @@ final class ScrollStitchTests: XCTestCase {
         XCTAssertEqual(assembly.flattenedIfResolved()?.pixels, deduped.pixels)
 
         // Restored height is the image plus the 8 px header and footer spliced back in.
-        let wide = wideAssembly(width: 2_000, height: 12_984)
+        var wide = wideAssembly(width: 2_000, height: 12_984)
         switch wide.restoreStickyBars() {
         case .exceedsLimit(_, let message):
             XCTAssertEqual(message, "还原后约 2,600 万像素，超过单张总量上限 2,400 万像素")
         default:
             XCTFail("expected a pixel-cap prompt")
         }
-        let both = wideAssembly(width: 2_000, height: 19_984)
+        var both = wideAssembly(width: 2_000, height: 19_984)
         switch both.restoreStickyBars() {
         case .exceedsLimit(_, let message):
             XCTAssertEqual(message, "还原后约 20,000 px、4,000 万像素，超过单张上限 16,384 px 和总量上限 2,400 万像素")
