@@ -410,6 +410,8 @@ private enum StitchArchive {
         var overlap: Int?
         var suggestedOverlap: Int?
         var note: String?
+        var pendingTitle: String?
+        var candidateLines: [String]?
     }
 
     static func encode(_ manifest: Manifest) throws -> Data {
@@ -445,13 +447,14 @@ private enum StitchArchive {
             segments.append(Segment(image: imageName, confidentSeamYs: segment.confidentSeamYs, repeats: repeats))
         }
         let seams = assembly.seams.map { seam -> Seam in
+            let lines = seam.candidateLines.isEmpty ? nil : seam.candidateLines
             switch seam.kind {
             case .needsAlignment:
-                return Seam(kind: "needsAlignment", overlap: nil, suggestedOverlap: seam.suggestedOverlap, note: seam.note)
+                return Seam(kind: "needsAlignment", overlap: nil, suggestedOverlap: seam.suggestedOverlap, note: seam.note, pendingTitle: seam.pendingTitle, candidateLines: lines)
             case .aligned(let overlap):
-                return Seam(kind: "aligned", overlap: overlap, suggestedOverlap: seam.suggestedOverlap, note: seam.note)
+                return Seam(kind: "aligned", overlap: overlap, suggestedOverlap: seam.suggestedOverlap, note: seam.note, pendingTitle: seam.pendingTitle, candidateLines: lines)
             case .joinedAsIs:
-                return Seam(kind: "joinedAsIs", overlap: nil, suggestedOverlap: seam.suggestedOverlap, note: seam.note)
+                return Seam(kind: "joinedAsIs", overlap: nil, suggestedOverlap: seam.suggestedOverlap, note: seam.note, pendingTitle: seam.pendingTitle, candidateLines: lines)
             }
         }
         let pending = assembly.pendingSticky.map {
@@ -490,7 +493,13 @@ private enum StitchArchive {
             default:
                 kind = .needsAlignment
             }
-            return ScrollSeam(kind: kind, suggestedOverlap: seam.suggestedOverlap, note: seam.note)
+            return ScrollSeam(
+                kind: kind,
+                suggestedOverlap: seam.suggestedOverlap,
+                note: seam.note,
+                pendingTitle: seam.pendingTitle,
+                candidateLines: seam.candidateLines ?? []
+            )
         }
         let pending = manifest.pending.map {
             PendingStickyConfirmation(headerRows: $0.headerRows, footerRows: $0.footerRows, seamCount: $0.seamCount, keepOnce: $0.keepOnce)

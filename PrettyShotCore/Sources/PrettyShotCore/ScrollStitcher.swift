@@ -138,6 +138,10 @@ public struct ScrollSeam: Equatable {
     public var suggestedOverlap: Int?
     /// Shown in the seam card when this boundary needs a reason, such as a blank frame.
     public var note: String?
+    /// Set when several shifts share the best score and the join cannot pick one.
+    public var pendingTitle: String?
+    /// Display lines for those shifts, highest first. The selected line ends with 「 · 当前」.
+    public var candidateLines: [String]
 
     public enum Kind: Equatable {
         case needsAlignment
@@ -145,16 +149,34 @@ public struct ScrollSeam: Equatable {
         case joinedAsIs
     }
 
-    public init(kind: Kind, suggestedOverlap: Int? = nil, note: String? = nil) {
+    public init(
+        kind: Kind,
+        suggestedOverlap: Int? = nil,
+        note: String? = nil,
+        pendingTitle: String? = nil,
+        candidateLines: [String] = []
+    ) {
         self.kind = kind
         self.suggestedOverlap = suggestedOverlap
         self.note = note
+        self.pendingTitle = pendingTitle
+        self.candidateLines = candidateLines
     }
 
     /// Review copy for this boundary. `number` is the 1-based seam index.
-    /// A lone reverse candidate uses the amber dashed 「待确认」 label and keeps its reason line.
+    /// A lone reverse candidate uses the amber dashed 「待确认」 label.
+    /// An equal-score tie uses that same label, plus the tie title and the candidate lines.
     public func card(number: Int) -> SeamCard {
         precondition(number >= 1)
+        if pendingTitle != nil || !candidateLines.isEmpty {
+            return SeamCard(
+                label: "待确认",
+                chrome: .amberDashed,
+                title: pendingTitle,
+                reason: note,
+                candidates: candidateLines
+            )
+        }
         if case .needsAlignment = kind, note == StitchCopy.reverseSeam {
             return SeamCard(label: "待确认", chrome: .amberDashed, reason: note)
         }
@@ -1017,7 +1039,13 @@ public struct ScrollStitcher {
         }
         let suggested = found.map { max(0, frame.height - abs($0.shift)) }
         let reverseNote = found?.reversed == true ? StitchCopy.reverseSeam : nil
-        return breakUnmatched(frame, suggested: suggested, note: reverseNote)
+        return breakUnmatched(
+            frame,
+            suggested: suggested,
+            note: reverseNote,
+            tieShifts: found?.tieShifts,
+            selectedShift: found?.shift
+        )
     }
 
     /// Seals the open segment and returns every piece. Call once, when capture ends.
@@ -1121,7 +1149,13 @@ public struct ScrollStitcher {
         return prepend ? .prepended(fitted.height) : .appended(fitted.height)
     }
 
-    private mutating func breakUnmatched(_ frame: RGBAImage, suggested: Int?, note: String? = nil) -> ScrollIngest {
+    private mutating func breakUnmatched(
+        _ frame: RGBAImage,
+        suggested: Int?,
+        note: String? = nil,
+        tieShifts: [Int]? = nil,
+        selectedShift: Int? = nil
+    ) -> ScrollIngest {
         let room = ScrollOutputLimit.remainingRows(
             totalHeight: pixelHeight,
             width: frame.width,
@@ -1131,8 +1165,25 @@ public struct ScrollStitcher {
         // Don't start another full viewport that would blow the cap, and don't clip it into a fake join.
         if pixelHeight > 0, room < frame.height { return .reachedLimit }
         sealOpenSegment()
-        let seamNote = note ?? RowSamples.blankSeamNote(RowSamples.make(frame, options: options))
-        seams.append(ScrollSeam(kind: .needsAlignment, suggestedOverlap: suggested, note: seamNote))
+        var seamNote = note ?? RowSamples.blankSeamNote(RowSamples.make(frame, options: options))
+        var pendingTitle: String?
+        var candidateLines: [String] = []
+        if let tieShifts, tieShifts.count >= 2 {
+            let number = seams.count + 1
+            pendingTitle = "接缝 \(number) · 待确认：位移无法唯一确定"
+            seamNote = "找到 \(tieShifts.count) 个得分相同的位移，自动对齐没法确定是哪一个——为了不拼错，先停下来请你确认。"
+            let selected = selectedShift ?? tieShifts[0]
+            candidateLines = tieShifts.sorted(by: >).enumerated().map { index, shift in
+                Self.shiftCandidateLine(index: index, shift: shift, selected: selected)
+            }
+        }
+        seams.append(ScrollSeam(
+            kind: .needsAlignment,
+            suggestedOverlap: suggested,
+            note: seamNote,
+            pendingTitle: pendingTitle,
+            candidateLines: candidateLines
+        ))
         let savedHeader = lockedHeader
         let savedFooter = lockedFooter
         let savedPending = pendingSticky
@@ -1155,6 +1206,17 @@ public struct ScrollStitcher {
         }
         unmatchedBreaks += 1
         return .unmatched
+    }
+
+    /// 「位移 A · +30 px · 当前」. A negative shift uses U+2212, not a hyphen.
+    private static func shiftCandidateLine(index: Int, shift: Int, selected: Int) -> String {
+        let letter = index < 26 ? String(UnicodeScalar(65 + index)!) : "?"
+        let sign = shift < 0 ? "−" : "+"
+        var line = "位移 \(letter) · \(sign)\(abs(shift)) px"
+        if shift == selected {
+            line += " · 当前"
+        }
+        return line
     }
 
     private mutating func sealOpenSegment() {
@@ -1262,8 +1324,10 @@ private enum RowSamples {
     struct ShiftChoice {
         var shift: Int
         var confident: Bool
-        /// True when this shift was refused because it reverses the last accepted direction.
+        /// True only when the single candidate reverses the last accepted direction.
         var reversed: Bool = false
+        /// Equal-score shifts when the join cannot pick one. Nil for a lone reverse.
+        var tieShifts: [Int]? = nil
     }
 
     static func bestShift(
@@ -1312,12 +1376,13 @@ private enum RowSamples {
                 && rival.votes * 2 >= best.votes
         }
         // One candidate used to be trusted even when it reversed the last shift.
-        // An opposite candidate, alone or among the rivals, opens a seam instead.
-        let reversed = lastShift.map { prior in
-            prior != 0 && ([best] + rivals).contains { $0.shift.signum() != prior.signum() }
-        } ?? false
+        // Only that lone opposite candidate uses the reverse-seam line.
+        // Two or more equal scores, one of them the other way, are a shift tie.
+        let loneReverse = rivals.isEmpty && (lastShift.map { prior in
+            prior != 0 && best.shift.signum() != prior.signum()
+        } ?? false)
         if rivals.isEmpty {
-            if reversed {
+            if loneReverse {
                 return ShiftChoice(shift: best.shift, confident: false, reversed: true)
             }
             return ShiftChoice(shift: best.shift, confident: true)
@@ -1326,7 +1391,15 @@ private enum RowSamples {
            let preferred = resolveAlias(best: best, rivals: Array(rivals), prior: prior) {
             return ShiftChoice(shift: preferred, confident: true)
         }
-        return ShiftChoice(shift: best.shift, confident: false, reversed: reversed)
+        let equalScores = ranked.filter { cluster in
+            cluster.score == best.score && abs(cluster.shift - best.shift) > 2
+        }
+        let tieShifts = [best.shift] + equalScores.map(\.shift)
+        let oppositeTie = tieShifts.contains { $0.signum() != best.shift.signum() }
+        if oppositeTie {
+            return ShiftChoice(shift: best.shift, confident: false, reversed: false, tieShifts: tieShifts)
+        }
+        return ShiftChoice(shift: best.shift, confident: false, reversed: false)
     }
 
     /// Header and footer used to score a shift. A stationary edge that is too tall for the
