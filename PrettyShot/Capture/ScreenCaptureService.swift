@@ -45,6 +45,8 @@ struct CaptureResult {
     let mode: CaptureMode
     /// Shown after a scrolling capture that stopped itself (length cap). Nil for ordinary shots.
     var notice: String? = nil
+    /// Kept when a confident sticky dedupe can still be restored. Nil for ordinary shots.
+    var scrollingAssembly: ScrollAssembly? = nil
 }
 
 struct ScrollingReview {

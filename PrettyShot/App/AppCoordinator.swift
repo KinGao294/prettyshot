@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import PrettyShotCore
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -160,7 +161,7 @@ final class AppCoordinator: ObservableObject {
             if let notice = result.notice {
                 ToastPresenter.shared.show(notice, style: .info, duration: 5)
             }
-            deliverCaptured(image: result.image, scale: result.scale, mode: result.mode)
+            deliverCaptured(image: result.image, scale: result.scale, mode: result.mode, assembly: result.scrollingAssembly)
         case .reviewScrolling(let review):
             returnToHistoryOnCancel = false
             if let notice = review.notice {
@@ -181,9 +182,13 @@ final class AppCoordinator: ObservableObject {
         }
     }
 
-    private func deliverCaptured(image: CGImage, scale: CGFloat, mode: CaptureMode) {
+    private func deliverCaptured(image: CGImage, scale: CGFloat, mode: CaptureMode, assembly: ScrollAssembly? = nil) {
         do {
-            let item = try history.add(image: image, scale: scale, mode: mode)
+            var item = try history.add(image: image, scale: scale, mode: mode)
+            if let assembly, assembly.hasStickyRepeats {
+                try history.saveStitch(assembly, for: item)
+                item = history.items.first(where: { $0.id == item.id }) ?? item
+            }
             showOverlay(for: item, image: image)
         } catch {
             // Still let the user copy what they captured even if history is unwritable.
@@ -194,10 +199,10 @@ final class AppCoordinator: ObservableObject {
 
     private func showStitchPreview(_ review: ScrollingReview) {
         let controller = StitchPreviewController(review: review)
-        controller.onCommit = { [weak self] image in
+        controller.onCommit = { [weak self] image, assembly in
             guard let self else { return }
             self.stitchPreview = nil
-            self.deliverCaptured(image: image, scale: review.scale, mode: .scrolling)
+            self.deliverCaptured(image: image, scale: review.scale, mode: .scrolling, assembly: assembly)
         }
         controller.onExportSegments = { [weak self] images in
             guard let self else { return }
@@ -271,9 +276,51 @@ final class AppCoordinator: ObservableObject {
                 },
                 save: { [weak self] in self?.save(image: image) },
                 pin: { [weak self] in self?.pins.pin(image: image, scale: scale) },
-                dismiss: { [weak self] in self?.restoreFocus() }
+                dismiss: { [weak self] in self?.restoreFocus() },
+                restoreSticky: item.hasStickyRestore ? { [weak self] in
+                    self?.restoreStickyBars(for: item, fromOverlay: true)
+                } : nil
             )
         )
+    }
+
+    /// Restores sticky bars on this history image only. Over the single-image cap, offers a split export.
+    private func restoreStickyBars(for item: HistoryItem, fromOverlay: Bool) {
+        guard var assembly = history.loadStitch(for: item) else { return }
+        switch assembly.restoreStickyBars() {
+        case .restored:
+            guard let image = assembly.flattenedIfResolved()?.cgImage() else { return }
+            do {
+                try history.replaceImage(of: item.id, with: image)
+                if let updated = history.items.first(where: { $0.id == item.id }) {
+                    try history.saveStitch(assembly, for: updated)
+                }
+            } catch {
+                ToastPresenter.shared.show("还原固定栏失败：\(error.localizedDescription)", style: .error, duration: 4)
+                return
+            }
+            if fromOverlay, let updated = history.items.first(where: { $0.id == item.id }) {
+                showOverlay(for: updated, image: image)
+            }
+        case .exceedsLimit(_, let message):
+            let alert = NSAlert()
+            alert.messageText = message
+            alert.addButton(withTitle: "分段导出")
+            alert.addButton(withTitle: "保持去重")
+            let response = alert.runModal()
+            guard response == .alertFirstButtonReturn else { return }
+            let chunks = assembly.exportWithinLimits(dedupeStickyBars: false)
+            var saved = 0
+            for chunk in chunks {
+                guard let image = chunk.cgImage() else { continue }
+                if (try? history.add(image: image, scale: CGFloat(item.scale), mode: .scrolling)) != nil {
+                    saved += 1
+                }
+            }
+            ToastPresenter.shared.show("已把 \(saved) 段分别放进历史", style: .success, duration: 4)
+        case .alreadyRestored, .nothingToRestore:
+            break
+        }
     }
 
     /// The overlay is a small thumbnail. Very tall scrolling captures stay full size for copy / edit / save,
@@ -441,6 +488,9 @@ final class AppCoordinator: ObservableObject {
                     },
                     captureRegion: { [weak self] in
                         self?.startCaptureFromHistory()
+                    },
+                    restoreSticky: { [weak self] item in
+                        self?.restoreStickyBars(for: item, fromOverlay: false)
                     }
                 )
             )

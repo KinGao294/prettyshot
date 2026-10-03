@@ -39,6 +39,11 @@ final class CaptureGeometryTests: XCTestCase {
         XCTAssertTrue(second.lastPathComponent.hasSuffix(" 2.png"))
     }
 
+    func testOverlayStaysWhileHovered() {
+        XCTAssertFalse(OverlayDismissPolicy.allowsAutomaticDismiss(pointerInside: true))
+        XCTAssertTrue(OverlayDismissPolicy.allowsAutomaticDismiss(pointerInside: false))
+    }
+
     func testBlankFrameDetection() {
         let space = CGColorSpace(name: CGColorSpace.sRGB)!
         let context = CGContext(data: nil, width: 64, height: 64, bitsPerComponent: 8, bytesPerRow: 0,

@@ -265,23 +265,134 @@ final class ScrollStitcherTests: XCTestCase {
         let first = ScrollFixtures.softHeaderViewport(scroll: 0)
         let second = ScrollFixtures.softHeaderViewport(scroll: 12)
         XCTAssertEqual(stitcher.ingest(first), .seeded)
-        XCTAssertEqual(stitcher.ingest(second), .unmatched)
+        XCTAssertEqual(stitcher.ingest(second), .appended(12))
 
         var assembly = stitcher.takeAssembly()
-        XCTAssertEqual(assembly.segments.count, 2)
-        XCTAssertEqual(assembly.seams.count, 1)
-        XCTAssertEqual(assembly.seams[0].kind, .needsAlignment)
+        XCTAssertEqual(assembly.segments.count, 1)
+        XCTAssertTrue(assembly.seams.isEmpty)
+        XCTAssertEqual(assembly.pendingSticky?.seamCount, 1)
+        XCTAssertEqual(assembly.pendingSticky?.prompt, "顶部这条可能是固定栏（涉及 1 处接缝）")
         XCTAssertTrue(assembly.needsReview)
         XCTAssertTrue(assembly.opensStitchReview)
         XCTAssertNil(assembly.flattenedIfResolved())
 
-        assembly.joinAsIs(seam: 0)
+        assembly.confirmStickyBars(keepOnce: true)
         XCTAssertFalse(assembly.needsReview)
-        XCTAssertFalse(assembly.opensStitchReview)
-        let joined = try XCTUnwrap(assembly.flattenedIfResolved())
-        XCTAssertEqual(joined.height, first.height + second.height)
-        XCTAssertEqual(ScrollFixtures.row(joined, 0), ScrollFixtures.row(first, 0))
-        XCTAssertEqual(ScrollFixtures.row(joined, first.height), ScrollFixtures.row(second, 0))
+        XCTAssertNotNil(assembly.flattenedIfResolved())
+    }
+
+    func testUncertainStickyBandAcrossManyFramesIsOneConfirmation() throws {
+        var stitcher = ScrollStitcher()
+        let frameCount = 8
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.softHeaderViewport(scroll: 0)), .seeded)
+        for index in 1..<frameCount {
+            let outcome = stitcher.ingest(ScrollFixtures.softHeaderViewport(scroll: index * 12))
+            guard case .appended = outcome else {
+                XCTFail("frame \(index) should join the same run, got \(outcome)")
+                return
+            }
+        }
+        let assembly = stitcher.takeAssembly()
+        XCTAssertEqual(assembly.segments.count, 1)
+        XCTAssertTrue(assembly.seams.isEmpty)
+        XCTAssertEqual(assembly.pendingSticky?.seamCount, frameCount - 1)
+        XCTAssertEqual(assembly.pendingSticky?.prompt, "顶部这条可能是固定栏（涉及 \(frameCount - 1) 处接缝）")
+        XCTAssertTrue(assembly.needsReview)
+        XCTAssertNil(assembly.flattenedIfResolved())
+
+        var keepOnce = assembly
+        keepOnce.confirmStickyBars(keepOnce: true)
+        XCTAssertFalse(keepOnce.needsReview)
+        XCTAssertEqual(keepOnce.flattenedIfResolved()?.height, 48 + 12 * (frameCount - 1))
+
+        var keepAll = assembly
+        keepAll.confirmStickyBars(keepOnce: false)
+        XCTAssertFalse(keepAll.needsReview)
+        XCTAssertGreaterThan(keepAll.flattenedIfResolved()?.height ?? 0, keepOnce.flattenedIfResolved()?.height ?? 0)
+    }
+
+    func testRestoreOverLimitPromptsInsteadOfTruncating() throws {
+        var stitcher = ScrollStitcher()
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.viewport(scroll: 0)), .seeded)
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.viewport(scroll: 15)), .appended(15))
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.viewport(scroll: 30)), .appended(15))
+        var assembly = stitcher.takeAssembly()
+        let deduped = try XCTUnwrap(assembly.flattenedIfResolved())
+        let restoredHeight = 90 + 2 * (ScrollFixtures.header + ScrollFixtures.footer)
+
+        switch assembly.restoreStickyBars(maxHeight: 100, maxPixels: 24_000_000) {
+        case .exceedsLimit(let height, let message):
+            XCTAssertEqual(height, restoredHeight)
+            XCTAssertEqual(message, "还原后约 \(restoredHeight) px，超过单张上限 100 px")
+        default:
+            XCTFail("expected the over-limit prompt")
+        }
+        XCTAssertTrue(assembly.dedupeStickyBars)
+        XCTAssertEqual(assembly.flattenedIfResolved()?.pixels, deduped.pixels)
+
+        let chunks = assembly.exportWithinLimits(dedupeStickyBars: false, maxHeight: 40, maxPixels: 24_000_000)
+        XCTAssertGreaterThan(chunks.count, 1)
+        XCTAssertEqual(chunks.reduce(0) { $0 + $1.height }, restoredHeight)
+        for chunk in chunks {
+            XCTAssertLessThanOrEqual(chunk.height, 40)
+            XCTAssertLessThanOrEqual(chunk.width * chunk.height, 24_000_000)
+        }
+    }
+
+    func testPresentedCacheHitsOnRepeatedPreview() throws {
+        var stitcher = ScrollStitcher()
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.viewport(scroll: 0)), .seeded)
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.viewport(scroll: 15)), .appended(15))
+        var assembly = stitcher.takeAssembly()
+        XCTAssertNotNil(assembly.renderPreview())
+        let afterFirst = assembly.presentedCacheHits
+        XCTAssertNotNil(assembly.renderPreview())
+        XCTAssertGreaterThan(assembly.presentedCacheHits, afterFirst)
+    }
+
+    @MainActor
+    func testAssemblyPersistsAndRestoresFromHistory() throws {
+        var stitcher = ScrollStitcher()
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.viewport(scroll: 0)), .seeded)
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.viewport(scroll: 15)), .appended(15))
+        let assembly = stitcher.takeAssembly()
+        let deduped = try XCTUnwrap(assembly.flattenedIfResolved())
+        let image = try XCTUnwrap(deduped.cgImage())
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("PrettyShotTests-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = HistoryStore(directory: directory, limit: 10)
+        let item = try store.add(image: image, scale: 2, mode: .scrolling)
+        XCTAssertEqual(item.modeLabel, "长图 · \(image.height) px")
+        try store.saveStitch(assembly, for: item)
+        XCTAssertTrue(store.items[0].hasStickyRestore)
+
+        let reloaded = HistoryStore(directory: directory, limit: 10)
+        XCTAssertEqual(reloaded.items.count, 1)
+        XCTAssertTrue(reloaded.items[0].hasStickyRestore)
+        let loaded = try XCTUnwrap(reloaded.loadStitch(for: reloaded.items[0]))
+        let loadedImage = try XCTUnwrap(loaded.flattenedIfResolved())
+        XCTAssertEqual(loadedImage.height, deduped.height)
+        XCTAssertEqual(ScrollFixtures.row(loadedImage, 0), ScrollFixtures.row(deduped, 0))
+        XCTAssertEqual(ScrollFixtures.row(loadedImage, loadedImage.height - 1), ScrollFixtures.row(deduped, deduped.height - 1))
+
+        var restored = loaded
+        guard case .restored(let height) = restored.restoreStickyBars() else {
+            XCTFail("restored image fits in one capture")
+            return
+        }
+        let tall = try XCTUnwrap(restored.flattenedIfResolved())
+        XCTAssertEqual(tall.height, height)
+        XCTAssertGreaterThan(tall.height, deduped.height)
+        try reloaded.replaceImage(of: reloaded.items[0].id, with: try XCTUnwrap(tall.cgImage()))
+        try reloaded.saveStitch(restored, for: reloaded.items[0])
+
+        let again = HistoryStore(directory: directory, limit: 10)
+        XCTAssertFalse(again.items[0].hasStickyRestore)
+        XCTAssertEqual(again.image(for: again.items[0])?.height, tall.height)
+        let roundTrip = try XCTUnwrap(again.loadStitch(for: again.items[0]))
+        XCTAssertFalse(roundTrip.dedupeStickyBars)
+        XCTAssertEqual(roundTrip.flattenedIfResolved()?.height, tall.height)
     }
 
     func testSeamLoupeIsFullResolutionAndTracksOverlap() throws {

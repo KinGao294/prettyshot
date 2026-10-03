@@ -8,6 +8,17 @@ struct QuickOverlayActions {
     var save: () -> Void
     var pin: () -> Void
     var dismiss: () -> Void
+    /// Puts the removed sticky bars back into this capture only.
+    var restoreSticky: (() -> Void)? = nil
+    /// Automatic dismissal stays off while the pointer is over the card.
+    var pointerInside: ((Bool) -> Void)? = nil
+}
+
+enum OverlayDismissPolicy {
+    /// An automatic hide is allowed only when the pointer is outside the card.
+    static func allowsAutomaticDismiss(pointerInside: Bool) -> Bool {
+        !pointerInside
+    }
 }
 
 /// F3 · Quick Access Overlay. Shown after every capture in the bottom-left corner of the active screen.
@@ -15,16 +26,26 @@ struct QuickOverlayActions {
 @MainActor
 final class QuickOverlayController {
     private var panel: OverlayPanel?
+    private var pointerInside = false
 
     var isVisible: Bool { panel?.isVisible == true }
+
+    func dismissAutomatically() {
+        guard OverlayDismissPolicy.allowsAutomaticDismiss(pointerInside: pointerInside) else { return }
+        hide()
+    }
 
     func show(image: NSImage, fileURL: URL, actions: QuickOverlayActions) {
         hide()
 
+        pointerInside = false
         var wrapped = actions
         wrapped.dismiss = { [weak self] in
             actions.dismiss()
             self?.hide()
+        }
+        wrapped.pointerInside = { [weak self] inside in
+            self?.pointerInside = inside
         }
 
         let view = QuickOverlayView(image: image, fileURL: fileURL, actions: wrapped)
@@ -130,11 +151,23 @@ struct QuickOverlayView: View {
             }
 
             dragHandle
+            if actions.restoreSticky != nil {
+                HStack(spacing: 6) {
+                    Text("已去掉重复的固定栏")
+                    Text("·")
+                    Button("还原固定栏") { actions.restoreSticky?() }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(Palette.ivory)
+                }
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(Palette.ivoryMuted)
+            }
         }
         .padding(12)
         .frame(width: 420)
         .background(FrostedChrome())
         .background(copyShortcut)
+        .onHover { inside in actions.pointerInside?(inside) }
     }
 
     private var thumbnail: some View {

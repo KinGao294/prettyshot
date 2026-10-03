@@ -237,7 +237,13 @@ final class CaptureSession {
             if output.assembly.opensStitchReview {
                 self.finish(.reviewScrolling(ScrollingReview(scale: snapshot.scale, assembly: output.assembly, notice: notice)))
             } else if let image = output.assembly.flattenedIfResolved()?.cgImage() {
-                self.finish(.captured(CaptureResult(image: image, scale: snapshot.scale, mode: .scrolling, notice: notice)))
+                self.finish(.captured(CaptureResult(
+                    image: image,
+                    scale: snapshot.scale,
+                    mode: .scrolling,
+                    notice: notice,
+                    scrollingAssembly: output.assembly.hasStickyRepeats ? output.assembly : nil
+                )))
             } else {
                 self.finish(.failed(.failed("没有可保存的画面")))
             }

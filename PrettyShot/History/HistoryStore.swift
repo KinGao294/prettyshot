@@ -13,8 +13,66 @@ struct HistoryItem: Codable, Identifiable, Hashable {
     let mode: CaptureMode
     /// True for results exported from the editor (annotated / beautified).
     var edited: Bool
+    /// A stitch sidecar on disk can put the sticky bars back into this image.
+    var hasStickyRestore: Bool = false
 
-    var modeLabel: String { edited ? "已编辑" : mode.chipTitle }
+    var modeLabel: String {
+        if edited { return "已编辑" }
+        if mode == .scrolling { return "长图 · \(pixelHeight) px" }
+        return mode.chipTitle
+    }
+
+    init(
+        id: UUID,
+        createdAt: Date,
+        fileName: String,
+        pixelWidth: Int,
+        pixelHeight: Int,
+        scale: Double,
+        mode: CaptureMode,
+        edited: Bool,
+        hasStickyRestore: Bool = false
+    ) {
+        self.id = id
+        self.createdAt = createdAt
+        self.fileName = fileName
+        self.pixelWidth = pixelWidth
+        self.pixelHeight = pixelHeight
+        self.scale = scale
+        self.mode = mode
+        self.edited = edited
+        self.hasStickyRestore = hasStickyRestore
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        fileName = try container.decode(String.self, forKey: .fileName)
+        pixelWidth = try container.decode(Int.self, forKey: .pixelWidth)
+        pixelHeight = try container.decode(Int.self, forKey: .pixelHeight)
+        scale = try container.decode(Double.self, forKey: .scale)
+        mode = try container.decode(CaptureMode.self, forKey: .mode)
+        edited = try container.decode(Bool.self, forKey: .edited)
+        hasStickyRestore = try container.decodeIfPresent(Bool.self, forKey: .hasStickyRestore) ?? false
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(createdAt, forKey: .createdAt)
+        try container.encode(fileName, forKey: .fileName)
+        try container.encode(pixelWidth, forKey: .pixelWidth)
+        try container.encode(pixelHeight, forKey: .pixelHeight)
+        try container.encode(scale, forKey: .scale)
+        try container.encode(mode, forKey: .mode)
+        try container.encode(edited, forKey: .edited)
+        try container.encode(hasStickyRestore, forKey: .hasStickyRestore)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, createdAt, fileName, pixelWidth, pixelHeight, scale, mode, edited, hasStickyRestore
+    }
 }
 
 /// On-disk index format (`index.json`). Versioned so future releases can migrate.
@@ -106,6 +164,7 @@ final class HistoryStore: ObservableObject {
 
     func delete(_ item: HistoryItem) {
         try? FileManager.default.removeItem(at: url(for: item))
+        try? FileManager.default.removeItem(at: stitchDirectory(for: item))
         thumbnails.removeObject(forKey: item.id.uuidString as NSString)
         items.removeAll { $0.id == item.id }
         persist()
@@ -114,10 +173,41 @@ final class HistoryStore: ObservableObject {
     func clear() {
         for item in items {
             try? FileManager.default.removeItem(at: url(for: item))
+            try? FileManager.default.removeItem(at: stitchDirectory(for: item))
         }
         thumbnails.removeAllObjects()
         items.removeAll()
         persist()
+    }
+
+    func stitchDirectory(for item: HistoryItem) -> URL {
+        directory.appendingPathComponent("\(item.id.uuidString).stitch", isDirectory: true)
+    }
+
+    /// Writes segment pixels beside the history PNG. The store does not keep the assembly in memory.
+    func saveStitch(_ assembly: ScrollAssembly, for item: HistoryItem) throws {
+        guard let index = items.firstIndex(where: { $0.id == item.id }) else { return }
+        let folder = stitchDirectory(for: items[index])
+        if FileManager.default.fileExists(atPath: folder.path) {
+            try FileManager.default.removeItem(at: folder)
+        }
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let manifest = try StitchArchive.write(assembly, to: folder)
+        try StitchArchive.encode(manifest).write(to: folder.appendingPathComponent("manifest.json"), options: .atomic)
+        items[index].hasStickyRestore = assembly.dedupeStickyBars
+            && assembly.hasStickyRepeats
+            && assembly.pendingSticky?.isUnresolved != true
+        thumbnails.removeObject(forKey: item.id.uuidString as NSString)
+        persist()
+    }
+
+    /// Loads a previously saved assembly. Returns nil when this item has no sidecar.
+    func loadStitch(for item: HistoryItem) -> ScrollAssembly? {
+        let folder = stitchDirectory(for: item)
+        let manifestURL = folder.appendingPathComponent("manifest.json")
+        guard let data = try? Data(contentsOf: manifestURL),
+              let manifest = try? StitchArchive.decode(data) else { return nil }
+        return try? StitchArchive.read(manifest, from: folder)
     }
 
     func thumbnail(for item: HistoryItem, maxPixelSize: Int = 480) async -> NSImage? {
@@ -157,7 +247,126 @@ final class HistoryStore: ObservableObject {
         guard items.count > limit else { return }
         for item in items[limit...] {
             try? FileManager.default.removeItem(at: url(for: item))
+            try? FileManager.default.removeItem(at: stitchDirectory(for: item))
         }
         items.removeSubrange(limit...)
+    }
+}
+
+/// Segment pixels for one history item. Only the current screenshot stays decoded in the UI.
+private enum StitchArchive {
+    struct Manifest: Codable {
+        var dedupeStickyBars: Bool
+        var pending: Pending?
+        var segments: [Segment]
+        var seams: [Seam]
+    }
+
+    struct Pending: Codable {
+        var headerRows: Int
+        var footerRows: Int
+        var seamCount: Int
+        var keepOnce: Bool?
+    }
+
+    struct Segment: Codable {
+        var image: String
+        var confidentSeamYs: [Int]
+        var repeats: [Repeat]
+    }
+
+    struct Repeat: Codable {
+        var seamY: Int
+        var header: String?
+        var footer: String?
+    }
+
+    struct Seam: Codable {
+        var kind: String
+        var overlap: Int?
+        var suggestedOverlap: Int?
+    }
+
+    static func encode(_ manifest: Manifest) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return try encoder.encode(manifest)
+    }
+
+    static func decode(_ data: Data) throws -> Manifest {
+        try JSONDecoder().decode(Manifest.self, from: data)
+    }
+
+    static func write(_ assembly: ScrollAssembly, to folder: URL) throws -> Manifest {
+        var segments: [Segment] = []
+        for (index, segment) in assembly.segments.enumerated() {
+            let imageName = "segment-\(index).png"
+            guard let image = segment.image.cgImage() else { continue }
+            try ImageCodec.writePNG(image, to: folder.appendingPathComponent(imageName))
+            var repeats: [Repeat] = []
+            for (repeatIndex, rep) in segment.stickyRepeats.enumerated() {
+                var headerName: String?
+                var footerName: String?
+                if rep.header.height > 0, let header = rep.header.cgImage() {
+                    headerName = "segment-\(index)-repeat-\(repeatIndex)-header.png"
+                    try ImageCodec.writePNG(header, to: folder.appendingPathComponent(headerName!))
+                }
+                if rep.footer.height > 0, let footer = rep.footer.cgImage() {
+                    footerName = "segment-\(index)-repeat-\(repeatIndex)-footer.png"
+                    try ImageCodec.writePNG(footer, to: folder.appendingPathComponent(footerName!))
+                }
+                repeats.append(Repeat(seamY: rep.seamY, header: headerName, footer: footerName))
+            }
+            segments.append(Segment(image: imageName, confidentSeamYs: segment.confidentSeamYs, repeats: repeats))
+        }
+        let seams = assembly.seams.map { seam -> Seam in
+            switch seam.kind {
+            case .needsAlignment:
+                return Seam(kind: "needsAlignment", overlap: nil, suggestedOverlap: seam.suggestedOverlap)
+            case .aligned(let overlap):
+                return Seam(kind: "aligned", overlap: overlap, suggestedOverlap: seam.suggestedOverlap)
+            case .joinedAsIs:
+                return Seam(kind: "joinedAsIs", overlap: nil, suggestedOverlap: seam.suggestedOverlap)
+            }
+        }
+        let pending = assembly.pendingSticky.map {
+            Pending(headerRows: $0.headerRows, footerRows: $0.footerRows, seamCount: $0.seamCount, keepOnce: $0.keepOnce)
+        }
+        return Manifest(dedupeStickyBars: assembly.dedupeStickyBars, pending: pending, segments: segments, seams: seams)
+    }
+
+    static func read(_ manifest: Manifest, from folder: URL) throws -> ScrollAssembly {
+        var segments: [ScrollSegment] = []
+        for record in manifest.segments {
+            guard let image = loadRGBA(folder.appendingPathComponent(record.image)) else { continue }
+            var repeats: [StickyRepeat] = []
+            for rep in record.repeats {
+                let header = rep.header.flatMap { loadRGBA(folder.appendingPathComponent($0)) } ?? RGBAImage(width: image.width, height: 0, pixels: [])
+                let footer = rep.footer.flatMap { loadRGBA(folder.appendingPathComponent($0)) } ?? RGBAImage(width: image.width, height: 0, pixels: [])
+                repeats.append(StickyRepeat(seamY: rep.seamY, header: header, footer: footer))
+            }
+            segments.append(ScrollSegment(image: image, confidentSeamYs: record.confidentSeamYs, stickyRepeats: repeats))
+        }
+        let seams = manifest.seams.map { seam -> ScrollSeam in
+            let kind: ScrollSeam.Kind
+            switch seam.kind {
+            case "aligned":
+                kind = .aligned(overlap: seam.overlap ?? 0)
+            case "joinedAsIs":
+                kind = .joinedAsIs
+            default:
+                kind = .needsAlignment
+            }
+            return ScrollSeam(kind: kind, suggestedOverlap: seam.suggestedOverlap)
+        }
+        let pending = manifest.pending.map {
+            PendingStickyConfirmation(headerRows: $0.headerRows, footerRows: $0.footerRows, seamCount: $0.seamCount, keepOnce: $0.keepOnce)
+        }
+        return ScrollAssembly(segments: segments, seams: seams, dedupeStickyBars: manifest.dedupeStickyBars, pendingSticky: pending)
+    }
+
+    private static func loadRGBA(_ url: URL) -> RGBAImage? {
+        guard let image = ImageCodec.loadImage(at: url) else { return nil }
+        return RGBAImage.fromCGImage(image)
     }
 }

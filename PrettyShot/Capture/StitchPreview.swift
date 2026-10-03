@@ -6,7 +6,7 @@ import SwiftUI
 /// Closing the window discards the capture — it never saves a guessed stitch.
 @MainActor
 final class StitchPreviewController: NSObject, NSWindowDelegate {
-    var onCommit: ((CGImage) -> Void)?
+    var onCommit: ((CGImage, ScrollAssembly) -> Void)?
     var onExportSegments: (([CGImage]) -> Void)?
     var onDiscard: (() -> Void)?
 
@@ -27,6 +27,7 @@ final class StitchPreviewController: NSObject, NSWindowDelegate {
             onAlign: { [weak self] in self?.model.alignSelected() },
             onJoin: { [weak self] in self?.model.joinSelectedAsIs() },
             onExport: { [weak self] in self?.exportSegments() },
+            onExportRestored: { [weak self] in self?.exportRestoredWithinLimits() },
             onCommit: { [weak self] in self?.commit() }
         )
         let host = NSHostingController(rootView: view)
@@ -72,12 +73,20 @@ final class StitchPreviewController: NSObject, NSWindowDelegate {
     private func commit() {
         guard let image = model.assembly.flattenedIfResolved()?.cgImage() else { return }
         didFinish = true
-        onCommit?(image)
+        onCommit?(image, model.assembly)
         window?.close()
     }
 
     private func exportSegments() {
         let images = model.assembly.exportChunks().compactMap { $0.cgImage() }
+        guard !images.isEmpty else { return }
+        didFinish = true
+        onExportSegments?(images)
+        window?.close()
+    }
+
+    private func exportRestoredWithinLimits() {
+        let images = model.assembly.exportWithinLimits(dedupeStickyBars: false).compactMap { $0.cgImage() }
         guard !images.isEmpty else { return }
         didFinish = true
         onExportSegments?(images)
@@ -93,6 +102,7 @@ final class StitchPreviewModel: ObservableObject {
     @Published var selectedBoundary: Int?
     @Published var overlap: Double = 0
     @Published var loupe: NSImage?
+    @Published var restoreLimitMessage: String?
     let notice: String?
 
     init(assembly: ScrollAssembly, notice: String?) {
@@ -169,7 +179,47 @@ final class StitchPreviewModel: ObservableObject {
     }
 
     func setDedupeStickyBars(_ enabled: Bool) {
-        assembly.dedupeStickyBars = enabled
+        if enabled {
+            assembly.dedupeStickyBars = true
+            if assembly.pendingSticky != nil { assembly.pendingSticky?.keepOnce = true }
+            restoreLimitMessage = nil
+            refresh()
+            return
+        }
+        switch assembly.restoreStickyBars() {
+        case .restored, .alreadyRestored:
+            restoreLimitMessage = nil
+            refresh()
+        case .exceedsLimit(_, let message):
+            restoreLimitMessage = message
+        case .nothingToRestore:
+            assembly.dedupeStickyBars = false
+            restoreLimitMessage = nil
+            refresh()
+        }
+    }
+
+    func confirmPendingSticky(keepOnce: Bool) {
+        if keepOnce {
+            assembly.confirmStickyBars(keepOnce: true)
+            restoreLimitMessage = nil
+            refresh()
+            return
+        }
+        setDedupeStickyBars(false)
+        if restoreLimitMessage == nil {
+            assembly.confirmStickyBars(keepOnce: false)
+            refresh()
+        }
+    }
+
+    func keepDedupe() {
+        restoreLimitMessage = nil
+        if assembly.pendingSticky?.isUnresolved == true {
+            assembly.confirmStickyBars(keepOnce: true)
+        } else {
+            assembly.dedupeStickyBars = true
+        }
         refresh()
     }
 
@@ -190,6 +240,7 @@ struct StitchPreviewView: View {
     var onAlign: () -> Void
     var onJoin: () -> Void
     var onExport: () -> Void
+    var onExportRestored: () -> Void
     var onCommit: () -> Void
 
     var body: some View {
@@ -225,6 +276,17 @@ struct StitchPreviewView: View {
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(Palette.bloomDeep)
             }
+            if let pending = model.assembly.pendingSticky, pending.isUnresolved {
+                Text(pending.prompt)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Palette.charcoal)
+                HStack(spacing: 8) {
+                    Button("当固定栏，只保留一次") { model.confirmPendingSticky(keepOnce: true) }
+                        .buttonStyle(BloomPrimaryButtonStyle())
+                    Button("当内容，全部保留") { model.confirmPendingSticky(keepOnce: false) }
+                        .buttonStyle(LightButtonStyle())
+                }
+            }
             HStack(spacing: 12) {
                 Toggle("固定栏只保留一次", isOn: Binding(
                     get: { model.assembly.dedupeStickyBars },
@@ -236,6 +298,17 @@ struct StitchPreviewView: View {
                     .buttonStyle(LightButtonStyle())
                     .disabled(!model.assembly.dedupeStickyBars || !model.assembly.hasStickyRepeats)
                     .help("把去掉的页眉和页脚按接缝插回去")
+            }
+            if let restoreLimitMessage = model.restoreLimitMessage {
+                Text(restoreLimitMessage)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Palette.bloomDeep)
+                HStack(spacing: 8) {
+                    Button("分段导出", action: onExportRestored)
+                        .buttonStyle(BloomPrimaryButtonStyle())
+                    Button("保持去重") { model.keepDedupe() }
+                        .buttonStyle(LightButtonStyle())
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

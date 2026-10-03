@@ -231,6 +231,60 @@ struct ScrollSeam: Equatable {
     }
 }
 
+/// Memoizes presented segments. A class so slider updates can reuse buffers without copying the assembly.
+final class PresentationCache {
+    struct RepeatKey: Hashable {
+        var seamY: Int
+        var headerHeight: Int
+        var footerHeight: Int
+    }
+
+    struct Key: Hashable {
+        var dedupe: Bool
+        var index: Int
+        var width: Int
+        var height: Int
+        var pixelCount: Int
+        var seamYs: [Int]
+        var repeats: [RepeatKey]
+    }
+
+    var values: [Key: (image: RGBAImage, confidentSeamYs: [Int])] = [:]
+    var hits = 0
+}
+
+/// One undecided sticky-bar run. Consecutive uncertain frames share this instead of each opening a seam.
+struct PendingStickyConfirmation: Equatable {
+    var headerRows: Int
+    var footerRows: Int
+    var seamCount: Int
+    /// Nil until the user picks one treatment for every seam in the run.
+    var keepOnce: Bool?
+
+    var isUnresolved: Bool { keepOnce == nil }
+
+    /// 「顶部这条可能是固定栏（涉及 N 处接缝）」 when the uncertain band is a header.
+    var prompt: String {
+        let place: String
+        if headerRows > 0 && footerRows > 0 {
+            place = "顶部和底部可能是固定栏"
+        } else if footerRows > 0 {
+            place = "底部这条可能是固定栏"
+        } else {
+            place = "顶部这条可能是固定栏"
+        }
+        return "\(place)（涉及 \(seamCount) 处接缝）"
+    }
+}
+
+enum StickyRestoreOutcome: Equatable {
+    case restored(height: Int)
+    case alreadyRestored
+    case nothingToRestore
+    /// The full restored image would pass the single-image cap. Nothing was clipped.
+    case exceedsLimit(height: Int, message: String)
+}
+
 /// Segments split only where alignment was not confident. Confident joins are already baked in.
 struct ScrollAssembly: Equatable {
     var segments: [ScrollSegment] = []
@@ -238,12 +292,28 @@ struct ScrollAssembly: Equatable {
     var seams: [ScrollSeam] = []
     /// When true, sticky header/footer pixels are kept once. Turning this off splices them back in.
     var dedupeStickyBars = true
+    /// Set when a sticky band was plausible but not safe to decide automatically.
+    var pendingSticky: PendingStickyConfirmation? = nil
+    /// Reused `presented` images so dragging a seam does not copy the whole stack again.
+    var presentationCache = PresentationCache()
 
-    var needsReview: Bool { seams.contains { !$0.isResolved } }
+    static func == (lhs: ScrollAssembly, rhs: ScrollAssembly) -> Bool {
+        lhs.segments == rhs.segments
+            && lhs.seams == rhs.seams
+            && lhs.dedupeStickyBars == rhs.dedupeStickyBars
+            && lhs.pendingSticky == rhs.pendingSticky
+    }
 
-    /// The stitch preview opens only while a seam still needs a decision.
+    var needsReview: Bool {
+        if pendingSticky?.isUnresolved == true { return true }
+        return seams.contains { !$0.isResolved }
+    }
+
+    /// The stitch preview opens only while a seam or a sticky-bar choice still needs a decision.
     /// A confident sticky-bar dedupe stays on and does not open it or block Done.
     var opensStitchReview: Bool { needsReview }
+
+    var presentedCacheHits: Int { presentationCache.hits }
 
     var hasStickyRepeats: Bool {
         segments.contains { segment in
@@ -255,12 +325,81 @@ struct ScrollAssembly: Equatable {
 
     func displayedSegmentHeight(_ index: Int) -> Int {
         guard segments.indices.contains(index) else { return 0 }
-        return presented(segments[index]).image.height
+        return presented(at: index).image.height
+    }
+
+    /// Height of the stack if sticky bars are spliced back in. Does not allocate the pixel buffer.
+    func stackedHeight(deduping: Bool) -> Int {
+        guard let first = segments.first else { return 0 }
+        var total = presentedHeight(first, dedupe: deduping)
+        for index in seams.indices where segments.indices.contains(index + 1) {
+            let nextHeight = presentedHeight(segments[index + 1], dedupe: deduping)
+            let start: Int
+            switch seams[index].kind {
+            case .needsAlignment, .joinedAsIs:
+                start = 0
+            case .aligned(let overlap):
+                start = min(max(0, overlap), nextHeight)
+            }
+            total += max(0, nextHeight - start)
+        }
+        return total
+    }
+
+    /// Turns dedupe off when the restored image fits in one capture. Over the cap, leaves dedupe on.
+    mutating func restoreStickyBars(
+        maxHeight: Int = ScrollOutputLimit.maxHeight,
+        maxPixels: Int = ScrollOutputLimit.maxPixels
+    ) -> StickyRestoreOutcome {
+        guard hasStickyRepeats else { return .nothingToRestore }
+        guard dedupeStickyBars else { return .alreadyRestored }
+        let height = stackedHeight(deduping: false)
+        let width = segments.first?.image.width ?? 0
+        let pixels = Int64(max(width, 0)) * Int64(max(height, 0))
+        if height > maxHeight || pixels > Int64(maxPixels) {
+            let cited = height > maxHeight ? maxHeight : ScrollOutputLimit.maxHeight
+            let message = "还原后约 \(height) px，超过单张上限 \(cited) px"
+            return .exceedsLimit(height: height, message: message)
+        }
+        dedupeStickyBars = false
+        if pendingSticky != nil { pendingSticky?.keepOnce = false }
+        return .restored(height: height)
+    }
+
+    /// One choice for every seam in the uncertain run.
+    mutating func confirmStickyBars(keepOnce: Bool) {
+        dedupeStickyBars = keepOnce
+        if pendingSticky != nil { pendingSticky?.keepOnce = keepOnce }
+    }
+
+    /// Restored (or deduped) pieces split so each image stays inside the single-capture caps.
+    /// Rows are never dropped; a piece that would overflow starts the next image.
+    func exportWithinLimits(
+        dedupeStickyBars dedupe: Bool,
+        maxHeight: Int = ScrollOutputLimit.maxHeight,
+        maxPixels: Int = ScrollOutputLimit.maxPixels
+    ) -> [RGBAImage] {
+        var slices: [RGBAImage] = []
+        for (index, segment) in segments.enumerated() {
+            var parts = contentSlices(segment, dedupe: dedupe)
+            if index > 0, seams.indices.contains(index - 1) {
+                let drop: Int
+                switch seams[index - 1].kind {
+                case .needsAlignment, .joinedAsIs:
+                    drop = 0
+                case .aligned(let overlap):
+                    drop = max(0, overlap)
+                }
+                parts = Self.droppingRows(drop, from: parts)
+            }
+            slices.append(contentsOf: parts)
+        }
+        return Self.pack(slices, maxHeight: maxHeight, maxPixels: maxPixels)
     }
 
     mutating func align(seam index: Int, overlap: Int) {
         guard seams.indices.contains(index), segments.indices.contains(index + 1) else { return }
-        let limit = max(0, presented(segments[index + 1]).image.height - 1)
+        let limit = max(0, presented(at: index + 1).image.height - 1)
         seams[index].kind = .aligned(overlap: min(max(0, overlap), limit))
     }
 
@@ -280,8 +419,8 @@ struct ScrollAssembly: Equatable {
     /// over the bottom of the upper segment so the offset is visible while dragging.
     func seamLoupe(boundary: Int, overlap: Int, band: Int = 72) -> RGBAImage? {
         guard segments.indices.contains(boundary), segments.indices.contains(boundary + 1) else { return nil }
-        let upper = presented(segments[boundary]).image
-        let lower = presented(segments[boundary + 1]).image
+        let upper = presented(at: boundary).image
+        let lower = presented(at: boundary + 1).image
         guard upper.width > 0, upper.width == lower.width, upper.height > 0, lower.height > 0 else { return nil }
         let cropW = min(upper.width, 420)
         let x0 = max(0, (upper.width - cropW) / 2)
@@ -341,11 +480,11 @@ struct ScrollAssembly: Equatable {
 
     /// Resolved neighbors are merged. An unresolved boundary starts a new chunk.
     func exportChunks() -> [RGBAImage] {
-        guard let first = segments.first else { return [] }
+        guard !segments.isEmpty else { return [] }
         var chunks: [RGBAImage] = []
-        var current: [RGBAImage] = [presented(first).image]
+        var current: [RGBAImage] = [presented(at: 0).image]
         for index in seams.indices where segments.indices.contains(index + 1) {
-            let next = presented(segments[index + 1]).image
+            let next = presented(at: index + 1).image
             switch seams[index].kind {
             case .needsAlignment:
                 if let joined = RGBAImage.verticalJoin(current) { chunks.append(joined) }
@@ -406,7 +545,7 @@ struct ScrollAssembly: Equatable {
         for (segmentIndex, segment) in segments.enumerated() where segmentIndex < layout.pieces.count {
             let piece = layout.pieces[segmentIndex]
             let origin = origins[segmentIndex]
-            let confidentYs = presented(segment).confidentSeamYs
+            let confidentYs = presented(at: segmentIndex).confidentSeamYs
             for (offset, seamY) in confidentYs.enumerated() where seamY >= piece.start {
                 let y = origin + (seamY - piece.start)
                 marks.append(SeamMark(id: "seg\(segmentIndex)-ok\(offset)", state: .ok, y: y, boundaryIndex: nil, suggestedOverlap: nil))
@@ -435,33 +574,137 @@ struct ScrollAssembly: Equatable {
     }
 
     /// Dedupe-off view of a segment: repeated sticky bars spliced back at each confident seam.
-    private func presented(_ segment: ScrollSegment) -> (image: RGBAImage, confidentSeamYs: [Int]) {
+    /// Results are cached by dedupe state and segment shape so a slider drag can reuse them.
+    private func presented(at index: Int) -> (image: RGBAImage, confidentSeamYs: [Int]) {
+        guard segments.indices.contains(index) else {
+            return (RGBAImage(width: 0, height: 0, pixels: []), [])
+        }
+        let segment = segments[index]
+        let key = PresentationCache.Key(
+            dedupe: dedupeStickyBars,
+            index: index,
+            width: segment.image.width,
+            height: segment.image.height,
+            pixelCount: segment.image.pixels.count,
+            seamYs: segment.confidentSeamYs,
+            repeats: segment.stickyRepeats.map {
+                PresentationCache.RepeatKey(seamY: $0.seamY, headerHeight: $0.header.height, footerHeight: $0.footer.height)
+            }
+        )
+        if let cached = presentationCache.values[key] {
+            presentationCache.hits += 1
+            return cached
+        }
+        let built = Self.makePresented(segment, dedupe: dedupeStickyBars)
+        presentationCache.values[key] = built
+        return built
+    }
+
+    private static func makePresented(_ segment: ScrollSegment, dedupe: Bool) -> (image: RGBAImage, confidentSeamYs: [Int]) {
         let repeats = segment.stickyRepeats.filter { $0.header.height > 0 || $0.footer.height > 0 }
-        guard !dedupeStickyBars, !repeats.isEmpty else {
+        guard !dedupe, !repeats.isEmpty else {
             return (segment.image, segment.confidentSeamYs)
         }
-        var image = segment.image
-        var ys = segment.confidentSeamYs
-        for rep in repeats.sorted(by: { $0.seamY > $1.seamY }) {
-            let extra = rep.footer.height + rep.header.height
-            guard extra > 0 else { continue }
-            let y = min(max(0, rep.seamY), image.height)
-            var parts: [RGBAImage] = []
-            if y > 0 { parts.append(image.crop(rows: 0..<y)) }
-            if rep.footer.height > 0 { parts.append(rep.footer) }
-            if rep.header.height > 0 { parts.append(rep.header) }
-            if y < image.height { parts.append(image.crop(rows: y..<image.height)) }
-            if let joined = RGBAImage.verticalJoin(parts) { image = joined }
-            ys = ys.map { $0 >= rep.seamY ? $0 + extra : $0 }
+        guard let image = RGBAImage.verticalJoin(contentSlices(segment, dedupe: false)) else {
+            return (segment.image, segment.confidentSeamYs)
+        }
+        let ordered = repeats.sorted { $0.seamY < $1.seamY }
+        let ys = segment.confidentSeamYs.map { y in
+            let extra = ordered.reduce(0) { partial, rep in
+                y >= rep.seamY ? partial + rep.header.height + rep.footer.height : partial
+            }
+            return y + extra
         }
         return (image, ys)
     }
 
+    private func presentedHeight(_ segment: ScrollSegment, dedupe: Bool) -> Int {
+        guard !dedupe else { return segment.image.height }
+        let extra = segment.stickyRepeats.reduce(0) { $0 + $1.header.height + $1.footer.height }
+        return segment.image.height + extra
+    }
+
+    private static func contentSlices(_ segment: ScrollSegment, dedupe: Bool) -> [RGBAImage] {
+        let repeats = segment.stickyRepeats.filter { $0.header.height > 0 || $0.footer.height > 0 }
+        guard !dedupe, !repeats.isEmpty else { return [segment.image] }
+        var slices: [RGBAImage] = []
+        var cursor = 0
+        let image = segment.image
+        for rep in repeats.sorted(by: { $0.seamY < $1.seamY }) {
+            let y = min(max(cursor, rep.seamY), image.height)
+            if y > cursor { slices.append(image.crop(rows: cursor..<y)) }
+            if rep.footer.height > 0 { slices.append(rep.footer) }
+            if rep.header.height > 0 { slices.append(rep.header) }
+            cursor = y
+        }
+        if cursor < image.height { slices.append(image.crop(rows: cursor..<image.height)) }
+        return slices.filter { $0.height > 0 }
+    }
+
+    private static func droppingRows(_ count: Int, from slices: [RGBAImage]) -> [RGBAImage] {
+        var remaining = max(0, count)
+        var output: [RGBAImage] = []
+        for slice in slices {
+            if remaining <= 0 {
+                output.append(slice)
+                continue
+            }
+            if slice.height <= remaining {
+                remaining -= slice.height
+                continue
+            }
+            output.append(slice.crop(rows: remaining..<slice.height))
+            remaining = 0
+        }
+        return output
+    }
+
+    private static func pack(_ slices: [RGBAImage], maxHeight: Int, maxPixels: Int) -> [RGBAImage] {
+        let width = slices.first?.width ?? 0
+        var chunks: [RGBAImage] = []
+        var current: [RGBAImage] = []
+        var height = 0
+
+        func flush() {
+            if let joined = RGBAImage.verticalJoin(current) { chunks.append(joined) }
+            current = []
+            height = 0
+        }
+
+        for slice in slices where slice.height > 0 {
+            var rest = slice
+            while rest.height > 0 {
+                let room = ScrollOutputLimit.remainingRows(
+                    totalHeight: height,
+                    width: width,
+                    maxHeight: maxHeight,
+                    maxPixels: maxPixels
+                )
+                if room <= 0 {
+                    if height == 0 { break }
+                    flush()
+                    continue
+                }
+                if rest.height <= room {
+                    current.append(rest)
+                    height += rest.height
+                    break
+                }
+                current.append(rest.crop(rows: 0..<room))
+                height += room
+                rest = rest.crop(rows: room..<rest.height)
+                flush()
+            }
+        }
+        flush()
+        return chunks
+    }
+
     private func layoutPieces() -> (pieces: [Piece], fullHeight: Int) {
-        guard let first = segments.first else { return ([], 0) }
-        var pieces = [Piece(image: presented(first).image, start: 0)]
+        guard !segments.isEmpty else { return ([], 0) }
+        var pieces = [Piece(image: presented(at: 0).image, start: 0)]
         for index in seams.indices where segments.indices.contains(index + 1) {
-            let next = presented(segments[index + 1]).image
+            let next = presented(at: index + 1).image
             let start: Int
             switch seams[index].kind {
             case .needsAlignment, .joinedAsIs:
@@ -504,8 +747,8 @@ struct ScrollAssembly: Equatable {
 /// at the bottom). Rows that stay put at the top or bottom of the viewport while the middle moves
 /// are a sticky header / footer: they are kept once inside a confident run, not repeated on every
 /// slice. That dedupe is on by default and does not ask for confirmation. A sticky band whose edge
-/// is soft, or that was extended across gaps, is not applied; that join is marked as needing
-/// alignment instead. Identical frames add nothing. A frame that cannot be aligned is NOT
+/// is soft, or that was extended across gaps, is locked and kept as one pending choice for the
+/// whole run, instead of splitting a new seam on every frame. Identical frames add nothing. A frame that cannot be aligned is NOT
 /// force-joined; it starts a new segment and the seam is marked as needing alignment.
 struct ScrollStitcher {
     struct Options: Equatable {
@@ -537,6 +780,7 @@ struct ScrollStitcher {
     private var previous: RGBAImage?
     private var lockedHeader: Int?
     private var lockedFooter: Int?
+    private var pendingSticky: PendingStickyConfirmation?
     private var stickyRepeats: [StickyRepeat] = []
 
     init(options: Options = Options()) {
@@ -584,26 +828,31 @@ struct ScrollStitcher {
         } else {
             let detectedHeader = RowSamples.stickyPrefix(prevRows, nextRows, options: options)
             let detectedFooter = RowSamples.stickySuffix(prevRows, nextRows, options: options)
-            // A plausible but uncertain bar is not stripped. The join needs confirmation,
-            // the same way an unconfident overlap does, so Done stays disabled.
-            if (detectedHeader.rows > 0 && !detectedHeader.confident)
-                || (detectedFooter.rows > 0 && !detectedFooter.confident) {
-                let guess = RowSamples.bestShift(
-                    prevRows,
-                    nextRows,
-                    header: detectedHeader.rows,
-                    footer: detectedFooter.rows,
-                    options: options
-                )
-                let suggested = guess.map { max(0, frame.height - abs($0.shift)) }
-                return breakUnmatched(frame, suggested: suggested)
+            let headerUncertain = detectedHeader.rows > 0 && !detectedHeader.confident
+            let footerUncertain = detectedFooter.rows > 0 && !detectedFooter.confident
+            if headerUncertain || footerUncertain {
+                // Lock the band and keep stitching. Later frames share this one confirmation
+                // instead of opening a new seam every viewport.
+                lockedHeader = detectedHeader.rows
+                lockedFooter = detectedFooter.rows
+                if pendingSticky == nil {
+                    pendingSticky = PendingStickyConfirmation(
+                        headerRows: detectedHeader.rows,
+                        footerRows: detectedFooter.rows,
+                        seamCount: 0,
+                        keepOnce: nil
+                    )
+                }
+                headerH = detectedHeader.rows
+                footerH = detectedFooter.rows
+            } else {
+                let contentSpan = frame.height - detectedHeader.rows - detectedFooter.rows
+                let bandsOK = (detectedHeader.rows > 0 || detectedFooter.rows > 0)
+                    && contentSpan >= options.minOverlapRows * 2
+                    && detectedHeader.rows + detectedFooter.rows <= Int(Double(frame.height) * options.maxBandFraction)
+                headerH = bandsOK ? detectedHeader.rows : 0
+                footerH = bandsOK ? detectedFooter.rows : 0
             }
-            let contentSpan = frame.height - detectedHeader.rows - detectedFooter.rows
-            let bandsOK = (detectedHeader.rows > 0 || detectedFooter.rows > 0)
-                && contentSpan >= options.minOverlapRows * 2
-                && detectedHeader.rows + detectedFooter.rows <= Int(Double(frame.height) * options.maxBandFraction)
-            headerH = bandsOK ? detectedHeader.rows : 0
-            footerH = bandsOK ? detectedFooter.rows : 0
         }
 
         let found = RowSamples.bestShift(prevRows, nextRows, header: headerH, footer: footerH, options: options)
@@ -614,6 +863,9 @@ struct ScrollStitcher {
                 if lockedHeader == nil {
                     lockedHeader = headerH
                     lockedFooter = footerH
+                }
+                if pendingSticky != nil, headerH > 0 || footerH > 0 {
+                    pendingSticky?.seamCount += 1
                 }
                 previous = frame
             case .unchanged:
@@ -632,7 +884,7 @@ struct ScrollStitcher {
     /// Seals the open segment and returns every piece. Call once, when capture ends.
     mutating func takeAssembly() -> ScrollAssembly {
         sealOpenSegment()
-        return ScrollAssembly(segments: segments, seams: seams)
+        return ScrollAssembly(segments: segments, seams: seams, pendingSticky: pendingSticky)
     }
 
     func cgImage() -> CGImage? {
@@ -723,6 +975,9 @@ struct ScrollStitcher {
         if pixelHeight > 0, room < frame.height { return .reachedLimit }
         sealOpenSegment()
         seams.append(ScrollSeam(kind: .needsAlignment, suggestedOverlap: suggested))
+        let savedHeader = lockedHeader
+        let savedFooter = lockedFooter
+        let savedPending = pendingSticky
         previous = frame
         parts = [frame]
         header = nil
@@ -731,6 +986,13 @@ struct ScrollStitcher {
         lockedFooter = nil
         confidentYs = []
         stickyRepeats = []
+        // An uncertain sticky run stays one confirmation. Clearing the lock here made every
+        // following frame look uncertain again and open another seam.
+        if savedPending != nil {
+            lockedHeader = savedHeader
+            lockedFooter = savedFooter
+            pendingSticky = savedPending
+        }
         unmatchedBreaks += 1
         return .unmatched
     }
