@@ -236,24 +236,19 @@ final class ScrollStitcherTests: XCTestCase {
         XCTAssertEqual(assembly.flattenedIfResolved()?.height, 48)
     }
 
-    /// Shared card chrome used to invent extra shifts. Unique card bodies should still join.
+    /// Shared card chrome used to invent extra shifts once the scroll passed one card.
     func testRepeatingCardChromeDoesNotSplitTheRun() throws {
-        var stitcher = ScrollStitcher()
-        XCTAssertEqual(stitcher.ingest(ScrollFixtures.cards(scroll: 0)), .seeded)
-        XCTAssertEqual(stitcher.ingest(ScrollFixtures.cards(scroll: 18)), .appended(18))
-        XCTAssertEqual(stitcher.ingest(ScrollFixtures.cards(scroll: 36)), .appended(18))
-        let assembly = stitcher.takeAssembly()
-        XCTAssertFalse(assembly.needsReview)
-        XCTAssertEqual(assembly.segments.count, 1)
-        XCTAssertEqual(assembly.flattenedIfResolved()?.height, 160 + 36)
+        let shift = 28
+        let first = ScrollFixtures.competingCards(scroll: 0)
+        let second = ScrollFixtures.competingCards(scroll: shift)
+        try assertStitchedRows(first, second, shift: shift)
     }
 
     /// Adjacent rows that look alike used to report 10 px and 11 px as two equally good joins.
     func testNeighboringShiftCandidatesClusterIntoOneJoin() throws {
-        var stitcher = ScrollStitcher()
-        XCTAssertEqual(stitcher.ingest(ScrollFixtures.softStep(scroll: 0)), .seeded)
-        XCTAssertEqual(stitcher.ingest(ScrollFixtures.softStep(scroll: 10)), .appended(10))
-        XCTAssertFalse(stitcher.takeAssembly().needsReview)
+        let first = ScrollFixtures.neighboringRows(scroll: 0)
+        let second = ScrollFixtures.neighboringRows(scroll: 10, replaceFirstRowWithPage: 11)
+        try assertStitchedRows(first, second, shift: 10)
     }
 
     func testOneFrameFlickerDoesNotOpenASeam() throws {
@@ -267,30 +262,27 @@ final class ScrollStitcherTests: XCTestCase {
         XCTAssertEqual(assembly.flattenedIfResolved()?.height, 46)
     }
 
-    /// A 1 px scroll inside a mostly blank viewport used to be counted as flicker and dropped.
+    /// A 1 px scroll inside a mostly blank viewport must open a seam, not be dropped.
     func testOnePixelShiftInBlankFrameStitches() throws {
-        try assertDownwardJoin(
+        try assertBlankOpensASeam(
             ScrollFixtures.sparseViewport(scroll: 0, height: 60, contentRows: 10),
-            ScrollFixtures.sparseViewport(scroll: 1, height: 60, contentRows: 10),
-            shift: 1
+            ScrollFixtures.sparseViewport(scroll: 1, height: 60, contentRows: 10)
         )
     }
 
-    /// A 3 px scroll in the same kind of frame must append those rows, not return `.ignored`.
+    /// A 3 px scroll in the same kind of frame opens a seam instead of being ignored.
     func testThreePixelShiftInBlankFrameStitches() throws {
-        try assertDownwardJoin(
+        try assertBlankOpensASeam(
             ScrollFixtures.sparseViewport(scroll: 0, height: 80, contentRows: 16),
-            ScrollFixtures.sparseViewport(scroll: 3, height: 80, contentRows: 16),
-            shift: 3
+            ScrollFixtures.sparseViewport(scroll: 3, height: 80, contentRows: 16)
         )
     }
 
-    /// A mid-size scroll across blank space is still a real join.
+    /// A mid-size scroll across blank space opens a seam instead of being ignored.
     func testMidSizeShiftInBlankFrameStitches() throws {
-        try assertDownwardJoin(
+        try assertBlankOpensASeam(
             ScrollFixtures.sparseViewport(scroll: 0, height: 80, contentRows: 20),
-            ScrollFixtures.sparseViewport(scroll: 10, height: 80, contentRows: 20),
-            shift: 10
+            ScrollFixtures.sparseViewport(scroll: 10, height: 80, contentRows: 20)
         )
     }
 
@@ -343,6 +335,35 @@ final class ScrollStitcherTests: XCTestCase {
         XCTAssertEqual(stitcher.ingest(ScrollFixtures.aliasPeriod(scroll: 42)), .unmatched)
     }
 
+    /// Two-row solid bands on white. An off-by-one join used to score as well as the true shift.
+    func testTwoRowBandsOnWhiteAppendTheTrueShift() throws {
+        let shift = 12
+        let first = ScrollFixtures.colorBands(scroll: 0)
+        let second = ScrollFixtures.colorBands(scroll: shift)
+        try assertStitchedRows(first, second, shift: shift)
+    }
+
+    /// Same segment, forward alias, then a real reverse. The reverse must not be appended.
+    func testReverseScrollInTheSameSegmentIsNotAppended() throws {
+        var stitcher = ScrollStitcher()
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.aliasPeriod(scroll: 106)), .seeded)
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.aliasPeriod(scroll: 118)), .appended(12))
+        let outcome = stitcher.ingest(ScrollFixtures.aliasPeriod(scroll: 90))
+        XCTAssertEqual(outcome, .unmatched)
+        let assembly = stitcher.takeAssembly()
+        XCTAssertTrue(assembly.needsReview)
+        XCTAssertNil(assembly.flattenedIfResolved())
+    }
+
+    /// A jump much larger than the previous shift stays a seam, even inside one segment.
+    func testAliasJumpFarFromLastShiftOpensASeam() throws {
+        var stitcher = ScrollStitcher()
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.aliasPeriod(scroll: 0)), .seeded)
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.aliasPeriod(scroll: 12)), .appended(12))
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.aliasPeriod(scroll: 42)), .unmatched)
+        XCTAssertTrue(stitcher.takeAssembly().needsReview)
+    }
+
     private func assertDownwardJoin(
         _ first: RGBAImage,
         _ second: RGBAImage,
@@ -363,6 +384,53 @@ final class ScrollStitcherTests: XCTestCase {
             file: file,
             line: line
         )
+    }
+
+    /// A blank-dominated scroll must open a seam. Dropping it as flicker hides the rows.
+    private func assertBlankOpensASeam(
+        _ first: RGBAImage,
+        _ second: RGBAImage,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws {
+        var stitcher = ScrollStitcher()
+        XCTAssertEqual(stitcher.ingest(first), .seeded, file: file, line: line)
+        let outcome = stitcher.ingest(second)
+        XCTAssertNotEqual(outcome, .ignored, file: file, line: line)
+        XCTAssertEqual(outcome, .unmatched, file: file, line: line)
+        let assembly = stitcher.takeAssembly()
+        XCTAssertTrue(assembly.needsReview, file: file, line: line)
+        XCTAssertNil(assembly.flattenedIfResolved(), file: file, line: line)
+        XCTAssertEqual(assembly.seams.count, 1, file: file, line: line)
+    }
+
+    private func assertStitchedRows(
+        _ first: RGBAImage,
+        _ second: RGBAImage,
+        shift: Int,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws {
+        var stitcher = ScrollStitcher()
+        XCTAssertEqual(stitcher.ingest(first), .seeded, file: file, line: line)
+        XCTAssertEqual(stitcher.ingest(second), .appended(shift), file: file, line: line)
+        let assembly = stitcher.takeAssembly()
+        XCTAssertFalse(assembly.needsReview, file: file, line: line)
+        let image = try XCTUnwrap(assembly.flattenedIfResolved(), file: file, line: line)
+        XCTAssertEqual(image.height, first.height + shift, file: file, line: line)
+        for y in 0..<first.height {
+            XCTAssertEqual(ScrollFixtures.row(image, y), ScrollFixtures.row(first, y), "kept row \(y)", file: file, line: line)
+        }
+        let stripStart = second.height - shift
+        for offset in 0..<shift {
+            XCTAssertEqual(
+                ScrollFixtures.row(image, first.height + offset),
+                ScrollFixtures.row(second, stripStart + offset),
+                "new row \(offset)",
+                file: file,
+                line: line
+            )
+        }
     }
 
     func testStickyDedupeCanBeRestored() throws {
@@ -1058,6 +1126,67 @@ private enum ScrollFixtures {
                 pixels[i + 1] = rgb[1]
                 pixels[i + 2] = rgb[2]
                 pixels[i + 3] = 255
+            }
+        }
+        return RGBAImage(width: width, height: height, pixels: pixels)
+    }
+
+    /// White viewport, a 2-row solid band every 8 rows. Both rows of a band share one color.
+    static func colorBands(scroll: Int, height: Int = 80, gap: Int = 6, thickness: Int = 2) -> RGBAImage {
+        let period = gap + thickness
+        var pixels = [UInt8](repeating: 255, count: width * height * 4)
+        for y in 0..<height {
+            let page = y + scroll
+            let offset = page % period
+            guard offset >= gap else { continue }
+            let rgb = color(slot: 200 + page / period)
+            for x in 0..<width {
+                let i = (y * width + x) * 4
+                pixels[i] = rgb[0]
+                pixels[i + 1] = rgb[1]
+                pixels[i + 2] = rgb[2]
+            }
+        }
+        return RGBAImage(width: width, height: height, pixels: pixels)
+    }
+
+    /// Slow ramp so a neighbor is a plausible match, without repeating across the frame.
+    static func neighboringRows(scroll: Int, height: Int = 40, replaceFirstRowWithPage: Int? = nil) -> RGBAImage {
+        var pixels = [UInt8](repeating: 255, count: width * height * 4)
+        for y in 0..<height {
+            let page = (y == 0 ? replaceFirstRowWithPage : nil) ?? (y + scroll)
+            let rgb = neighboringColor(page)
+            for x in 0..<width {
+                let i = (y * width + x) * 4
+                pixels[i] = rgb[0]
+                pixels[i + 1] = rgb[1]
+                pixels[i + 2] = rgb[2]
+            }
+        }
+        return RGBAImage(width: width, height: height, pixels: pixels)
+    }
+
+    static func neighboringColor(_ page: Int) -> [UInt8] {
+        [UInt8(20 + page * 6), UInt8(30 + page * 3), 160]
+    }
+
+    /// Card chrome repeats every 20 rows. The scroll is longer than one card, so chrome votes twice.
+    static func competingCards(scroll: Int, height: Int = 100, card: Int = 20, chrome: Int = 12) -> RGBAImage {
+        var pixels = [UInt8](repeating: 255, count: width * height * 4)
+        for y in 0..<height {
+            let page = y + scroll
+            let offset = page % card
+            let rgb: [UInt8]
+            if offset < chrome {
+                rgb = [UInt8(30 + (offset % 5) * 40), UInt8(40 + (offset % 3) * 50), 80]
+            } else {
+                rgb = [UInt8(truncatingIfNeeded: page &* 17), UInt8(truncatingIfNeeded: page &* 13 &+ 40), 200]
+            }
+            for x in 0..<width {
+                let i = (y * width + x) * 4
+                pixels[i] = rgb[0]
+                pixels[i + 1] = rgb[1]
+                pixels[i + 2] = rgb[2]
             }
         }
         return RGBAImage(width: width, height: height, pixels: pixels)
