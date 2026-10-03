@@ -116,10 +116,12 @@ public enum PendingSeamStyle {
     }
 }
 
-/// Colors for a resolved confirmation seam. These are not the Mint and gray from the design yet.
+/// Colors for a resolved confirmation seam.
 public enum ResolvedSeamStyle {
-    public static let mint: UInt32 = 0
-    public static let direct: UInt32 = 0
+    /// Mint for 「✓ 已确认」 and 「✓ 手动对齐」.
+    public static let mint: UInt32 = 0x4F8F7E
+    /// Neutral gray for 「直接拼」.
+    public static let direct: UInt32 = 0x5C5751
 }
 
 /// What the review window shows for one seam. The pending reverse seam uses the amber dashed label.
@@ -166,6 +168,8 @@ public struct ScrollSeam: Equatable {
     public var pendingTitle: String?
     /// Display lines for those shifts, highest first. The selected line ends with 「 · 当前」.
     public var candidateLines: [String]
+    /// Lone reverse candidate. The amber card reads this flag, not the note string.
+    public var reversed: Bool
 
     public enum Kind: Equatable {
         case needsAlignment
@@ -178,31 +182,60 @@ public struct ScrollSeam: Equatable {
         suggestedOverlap: Int? = nil,
         note: String? = nil,
         pendingTitle: String? = nil,
-        candidateLines: [String] = []
+        candidateLines: [String] = [],
+        reversed: Bool = false
     ) {
         self.kind = kind
         self.suggestedOverlap = suggestedOverlap
         self.note = note
         self.pendingTitle = pendingTitle
         self.candidateLines = candidateLines
+        self.reversed = reversed
+    }
+
+    /// True when this boundary is a shift tie or a lone reverse, whatever the user has done since.
+    var awaitsConfirmation: Bool {
+        pendingTitle != nil || !candidateLines.isEmpty || reversed
     }
 
     /// Review copy for this boundary. `number` is the 1-based seam index.
-    /// A lone reverse candidate uses the amber dashed 「待确认」 label.
-    /// An equal-score tie uses that same label, plus the tie title and the candidate lines.
+    /// Amber 「待确认」 only while the seam still needs alignment.
+    /// Confirming the auto-selected shift, picking another overlap, and stitching as-is each get their own label.
     public func card(number: Int) -> SeamCard {
         precondition(number >= 1)
-        if pendingTitle != nil || !candidateLines.isEmpty {
-            return SeamCard(
-                label: "待确认",
-                chrome: .amberDashed,
-                title: pendingTitle,
-                reason: note,
-                candidates: candidateLines
-            )
-        }
-        if case .needsAlignment = kind, note == StitchCopy.reverseSeam {
-            return SeamCard(label: "待确认", chrome: .amberDashed, reason: note)
+        if awaitsConfirmation {
+            switch kind {
+            case .needsAlignment:
+                if pendingTitle != nil || !candidateLines.isEmpty {
+                    return SeamCard(
+                        label: "待确认",
+                        chrome: .amberDashed,
+                        title: pendingTitle,
+                        reason: note,
+                        candidates: candidateLines,
+                        labelColor: PendingSeamStyle.text
+                    )
+                }
+                return SeamCard(
+                    label: "待确认",
+                    chrome: .amberDashed,
+                    reason: note,
+                    labelColor: PendingSeamStyle.text
+                )
+            case .aligned(let overlap):
+                let confirmed = suggestedOverlap.map { overlap == $0 } ?? false
+                return SeamCard(
+                    label: confirmed ? "✓ 已确认" : "✓ 手动对齐",
+                    chrome: .plain,
+                    labelColor: ResolvedSeamStyle.mint
+                )
+            case .joinedAsIs:
+                return SeamCard(
+                    label: "直接拼",
+                    chrome: .plain,
+                    labelColor: ResolvedSeamStyle.direct
+                )
+            }
         }
         let label: String
         switch kind {
@@ -524,10 +557,14 @@ public struct ScrollAssembly: Equatable {
         seams[index].kind = .aligned(overlap: min(max(0, overlap), limit))
     }
 
-    /// Puts the overlap back on the automatic suggestion and marks the seam aligned.
-    /// The capture itself never applies that suggestion until the user asks.
+    /// A confirmation seam goes back to amber 「待确认」.
+    /// Any other seam returns to the suggested overlap and stays aligned.
     public mutating func restoreAutoAlignment(seam index: Int) {
         guard seams.indices.contains(index) else { return }
+        if seams[index].awaitsConfirmation {
+            seams[index].kind = .needsAlignment
+            return
+        }
         align(seam: index, overlap: seams[index].suggestedOverlap ?? 0)
     }
 
@@ -1076,7 +1113,8 @@ public struct ScrollStitcher {
             suggested: suggested,
             note: reverseNote,
             tieShifts: found?.tieShifts,
-            selectedShift: found?.shift
+            selectedShift: found?.shift,
+            reversed: found?.reversed == true
         )
     }
 
@@ -1186,7 +1224,8 @@ public struct ScrollStitcher {
         suggested: Int?,
         note: String? = nil,
         tieShifts: [Int]? = nil,
-        selectedShift: Int? = nil
+        selectedShift: Int? = nil,
+        reversed: Bool = false
     ) -> ScrollIngest {
         let room = ScrollOutputLimit.remainingRows(
             totalHeight: pixelHeight,
@@ -1214,7 +1253,8 @@ public struct ScrollStitcher {
             suggestedOverlap: suggested,
             note: seamNote,
             pendingTitle: pendingTitle,
-            candidateLines: candidateLines
+            candidateLines: candidateLines,
+            reversed: reversed && pendingTitle == nil
         ))
         let savedHeader = lockedHeader
         let savedFooter = lockedFooter

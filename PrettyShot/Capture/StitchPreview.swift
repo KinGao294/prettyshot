@@ -464,12 +464,13 @@ struct StitchPreviewView: View {
                 if pending {
                     pendingMark(labelText)
                 } else {
+                    let ink = card.flatMap { $0.labelColor == 0 ? nil : Color(hex: $0.labelColor) } ?? tint(for: mark.state)
                     Text(labelText)
                         .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(tint(for: mark.state))
+                        .foregroundStyle(ink)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
-                        .background(Capsule().fill(tint(for: mark.state).opacity(0.15)))
+                        .background(Capsule().fill(ink.opacity(0.15)))
                 }
                 Text("距顶部 \(mark.y) px")
                     .font(.system(size: 11))

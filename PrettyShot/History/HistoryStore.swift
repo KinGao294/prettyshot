@@ -412,6 +412,7 @@ private enum StitchArchive {
         var note: String?
         var pendingTitle: String?
         var candidateLines: [String]?
+        var reversed: Bool?
     }
 
     static func encode(_ manifest: Manifest) throws -> Data {
@@ -448,13 +449,14 @@ private enum StitchArchive {
         }
         let seams = assembly.seams.map { seam -> Seam in
             let lines = seam.candidateLines.isEmpty ? nil : seam.candidateLines
+            let reversed = seam.reversed ? true : nil
             switch seam.kind {
             case .needsAlignment:
-                return Seam(kind: "needsAlignment", overlap: nil, suggestedOverlap: seam.suggestedOverlap, note: seam.note, pendingTitle: seam.pendingTitle, candidateLines: lines)
+                return Seam(kind: "needsAlignment", overlap: nil, suggestedOverlap: seam.suggestedOverlap, note: seam.note, pendingTitle: seam.pendingTitle, candidateLines: lines, reversed: reversed)
             case .aligned(let overlap):
-                return Seam(kind: "aligned", overlap: overlap, suggestedOverlap: seam.suggestedOverlap, note: seam.note, pendingTitle: seam.pendingTitle, candidateLines: lines)
+                return Seam(kind: "aligned", overlap: overlap, suggestedOverlap: seam.suggestedOverlap, note: seam.note, pendingTitle: seam.pendingTitle, candidateLines: lines, reversed: reversed)
             case .joinedAsIs:
-                return Seam(kind: "joinedAsIs", overlap: nil, suggestedOverlap: seam.suggestedOverlap, note: seam.note, pendingTitle: seam.pendingTitle, candidateLines: lines)
+                return Seam(kind: "joinedAsIs", overlap: nil, suggestedOverlap: seam.suggestedOverlap, note: seam.note, pendingTitle: seam.pendingTitle, candidateLines: lines, reversed: reversed)
             }
         }
         let pending = assembly.pendingSticky.map {
@@ -498,7 +500,8 @@ private enum StitchArchive {
                 suggestedOverlap: seam.suggestedOverlap,
                 note: seam.note,
                 pendingTitle: seam.pendingTitle,
-                candidateLines: seam.candidateLines ?? []
+                candidateLines: seam.candidateLines ?? [],
+                reversed: seam.reversed ?? false
             )
         }
         let pending = manifest.pending.map {
