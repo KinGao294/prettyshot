@@ -236,6 +236,37 @@ final class ScrollStitcherTests: XCTestCase {
         XCTAssertEqual(assembly.flattenedIfResolved()?.height, 48)
     }
 
+    /// Shared card chrome used to invent extra shifts. Unique card bodies should still join.
+    func testRepeatingCardChromeDoesNotSplitTheRun() throws {
+        var stitcher = ScrollStitcher()
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.cards(scroll: 0)), .seeded)
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.cards(scroll: 18)), .appended(18))
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.cards(scroll: 36)), .appended(18))
+        let assembly = stitcher.takeAssembly()
+        XCTAssertFalse(assembly.needsReview)
+        XCTAssertEqual(assembly.segments.count, 1)
+        XCTAssertEqual(assembly.flattenedIfResolved()?.height, 160 + 36)
+    }
+
+    /// Adjacent rows that look alike used to report 10 px and 11 px as two equally good joins.
+    func testNeighboringShiftCandidatesClusterIntoOneJoin() throws {
+        var stitcher = ScrollStitcher()
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.softStep(scroll: 0)), .seeded)
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.softStep(scroll: 10)), .appended(10))
+        XCTAssertFalse(stitcher.takeAssembly().needsReview)
+    }
+
+    func testOneFrameFlickerDoesNotOpenASeam() throws {
+        var stitcher = ScrollStitcher()
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.page(scroll: 0)), .seeded)
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.flashed(ScrollFixtures.page(scroll: 0), rows: 8)), .ignored)
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.page(scroll: 6)), .appended(6))
+        let assembly = stitcher.takeAssembly()
+        XCTAssertFalse(assembly.needsReview)
+        XCTAssertEqual(assembly.segments.count, 1)
+        XCTAssertEqual(assembly.flattenedIfResolved()?.height, 46)
+    }
+
     func testStickyDedupeCanBeRestored() throws {
         var stitcher = ScrollStitcher()
         XCTAssertEqual(stitcher.ingest(ScrollFixtures.viewport(scroll: 0)), .seeded)
@@ -813,6 +844,66 @@ private enum ScrollFixtures {
 
     static func gradientColor(scroll: Int, y: Int) -> [UInt8] {
         [UInt8(20 + (y + scroll) * 15), 180, 40]
+    }
+
+    /// Repeating card chrome plus a unique body on every page-Y, like a feed.
+    static func cards(scroll: Int, height: Int = 160, cardHeight: Int = 32) -> RGBAImage {
+        var pixels = [UInt8](repeating: 255, count: width * height * 4)
+        for y in 0..<height {
+            let pageY = y + scroll
+            let offset = pageY % cardHeight
+            let rgb: [UInt8]
+            if offset < 5 {
+                rgb = [30 + UInt8(offset) * 12, 44, 58]
+            } else {
+                let v = UInt8(truncatingIfNeeded: pageY &* 17)
+                let u = UInt8(truncatingIfNeeded: pageY &* 13 &+ 40)
+                rgb = [v, u, 200]
+            }
+            for x in 0..<width {
+                let i = (y * width + x) * 4
+                pixels[i] = rgb[0]
+                pixels[i + 1] = rgb[1]
+                pixels[i + 2] = rgb[2]
+            }
+        }
+        return RGBAImage(width: width, height: height, pixels: pixels)
+    }
+
+    /// Each pair of rows is nearly identical, so 10 px and 11 px both look plausible.
+    /// Pairs themselves stay far apart so the page is not a slow gradient.
+    static func softStep(scroll: Int, height: Int = 80) -> RGBAImage {
+        var pixels = [UInt8](repeating: 255, count: width * height * 4)
+        for y in 0..<height {
+            let pageY = y + scroll
+            let pair = pageY / 2
+            let rgb = color(slot: contentSlot + pair)
+            let tint = UInt8(pageY % 2 == 0 ? 0 : 3)
+            for x in 0..<width {
+                let i = (y * width + x) * 4
+                pixels[i] = rgb[0] &+ tint
+                pixels[i + 1] = rgb[1]
+                pixels[i + 2] = rgb[2]
+            }
+        }
+        return RGBAImage(width: width, height: height, pixels: pixels)
+    }
+
+    /// Inverts a few rows so the frame is not "unchanged", but most of the picture still matches.
+    static func flashed(_ image: RGBAImage, rows: Int) -> RGBAImage {
+        var copy = image
+        let pixels = copy.pixels
+        var next = pixels
+        for y in 0..<min(rows, image.height) {
+            for x in 0..<image.width {
+                let i = (y * image.width + x) * 4
+                next[i] = 255 - pixels[i]
+                next[i + 1] = 255 - pixels[i + 1]
+                next[i + 2] = 255 - pixels[i + 2]
+            }
+        }
+        copy = RGBAImage(width: image.width, height: image.height, pixels: next)
+        return copy
     }
 
     static func noised(_ image: RGBAImage, amplitude: Int) -> RGBAImage {

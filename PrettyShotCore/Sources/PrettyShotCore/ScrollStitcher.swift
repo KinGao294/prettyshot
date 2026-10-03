@@ -812,6 +812,8 @@ public struct ScrollStitcher {
     private var lockedFooter: Int?
     private var pendingSticky: PendingStickyConfirmation?
     private var stickyRepeats: [StickyRepeat] = []
+    /// Last confident vertical shift. Breaks a later alias (period-like cards) in the same direction.
+    private var lastShift: Int?
     /// One shared copy of the sticky bars for the open run. Each seam records these images
     /// instead of cropping a fresh header and footer on every frame.
     private var pinnedHeader: RGBAImage?
@@ -891,7 +893,14 @@ public struct ScrollStitcher {
             }
         }
 
-        let found = RowSamples.bestShift(prevRows, nextRows, header: headerH, footer: footerH, options: options)
+        let found = RowSamples.bestShift(
+            prevRows,
+            nextRows,
+            header: headerH,
+            footer: footerH,
+            lastShift: lastShift,
+            options: options
+        )
         if let match = found, match.confident {
             let outcome = apply(next: frame, shift: match.shift, headerH: headerH, footerH: footerH)
             switch outcome {
@@ -903,6 +912,7 @@ public struct ScrollStitcher {
                 if pendingSticky != nil, headerH > 0 || footerH > 0 {
                     pendingSticky?.seamCount += 1
                 }
+                lastShift = match.shift
                 previous = frame
             case .unchanged:
                 break
@@ -912,6 +922,10 @@ public struct ScrollStitcher {
                 break
             }
             return outcome
+        }
+        // Hover, caret, or a one-frame flash: most of the picture is still the last frame.
+        if found == nil, RowSamples.isFlicker(prevRows, nextRows, options: options) {
+            return .ignored
         }
         let suggested = found.map { max(0, frame.height - abs($0.shift)) }
         return breakUnmatched(frame, suggested: suggested)
@@ -1158,21 +1172,28 @@ private enum RowSamples {
         var confident: Bool
     }
 
-    static func bestShift(_ prev: [RowSample], _ next: [RowSample], header: Int, footer: Int, options: ScrollStitcher.Options) -> ShiftChoice? {
+    static func bestShift(
+        _ prev: [RowSample],
+        _ next: [RowSample],
+        header: Int,
+        footer: Int,
+        lastShift: Int? = nil,
+        options: ScrollStitcher.Options
+    ) -> ShiftChoice? {
         let height = min(prev.count, next.count)
         let contentEnd = height - footer
         guard header >= 0, footer >= 0, contentEnd - header > options.minOverlapRows else { return nil }
 
-        var scored: [Int: Int] = [:]
+        var scored: [Int: (score: Int, votes: Int)] = [:]
 
         func consider(_ shift: Int) {
             guard shift != 0 else { return }
             guard let score = verify(prev, next, header: header, footer: footer, shift: shift, options: options) else { return }
             guard score <= options.alignDistance else { return }
             if let existing = scored[shift] {
-                scored[shift] = min(existing, score)
+                scored[shift] = (min(existing.score, score), existing.votes + 1)
             } else {
-                scored[shift] = score
+                scored[shift] = (score, 1)
             }
         }
 
@@ -1187,18 +1208,33 @@ private enum RowSamples {
             }
         }
 
-        let ranked = scored.sorted { lhs, rhs in
-            if lhs.value != rhs.value { return lhs.value < rhs.value }
-            let left = abs(lhs.key)
-            let right = abs(rhs.key)
-            if left != right { return left < right }
-            return lhs.key > rhs.key
-        }
+        let ranked = clustered(scored)
         guard let best = ranked.first else { return nil }
-        // A tied or near-tied second shift — including several perfect scores of 0 — is not safe.
-        // Dictionary order is not a tie-break; repeated list rows must stay unconfirmed.
-        let ambiguous = ranked.dropFirst().contains { $0.value <= best.value + 4 }
-        return ShiftChoice(shift: best.key, confident: !ambiguous)
+        // Distant aliases with similar score *and* similar support are not safe — a repeating
+        // list can match at several periods. Nearby 1–2 px candidates are the same scroll.
+        let rivals = ranked.dropFirst().filter { rival in
+            abs(rival.shift - best.shift) > 2
+                && rival.score <= best.score + 4
+                && rival.votes * 2 >= best.votes
+        }
+        if rivals.isEmpty {
+            return ShiftChoice(shift: best.shift, confident: true)
+        }
+        if let prior = lastShift,
+           let preferred = resolveAlias(best: best, rivals: Array(rivals), prior: prior) {
+            return ShiftChoice(shift: preferred, confident: true)
+        }
+        return ShiftChoice(shift: best.shift, confident: false)
+    }
+
+    static func isFlicker(_ a: [RowSample], _ b: [RowSample], options: ScrollStitcher.Options) -> Bool {
+        let count = min(a.count, b.count)
+        guard count > 0 else { return false }
+        var same = 0
+        for y in 0..<count {
+            if distance(a[y], b[y]) <= options.matchDistance { same += 1 }
+        }
+        return same * 4 >= count * 3
     }
 
     // MARK: - Private
@@ -1263,7 +1299,7 @@ private enum RowSamples {
         let start = header
         let end = height - footer - magnitude
         guard end - start >= options.minOverlapRows else { return nil }
-        let step = max(1, (end - start) / 24)
+        let step = max(1, (end - start) / 48)
         var sum = 0
         var n = 0
         var y = start
@@ -1281,7 +1317,8 @@ private enum RowSamples {
         return sum / n
     }
 
-    /// Best-matching row of `needle` inside `rows[from..<to]`, if it is close enough to be the same content.
+    /// Best-matching row of `needle` inside `rows[from..<to]`, if that row is unique in the frame.
+    /// Repeating chrome or a periodic list matches at several y values and cannot vote.
     private static func closest(
         to needle: RowSample,
         in rows: [RowSample],
@@ -1290,17 +1327,78 @@ private enum RowSamples {
         options: ScrollStitcher.Options
     ) -> Int? {
         guard from < to, needle.distinctive else { return nil }
+        var hits: [Int] = []
         var bestY: Int?
         var best = Int.max
-        for y in from..<to {
+        for y in 0..<rows.count {
             let score = distance(needle, rows[y])
-            if score < best {
+            if score <= options.matchDistance {
+                hits.append(y)
+            }
+            if y >= from, y < to, score < best {
                 best = score
                 bestY = y
             }
         }
         guard let bestY, best <= options.matchDistance else { return nil }
+        // Another equally good match far away — even outside the search window — means
+        // this row is periodic. Near-colour neighbours (1–2 px) are not a second alignment.
+        if hits.contains(where: { abs($0 - bestY) > 2 && distance(needle, rows[$0]) <= best + 2 }) {
+            return nil
+        }
         return bestY
+    }
+
+    private struct ShiftCluster {
+        var shift: Int
+        var score: Int
+        var votes: Int
+    }
+
+    /// Merges shifts within 2 px (same scroll, 1 px of capture / rounding noise).
+    private static func clustered(_ scored: [Int: (score: Int, votes: Int)]) -> [ShiftCluster] {
+        let keys = scored.keys.sorted()
+        var clusters: [ShiftCluster] = []
+        var index = 0
+        while index < keys.count {
+            var group = [keys[index]]
+            var next = index + 1
+            while next < keys.count, keys[next] - keys[next - 1] <= 2 {
+                group.append(keys[next])
+                next += 1
+            }
+            var score = Int.max
+            var votes = 0
+            var bestShift = group[0]
+            var bestVotes = -1
+            for shift in group {
+                guard let item = scored[shift] else { continue }
+                votes += item.votes
+                if item.score < score || (item.score == score && item.votes > bestVotes) {
+                    score = item.score
+                    bestShift = shift
+                    bestVotes = item.votes
+                }
+            }
+            clusters.append(ShiftCluster(shift: bestShift, score: score, votes: votes))
+            index = next
+        }
+        return clusters.sorted { lhs, rhs in
+            if lhs.score != rhs.score { return lhs.score < rhs.score }
+            if lhs.votes != rhs.votes { return lhs.votes > rhs.votes }
+            if abs(lhs.shift) != abs(rhs.shift) { return abs(lhs.shift) < abs(rhs.shift) }
+            return lhs.shift > rhs.shift
+        }
+    }
+
+    private static func resolveAlias(best: ShiftCluster, rivals: [ShiftCluster], prior: Int) -> Int? {
+        let candidates = [best] + rivals
+        guard let preferred = candidates.min(by: { abs($0.shift - prior) < abs($1.shift - prior) }) else {
+            return nil
+        }
+        let sameDirection = preferred.shift.signum() == prior.signum() || prior == 0
+        let closeEnough = abs(preferred.shift - prior) <= max(12, abs(prior) * 3)
+        return sameDirection && closeEnough ? preferred.shift : nil
     }
 
     private static func anchorRows(_ rows: [RowSample], from: Int, to: Int, bias: Bias) -> [Int] {
@@ -1314,8 +1412,8 @@ private enum RowSamples {
         case .bottom:
             pool = Array(indices.suffix(max(indices.count / 2, 1)))
         }
-        if pool.count <= 5 { return pool }
-        return (0..<5).map { pool[$0 * (pool.count - 1) / 4] }
+        if pool.count <= 8 { return pool }
+        return (0..<8).map { pool[$0 * (pool.count - 1) / 7] }
     }
 
     private static func sampleColumns(width: Int, count: Int) -> [Int] {
