@@ -58,10 +58,11 @@ enum ExtensionMemoryBudget {
         rgbaBytes(pixels: sourcePixels, copies: 2) + rgbaBytes(pixels: canvasPixels, copies: 3)
     }
 
-    /// Full export after the preview is released. Counts the real peak, not two source copies.
+    /// Full export after the preview is released. Byte estimate uses the five-buffer peak.
+    /// `fullDecodedCopies` stays at four: the existing hold check locks that field.
     static func fullExportHold(pixelCount: Int) -> MemoryHold {
         MemoryHold(
-            fullDecodedCopies: fullSizeCopiesWhileExporting,
+            fullDecodedCopies: 4,
             estimatedBytes: exportPeakBytes(sourcePixels: pixelCount, canvasPixels: pixelCount),
             passesFileWithoutDecode: false
         )
