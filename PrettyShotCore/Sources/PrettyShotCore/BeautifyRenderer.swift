@@ -86,7 +86,10 @@ public enum BeautifyRenderer {
                 context.setShadow(offset: metrics.offset, blur: metrics.blur,
                                   color: CGColor(srgbRed: 0.17, green: 0.16, blue: 0.16, alpha: 0.32))
                 // Shadow the composited layer, so transparent window corners cast a correct shadow.
+                // The layer starts with its own interpolation. A 1:1 blit must set `.none` again
+                // or Core Graphics allocates a filter buffer beside this layer.
                 context.beginTransparencyLayer(auxiliaryInfo: nil)
+                context.interpolationQuality = imageIsOneToOneDeviceBlit(input, context: context) ? .none : .high
                 drawBase(input, layout: layout, clip: imageClip, in: context)
                 context.endTransparencyLayer()
                 context.restoreGState()
@@ -211,7 +214,7 @@ public enum BeautifyRenderer {
 }
 
 /// Backing store for a rendered bitmap. Freed when the CGImage provider releases it.
-private final class OwnedBitmap {
+final class OwnedBitmap {
     let baseAddress: UnsafeMutableRawPointer
     let byteCount: Int
 
