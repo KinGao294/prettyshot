@@ -373,10 +373,17 @@ final class ScrollStitcherTests: XCTestCase {
         let assembly = stitcher.takeAssembly()
         XCTAssertTrue(assembly.needsReview)
         XCTAssertNil(assembly.flattenedIfResolved())
-        XCTAssertEqual(assembly.seams.last?.note, StitchCopy.reverseSeam)
+        let tie = "找到 2 个得分相同的位移，自动对齐没法确定是哪一个——为了不拼错，先停下来请你确认。"
+        let card = try XCTUnwrap(assembly.seams.last).card(number: 1)
+        XCTAssertEqual(card.title, "接缝 1 · 待确认：位移无法唯一确定")
+        XCTAssertEqual(card.reason, tie)
+        XCTAssertNotEqual(card.reason, StitchCopy.reverseSeam)
+        XCTAssertFalse(card.reason?.contains("这一段是重复的列表行") == true)
+        XCTAssertEqual(card.candidates, ["位移 A · +32 px · 当前", "位移 B · −28 px"])
     }
 
     /// A jump much larger than the previous shift stays a seam, even inside one segment.
+    /// +30 and −30 score the same, so the reason is the tie, not a reverse scroll.
     func testAliasJumpFarFromLastShiftOpensASeam() throws {
         var stitcher = ScrollStitcher()
         XCTAssertEqual(stitcher.ingest(ScrollFixtures.aliasPeriod(scroll: 0)), .seeded)
@@ -384,7 +391,13 @@ final class ScrollStitcherTests: XCTestCase {
         XCTAssertEqual(stitcher.ingest(ScrollFixtures.aliasPeriod(scroll: 42)), .unmatched)
         let assembly = stitcher.takeAssembly()
         XCTAssertTrue(assembly.needsReview)
-        XCTAssertEqual(assembly.seams.last?.note, StitchCopy.reverseSeam)
+        let tie = "找到 2 个得分相同的位移，自动对齐没法确定是哪一个——为了不拼错，先停下来请你确认。"
+        let card = try XCTUnwrap(assembly.seams.last).card(number: 1)
+        XCTAssertEqual(card.title, "接缝 1 · 待确认：位移无法唯一确定")
+        XCTAssertEqual(card.reason, tie)
+        XCTAssertNotEqual(card.reason, StitchCopy.reverseSeam)
+        XCTAssertFalse(card.reason?.contains("这一段是重复的列表行") == true)
+        XCTAssertEqual(card.candidates, ["位移 A · +30 px · 当前", "位移 B · −30 px"])
     }
 
     /// One reverse candidate, and it copies rows already on the page. That opens a seam.
