@@ -153,9 +153,9 @@ struct QuickOverlayView: View {
             dragHandle
             if actions.restoreSticky != nil {
                 HStack(spacing: 6) {
-                    Text("已去掉重复的固定栏")
+                    Text(StitchCopy.overlayDeduped)
                     Text("·")
-                    Button("还原固定栏") { actions.restoreSticky?() }
+                    Button(StitchCopy.restoreSticky) { actions.restoreSticky?() }
                         .buttonStyle(.plain)
                         .foregroundStyle(Palette.ivory)
                 }

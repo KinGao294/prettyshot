@@ -271,7 +271,7 @@ final class ScrollStitcherTests: XCTestCase {
         XCTAssertEqual(assembly.segments.count, 1)
         XCTAssertTrue(assembly.seams.isEmpty)
         XCTAssertEqual(assembly.pendingSticky?.seamCount, 1)
-        XCTAssertEqual(assembly.pendingSticky?.prompt, "顶部这条可能是固定栏（涉及 1 处接缝）")
+        XCTAssertEqual(assembly.pendingSticky?.prompt, "待确认 · 顶部这条可能是固定栏（涉及 1 处接缝）")
         XCTAssertTrue(assembly.needsReview)
         XCTAssertTrue(assembly.opensStitchReview)
         XCTAssertNil(assembly.flattenedIfResolved())
@@ -296,7 +296,9 @@ final class ScrollStitcherTests: XCTestCase {
         XCTAssertEqual(assembly.segments.count, 1)
         XCTAssertTrue(assembly.seams.isEmpty)
         XCTAssertEqual(assembly.pendingSticky?.seamCount, frameCount - 1)
-        XCTAssertEqual(assembly.pendingSticky?.prompt, "顶部这条可能是固定栏（涉及 \(frameCount - 1) 处接缝）")
+        XCTAssertEqual(assembly.pendingSticky?.prompt, "待确认 · 顶部这条可能是固定栏（涉及 \(frameCount - 1) 处接缝）")
+        XCTAssertEqual(assembly.unresolvedItemCount, 1)
+        XCTAssertEqual(StitchCopy.remainingItems(assembly.unresolvedItemCount), "还有 1 处没处理")
         XCTAssertTrue(assembly.needsReview)
         XCTAssertNil(assembly.flattenedIfResolved())
 
@@ -323,6 +325,7 @@ final class ScrollStitcherTests: XCTestCase {
         switch assembly.restoreStickyBars(maxHeight: 100, maxPixels: 24_000_000) {
         case .exceedsLimit(let height, let message):
             XCTAssertEqual(height, restoredHeight)
+            XCTAssertEqual(message, StitchCopy.overLimit(height: restoredHeight, limit: 100))
             XCTAssertEqual(message, "还原后约 \(restoredHeight) px，超过单张上限 100 px")
         default:
             XCTFail("expected the over-limit prompt")
@@ -393,6 +396,69 @@ final class ScrollStitcherTests: XCTestCase {
         let roundTrip = try XCTUnwrap(again.loadStitch(for: again.items[0]))
         XCTAssertFalse(roundTrip.dedupeStickyBars)
         XCTAssertEqual(roundTrip.flattenedIfResolved()?.height, tall.height)
+    }
+
+    func testExportWithinLimitsRefusesToSpanUnalignedSeams() throws {
+        var stitcher = ScrollStitcher()
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.page(scroll: 0, slot: 0)), .seeded)
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.page(scroll: 0, slot: 40)), .unmatched)
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.page(scroll: 0, slot: 80)), .unmatched)
+        var assembly = stitcher.takeAssembly()
+        assembly.align(seam: 0, overlap: 0)
+        XCTAssertEqual(assembly.unalignedSeamCount, 1)
+
+        let refused = assembly.exportWithinLimits(dedupeStickyBars: true, maxHeight: 10, maxPixels: 24_000_000)
+        XCTAssertTrue(refused.isEmpty)
+
+        assembly.joinAsIs(seam: 1)
+        let chunks = assembly.exportWithinLimits(dedupeStickyBars: true, maxHeight: 25, maxPixels: 24_000_000)
+        XCTAssertFalse(chunks.isEmpty)
+        XCTAssertEqual(chunks.reduce(0) { $0 + $1.height }, 120)
+        for chunk in chunks {
+            XCTAssertLessThanOrEqual(chunk.height, 25)
+            XCTAssertLessThanOrEqual(chunk.width * chunk.height, 24_000_000)
+        }
+    }
+
+    @MainActor
+    func testOverLimitPromptBlocksExportUntilSeamsAreAligned() throws {
+        var stitcher = ScrollStitcher()
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.page(scroll: 0, slot: 0)), .seeded)
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.page(scroll: 0, slot: 40)), .unmatched)
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.page(scroll: 0, slot: 80)), .unmatched)
+        let assembly = stitcher.takeAssembly()
+        let model = StitchPreviewModel(assembly: assembly, notice: nil)
+
+        let blocked = model.assembly.restoreExportPrompt
+        XCTAssertEqual(blocked.unalignedCount, 2)
+        XCTAssertEqual(blocked.primaryTitle, "先处理 2 处待对齐")
+        XCTAssertFalse(blocked.primaryExports)
+        XCTAssertFalse(blocked.segmentExportEnabled)
+        XCTAssertEqual(blocked.segmentExportCaption, "还有 2 处待对齐，先处理再导出")
+        XCTAssertEqual(StitchCopy.keepDedupe, "保持去重")
+        XCTAssertEqual(StitchCopy.overlayDeduped, "已去掉重复固定栏")
+        XCTAssertEqual(
+            StitchCopy.overLimit(height: 18_240, limit: 16_384),
+            "还原后约 18,240 px，超过单张上限 16,384 px"
+        )
+
+        model.select(boundary: 0)
+        model.assembly.align(seam: 0, overlap: 0)
+        model.focusFirstUnalignedSeam()
+        XCTAssertEqual(model.selectedBoundary, 1)
+        let oneLeft = model.assembly.restoreExportPrompt
+        XCTAssertEqual(oneLeft.unalignedCount, 1)
+        XCTAssertEqual(oneLeft.primaryTitle, "先处理 1 处待对齐")
+        XCTAssertFalse(oneLeft.segmentExportEnabled)
+
+        model.assembly.joinAsIs(seam: 1)
+        let ready = model.assembly.restoreExportPrompt
+        XCTAssertEqual(ready.unalignedCount, 0)
+        XCTAssertEqual(ready.primaryTitle, "分段导出")
+        XCTAssertTrue(ready.primaryExports)
+        XCTAssertTrue(ready.segmentExportEnabled)
+        XCTAssertNil(ready.segmentExportCaption)
+        XCTAssertFalse(model.assembly.exportWithinLimits().isEmpty)
     }
 
     func testSeamLoupeIsFullResolutionAndTracksOverlap() throws {

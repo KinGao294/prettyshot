@@ -181,7 +181,7 @@ private struct HistoryCard: View {
                         op("doc.on.doc", "复制") { actions.copy(item) }
                         op("magnifyingglass", "在 Finder 中显示") { actions.reveal(item) }
                         if item.hasStickyRestore {
-                            op("arrow.uturn.backward", "还原固定栏") { actions.restoreSticky(item) }
+                            op("arrow.uturn.backward", StitchCopy.restoreSticky) { actions.restoreSticky(item) }
                         }
                         moreMenu
                         op("trash", "删除") { confirmDelete = true }
@@ -221,7 +221,7 @@ private struct HistoryCard: View {
             Button("复制") { actions.copy(item) }
             Button("在 Finder 中显示") { actions.reveal(item) }
             if item.hasStickyRestore {
-                Button("还原固定栏") { actions.restoreSticky(item) }
+                Button(StitchCopy.restoreSticky) { actions.restoreSticky(item) }
             }
             Divider()
             Button("删除", role: .destructive) { store.delete(item) }
@@ -244,7 +244,7 @@ private struct HistoryCard: View {
             Button("复制") { actions.copy(item) }
             Button("在 Finder 中显示") { actions.reveal(item) }
             if item.hasStickyRestore {
-                Button("还原固定栏") { actions.restoreSticky(item) }
+                Button(StitchCopy.restoreSticky) { actions.restoreSticky(item) }
             }
             Divider()
             Button("删除", role: .destructive) { confirmDelete = true }

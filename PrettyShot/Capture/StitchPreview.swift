@@ -223,6 +223,12 @@ final class StitchPreviewModel: ObservableObject {
         refresh()
     }
 
+    /// Selects the first seam that still needs alignment, for the over-limit primary action.
+    func focusFirstUnalignedSeam() {
+        guard let index = assembly.seams.firstIndex(where: { !$0.isResolved }) else { return }
+        select(boundary: index)
+    }
+
     private func refreshLoupe() {
         guard let selectedBoundary,
               let image = assembly.seamLoupe(boundary: selectedBoundary, overlap: Int(overlap.rounded())),
@@ -281,33 +287,50 @@ struct StitchPreviewView: View {
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(Palette.charcoal)
                 HStack(spacing: 8) {
-                    Button("当固定栏，只保留一次") { model.confirmPendingSticky(keepOnce: true) }
+                    Button(StitchCopy.keepOnceChoice) { model.confirmPendingSticky(keepOnce: true) }
                         .buttonStyle(BloomPrimaryButtonStyle())
-                    Button("当内容，全部保留") { model.confirmPendingSticky(keepOnce: false) }
+                    Button(StitchCopy.keepAllChoice) { model.confirmPendingSticky(keepOnce: false) }
                         .buttonStyle(LightButtonStyle())
                 }
             }
             HStack(spacing: 12) {
-                Toggle("固定栏只保留一次", isOn: Binding(
+                Toggle(StitchCopy.keepOnceToggle, isOn: Binding(
                     get: { model.assembly.dedupeStickyBars },
                     set: { model.setDedupeStickyBars($0) }
                 ))
                 .toggleStyle(.switch)
                 .font(.system(size: 12))
-                Button("还原固定栏") { model.setDedupeStickyBars(false) }
+                Button(StitchCopy.restoreSticky) { model.setDedupeStickyBars(false) }
                     .buttonStyle(LightButtonStyle())
                     .disabled(!model.assembly.dedupeStickyBars || !model.assembly.hasStickyRepeats)
-                    .help("把去掉的页眉和页脚按接缝插回去")
+                    .help(StitchCopy.restoreHelp)
             }
             if let restoreLimitMessage = model.restoreLimitMessage {
+                let prompt = model.assembly.restoreExportPrompt
                 Text(restoreLimitMessage)
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(Palette.bloomDeep)
                 HStack(spacing: 8) {
-                    Button("分段导出", action: onExportRestored)
-                        .buttonStyle(BloomPrimaryButtonStyle())
-                    Button("保持去重") { model.keepDedupe() }
+                    if prompt.primaryExports {
+                        Button(prompt.primaryTitle, action: onExportRestored)
+                            .buttonStyle(BloomPrimaryButtonStyle())
+                    } else {
+                        Button(prompt.primaryTitle) { model.focusFirstUnalignedSeam() }
+                            .buttonStyle(BloomPrimaryButtonStyle())
+                    }
+                    if !prompt.segmentExportEnabled {
+                        Button(StitchCopy.exportSegments) {}
+                            .buttonStyle(LightButtonStyle())
+                            .disabled(true)
+                            .opacity(0.45)
+                    }
+                    Button(StitchCopy.keepDedupe) { model.keepDedupe() }
                         .buttonStyle(LightButtonStyle())
+                }
+                if let caption = prompt.segmentExportCaption {
+                    Text(caption)
+                        .font(.system(size: 11))
+                        .foregroundStyle(Palette.muted)
                 }
             }
         }
@@ -422,14 +445,19 @@ struct StitchPreviewView: View {
 
     private var footer: some View {
         HStack {
-            Button("分段导出", action: onExport)
+            Button(StitchCopy.exportSegments, action: onExport)
                 .buttonStyle(LightButtonStyle())
                 .help("按当前分段分别保存。已手动处理的相邻段会合并，未处理的接缝保持分开。")
+            if model.assembly.unresolvedItemCount > 0 {
+                Text(StitchCopy.remainingItems(model.assembly.unresolvedItemCount))
+                    .font(.system(size: 12))
+                    .foregroundStyle(Palette.muted)
+            }
             Spacer()
             Button("完成", action: onCommit)
                 .buttonStyle(BloomPrimaryButtonStyle())
                 .disabled(!model.canCommit)
-                .help(model.canCommit ? "合成一张长图" : "还有接缝没处理")
+                .help(model.canCommit ? "合成一张长图" : StitchCopy.remainingItems(model.assembly.unresolvedItemCount))
         }
         .padding(14)
     }

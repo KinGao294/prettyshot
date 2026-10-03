@@ -263,17 +263,9 @@ struct PendingStickyConfirmation: Equatable {
 
     var isUnresolved: Bool { keepOnce == nil }
 
-    /// 「顶部这条可能是固定栏（涉及 N 处接缝）」 when the uncertain band is a header.
+    /// 「待确认 · 顶部这条可能是固定栏（涉及 N 处接缝）」 when the uncertain band is a header.
     var prompt: String {
-        let place: String
-        if headerRows > 0 && footerRows > 0 {
-            place = "顶部和底部可能是固定栏"
-        } else if footerRows > 0 {
-            place = "底部这条可能是固定栏"
-        } else {
-            place = "顶部这条可能是固定栏"
-        }
-        return "\(place)（涉及 \(seamCount) 处接缝）"
+        StitchCopy.uncertainPrompt(headerRows: headerRows, footerRows: footerRows, seamCount: seamCount)
     }
 }
 
@@ -323,6 +315,18 @@ struct ScrollAssembly: Equatable {
 
     var confidentSeamCount: Int { segments.reduce(0) { $0 + $1.confidentSeamYs.count } }
 
+    /// Seams the user has not aligned or joined as-is.
+    var unalignedSeamCount: Int { seams.filter { !$0.isResolved }.count }
+
+    /// Unaligned seams, plus one when an uncertain sticky band is still undecided.
+    var unresolvedItemCount: Int {
+        unalignedSeamCount + (pendingSticky?.isUnresolved == true ? 1 : 0)
+    }
+
+    var restoreExportPrompt: RestoreOverLimitPrompt {
+        .make(unalignedCount: unalignedSeamCount)
+    }
+
     func displayedSegmentHeight(_ index: Int) -> Int {
         guard segments.indices.contains(index) else { return 0 }
         return presented(at: index).image.height
@@ -358,7 +362,7 @@ struct ScrollAssembly: Equatable {
         let pixels = Int64(max(width, 0)) * Int64(max(height, 0))
         if height > maxHeight || pixels > Int64(maxPixels) {
             let cited = height > maxHeight ? maxHeight : ScrollOutputLimit.maxHeight
-            let message = "还原后约 \(height) px，超过单张上限 \(cited) px"
+            let message = StitchCopy.overLimit(height: height, limit: cited)
             return .exceedsLimit(height: height, message: message)
         }
         dedupeStickyBars = false
@@ -374,11 +378,14 @@ struct ScrollAssembly: Equatable {
 
     /// Restored (or deduped) pieces split so each image stays inside the single-capture caps.
     /// Rows are never dropped; a piece that would overflow starts the next image.
+    /// Refuses while any seam is still unaligned, so a segment is never stitched across that seam
+    /// and the seam is not force-cut into its own export either.
     func exportWithinLimits(
         dedupeStickyBars dedupe: Bool,
         maxHeight: Int = ScrollOutputLimit.maxHeight,
         maxPixels: Int = ScrollOutputLimit.maxPixels
     ) -> [RGBAImage] {
+        if seams.contains(where: { !$0.isResolved }) { return [] }
         var slices: [RGBAImage] = []
         for (index, segment) in segments.enumerated() {
             var parts = Self.contentSlices(segment, dedupe: dedupe)

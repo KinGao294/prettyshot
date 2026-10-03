@@ -296,7 +296,7 @@ final class AppCoordinator: ObservableObject {
                     try history.saveStitch(assembly, for: updated)
                 }
             } catch {
-                ToastPresenter.shared.show("还原固定栏失败：\(error.localizedDescription)", style: .error, duration: 4)
+                ToastPresenter.shared.show(StitchCopy.restoreFailed(error.localizedDescription), style: .error, duration: 4)
                 return
             }
             if fromOverlay, let updated = history.items.first(where: { $0.id == item.id }) {
@@ -305,11 +305,12 @@ final class AppCoordinator: ObservableObject {
         case .exceedsLimit(_, let message):
             let alert = NSAlert()
             alert.messageText = message
-            alert.addButton(withTitle: "分段导出")
-            alert.addButton(withTitle: "保持去重")
+            alert.addButton(withTitle: StitchCopy.exportSegments)
+            alert.addButton(withTitle: StitchCopy.keepDedupe)
             let response = alert.runModal()
             guard response == .alertFirstButtonReturn else { return }
             let chunks = assembly.exportWithinLimits(dedupeStickyBars: false)
+            guard !chunks.isEmpty else { return }
             var saved = 0
             for chunk in chunks {
                 guard let image = chunk.cgImage() else { continue }
@@ -317,7 +318,7 @@ final class AppCoordinator: ObservableObject {
                     saved += 1
                 }
             }
-            ToastPresenter.shared.show("已把 \(saved) 段分别放进历史", style: .success, duration: 4)
+            ToastPresenter.shared.show(StitchCopy.savedSegments(saved), style: .success, duration: 4)
         case .alreadyRestored, .nothingToRestore:
             break
         }
