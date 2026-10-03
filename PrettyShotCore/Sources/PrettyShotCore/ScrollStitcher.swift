@@ -102,6 +102,16 @@ public struct ScrollSegment: Equatable {
     }
 }
 
+/// Paint for a 「待确认」 seam. These are the values on screen today.
+public enum PendingSeamStyle {
+    public static let warn: UInt32 = 0xE8A33D
+    public static let text: UInt32 = 0xE8A33D
+    public static let fillOpacity: Double = 0
+    public static let labelBorderWidth: Int = 1
+    /// The seam line is one preview row, dashed 4 px on / 4 px off.
+    public static let seamLineWidth: Int = 1
+}
+
 /// What the review window shows for one seam. The pending reverse seam uses the amber dashed label.
 public struct SeamCard: Equatable {
     public enum Chrome: Equatable {

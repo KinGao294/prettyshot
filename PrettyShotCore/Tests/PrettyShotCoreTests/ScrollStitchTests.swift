@@ -166,24 +166,40 @@ final class ScrollStitchTests: XCTestCase {
         let bar = try XCTUnwrap(assembly.reviewBottomBar)
         XCTAssertTrue(bar.contains("待对齐 1"))
         XCTAssertFalse(bar.contains("待确认"))
+        XCTAssertEqual(PendingSeamStyle.warn, 0xE3B26B)
+        XCTAssertEqual(PendingSeamStyle.text, 0x8A5A12)
+        XCTAssertEqual(PendingSeamStyle.fillOpacity, 0.18, accuracy: 0.001)
+        XCTAssertEqual(PendingSeamStyle.labelBorderWidth, 1)
+        XCTAssertEqual(PendingSeamStyle.seamLineWidth, 3)
         let preview = try XCTUnwrap(assembly.renderPreview())
         let mark = try XCTUnwrap(preview.marks.first { $0.state == .needsAlignment })
         XCTAssertLessThan(mark.y, preview.image.height)
         let pixels = preview.image.pixels
-        let amber = (UInt8(232), UInt8(163), UInt8(61))
-        var amberCount = 0
+        let warn = (UInt8(0xE3), UInt8(0xB2), UInt8(0x6B))
+        var warnCount = 0
         var otherCount = 0
         for x in 0..<preview.image.width {
             let i = (mark.y * preview.image.width + x) * 4
             let sample = (pixels[i], pixels[i + 1], pixels[i + 2])
-            if sample == amber {
-                amberCount += 1
+            if sample == warn {
+                warnCount += 1
             } else {
                 otherCount += 1
             }
         }
-        XCTAssertGreaterThan(amberCount, 0)
+        XCTAssertGreaterThan(warnCount, 0)
         XCTAssertGreaterThan(otherCount, 0)
+        var warnRows = 0
+        for dy in -2...2 {
+            let row = mark.y + dy
+            guard row >= 0, row < preview.image.height else { continue }
+            let hasWarn = (0..<preview.image.width).contains { x in
+                let i = (row * preview.image.width + x) * 4
+                return (pixels[i], pixels[i + 1], pixels[i + 2]) == warn
+            }
+            if hasWarn { warnRows += 1 }
+        }
+        XCTAssertEqual(warnRows, 3)
     }
 
     /// Repeating card chrome used to invent a second shift once the scroll passed one card.
