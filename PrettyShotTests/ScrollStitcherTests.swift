@@ -540,26 +540,36 @@ final class ScrollStitcherTests: XCTestCase {
     }
 
     @MainActor
-    func testRestoreAfterDedupeRaisesPendingConfirm() {
+    func testRestoreByIdThenUndoHidesPendingConfirm() {
         let model = StitchPreviewModel(
             assembly: ScrollAssembly(
-                duplicateCandidates: [DuplicateSegmentCandidate(id: "dup-1")]
+                duplicateCandidates: (1...3).map { DuplicateSegmentCandidate(id: "dup-\($0)") }
             ),
             notice: nil
         )
-        XCTAssertEqual(model.assembly.pendingDuplicateConfirmCount, 1)
         model.resolveDuplicateCandidate("dup-1", choice: .keepOnce)
+        model.resolveDuplicateCandidate("dup-2", choice: .keepBoth)
+        model.resolveDuplicateCandidate("dup-3", choice: .keepOnce)
         XCTAssertEqual(model.assembly.pendingDuplicateConfirmCount, 0)
         XCTAssertNil(model.assembly.reviewBottomBar)
+        XCTAssertTrue(model.canCommit)
 
-        model.restoreDuplicateCandidate("dup-1")
+        model.restoreDuplicateCandidate("missing")
+        XCTAssertNil(model.assembly.reviewBottomBar)
+
+        model.restoreDuplicateCandidate("dup-2")
         XCTAssertEqual(model.assembly.pendingDuplicateConfirmCount, 1)
-        XCTAssertNil(model.assembly.duplicateCandidates.first?.choice)
         XCTAssertEqual(
             model.assembly.reviewBottomBar,
             "⚠ 还有 1 处没处理（待确认 1）。为了不拼错，处理完才能继续——不会静默拼接。"
         )
         XCTAssertFalse(model.canCommit)
+
+        model.undoDuplicateCandidateChoice()
+        XCTAssertEqual(model.assembly.pendingDuplicateConfirmCount, 0)
+        XCTAssertEqual(model.assembly.duplicateCandidates.first { $0.id == "dup-2" }?.choice, .keepBoth)
+        XCTAssertNil(model.assembly.reviewBottomBar)
+        XCTAssertTrue(model.canCommit)
     }
 
     func testFrameCopyUsesGroupedNumbersAndOmitsEmptyRemainder() {

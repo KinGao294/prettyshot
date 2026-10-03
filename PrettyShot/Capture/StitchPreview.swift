@@ -212,9 +212,9 @@ final class StitchPreviewModel: ObservableObject {
         assembly.undoLastDuplicateCandidateChoice()
     }
 
-    /// 「还原」 after 「保留一次」. That candidate counts as 「待确认」 again.
+    /// Puts one candidate back to unresolved. Undo of this call restores the previous choice.
     func restoreDuplicateCandidate(_ id: String) {
-        assembly.restoreDedupedDuplicateCandidate(id)
+        assembly.restoreDuplicateCandidate(id)
     }
 
     func confirmPendingSticky(keepOnce: Bool) {
