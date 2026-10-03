@@ -236,8 +236,20 @@ final class ScrollStitcherTests: XCTestCase {
         XCTAssertEqual(assembly.flattenedIfResolved()?.height, 48)
     }
 
-    /// Shared card chrome used to invent extra shifts once the scroll passed one card.
+    /// Shared card chrome used to invent extra shifts. Unique card bodies should still join.
     func testRepeatingCardChromeDoesNotSplitTheRun() throws {
+        var stitcher = ScrollStitcher()
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.cards(scroll: 0)), .seeded)
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.cards(scroll: 18)), .appended(18))
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.cards(scroll: 36)), .appended(18))
+        let assembly = stitcher.takeAssembly()
+        XCTAssertFalse(assembly.needsReview)
+        XCTAssertEqual(assembly.segments.count, 1)
+        XCTAssertEqual(assembly.flattenedIfResolved()?.height, 160 + 36)
+    }
+
+    /// Repeating card chrome used to invent a second shift once the scroll passed one card.
+    func testRepeatingCardChromeWithCompetingCandidatesStitchesTrueShift() throws {
         let shift = 28
         let first = ScrollFixtures.competingCards(scroll: 0)
         let second = ScrollFixtures.competingCards(scroll: shift)
@@ -246,6 +258,14 @@ final class ScrollStitcherTests: XCTestCase {
 
     /// Adjacent rows that look alike used to report 10 px and 11 px as two equally good joins.
     func testNeighboringShiftCandidatesClusterIntoOneJoin() throws {
+        var stitcher = ScrollStitcher()
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.softStep(scroll: 0)), .seeded)
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.softStep(scroll: 10)), .appended(10))
+        XCTAssertFalse(stitcher.takeAssembly().needsReview)
+    }
+
+    /// Neighbors 10 px and 11 px used to be two joins. They are one scroll.
+    func testNeighboringRowsWithReplacedFirstRowClusterIntoOneJoin() throws {
         let first = ScrollFixtures.neighboringRows(scroll: 0)
         let second = ScrollFixtures.neighboringRows(scroll: 10, replaceFirstRowWithPage: 11)
         try assertStitchedRows(first, second, shift: 10)

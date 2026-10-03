@@ -130,7 +130,7 @@ final class ScrollStitchTests: XCTestCase {
     }
 
     /// Repeating card chrome used to invent a second shift once the scroll passed one card.
-    func testRepeatingCardChromeDoesNotSplitTheRun() throws {
+    func testRepeatingCardChromeWithCompetingCandidatesStitchesTrueShift() throws {
         let shift = 28
         let first = CoreScrollFixtures.competingCards(scroll: 0)
         let second = CoreScrollFixtures.competingCards(scroll: shift)
@@ -138,7 +138,7 @@ final class ScrollStitchTests: XCTestCase {
     }
 
     /// Neighbors 10 px and 11 px used to be two joins. They are one scroll.
-    func testNeighboringShiftCandidatesClusterIntoOneJoin() throws {
+    func testNeighboringRowsWithReplacedFirstRowClusterIntoOneJoin() throws {
         let first = CoreScrollFixtures.neighboringRows(scroll: 0)
         let second = CoreScrollFixtures.neighboringRows(scroll: 10, replaceFirstRowWithPage: 11)
         try assertStitchedRows(first, second, shift: 10)
