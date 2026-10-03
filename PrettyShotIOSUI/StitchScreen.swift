@@ -17,11 +17,12 @@ final class StitchModel: ObservableObject {
     @Published var flattened: CGImage?
     @Published var scrollToDuplicate: String?
 
-    func ingest(_ images: [CGImage]) {
+    func ingest(_ images: [CGImage], ordinals: [Int] = []) {
         var stitcher = ScrollStitcher()
         var skipped: [Int] = []
         for (index, image) in images.enumerated() {
             let ordinal = index + 1
+            _ = ordinals
             guard let frame = RGBAImage.fromCGImage(image) else {
                 skipped.append(ordinal)
                 continue

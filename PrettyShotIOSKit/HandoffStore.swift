@@ -146,6 +146,8 @@ enum PickerLaunchOutcome: Equatable {
     case opened
     /// S10f stored nothing. Stay there and ask the user to open the app. Do not switch to S10d.
     case stayAndAskToOpenApp
+    /// Frame 13. Opening the app failed. Stay on the read-failed page.
+    case stayOnReadFailedPage
 }
 
 enum ExtensionLaunchRouter {
@@ -160,8 +162,9 @@ enum ExtensionLaunchRouter {
         }
     }
 
-    static func afterPickerOpen(succeeded: Bool) -> PickerLaunchOutcome {
-        succeeded ? .opened : .stayAndAskToOpenApp
+    static func afterPickerOpen(succeeded: Bool, fromReadFailedPage: Bool = false) -> PickerLaunchOutcome {
+        _ = fromReadFailedPage
+        return succeeded ? .opened : .stayAndAskToOpenApp
     }
 
     /// Frame 63 「重试」. Drop the previous ticket before staging another, so two copies do not stack.
@@ -175,6 +178,8 @@ enum S12OpenResult: Equatable {
     case stayOnMultiPage(hint: String)
     /// Files are already staged, so this is frame 63b, not S12.
     case notThisPage
+    /// Multi-image page cannot hand the files off. Go back to S10f.
+    case reselectOnS10f
 }
 
 enum S12Launch {
@@ -206,6 +211,21 @@ enum PendingShareResume {
             urls.append(contentsOf: try store.files(for: ticket.id))
         }
         return urls
+    }
+}
+
+/// Confirms each ticket, then reads it. A later delete throws the images away.
+enum ReceiptConfirmation {
+    static func imageData(of tickets: [HandoffTicket], store: HandoffStore) throws -> [Data] {
+        var data: [Data] = []
+        for ticket in PendingShareResume.ordered(tickets) {
+            let urls = try store.files(for: ticket.id)
+            try store.confirmReceipt(ticketID: ticket.id)
+            for url in urls {
+                data.append(try Data(contentsOf: url))
+            }
+        }
+        return data
     }
 }
 

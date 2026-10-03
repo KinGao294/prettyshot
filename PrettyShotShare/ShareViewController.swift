@@ -204,6 +204,9 @@ final class ShareViewController: UIViewController {
             case .notThisPage:
                 phase = .stagedAwaitingApp(count: stagedCount)
                 refresh()
+            case .reselectOnS10f:
+                showsS12OpenHint = true
+                refresh()
             }
             return
         }
@@ -365,7 +368,7 @@ final class ShareViewController: UIViewController {
                 switch ExtensionLaunchRouter.afterPickerOpen(succeeded: success) {
                 case .opened:
                     self.finishSoon()
-                case .stayAndAskToOpenApp:
+                case .stayAndAskToOpenApp, .stayOnReadFailedPage:
                     self.phase = .cannotHandOff(manualOpenHint: true)
                     self.refresh()
                 }

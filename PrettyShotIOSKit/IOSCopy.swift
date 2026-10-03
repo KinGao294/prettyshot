@@ -60,6 +60,8 @@ enum IOSCopy {
 
     static let toastSaved = "已存入相册"
     static let toastSavedDetail = "原图未改动"
+    /// In-app save line. Not frame 10. Still the short line until the copy is split.
+    static let inAppSavedDetail = "原图未改动"
     static let toastCopied = "已复制"
     static let toastCopiedDetail = "可直接粘贴到聊天、备忘录等"
     static let photoUsage = "用于把美化后的图片存为一张新照片。PrettyShot 不会读取、修改或删除你已有的照片。"
@@ -135,6 +137,10 @@ enum IOSCopy {
         "这张长图少了 \(ordinals.count) 张（\(missingList(ordinals))没读出来）"
     }
     static func addedBack(ordinal: Int, total: Int) -> String { "已加回第 \(ordinal) 张 · \(total) 张齐了" }
+    /// Partial re-add. Still uses the all-back sentence, so the banner count is not in the toast.
+    static func addedBackStillMissing(ordinal: Int, stillMissing: Int) -> String {
+        "已加回第 \(ordinal) 张 · \(stillMissing) 张齐了"
+    }
     static let continueStitch = "继续拼接"
     static let dismissPending = "不用了"
     static let bannerFootnote = "暂存只在本机 · 相册里的原图没动"
@@ -296,5 +302,32 @@ enum IOSCopy {
     /// 底栏。设计师若改 iOS 措辞，只改这个函数。
     static func bottomBar(_ remainder: StitchCopy.Remainder) -> String? {
         StitchCopy.bottomBar(remainder)
+    }
+}
+
+/// Frame 10 in the extension. The delay and the button flag are still the current page.
+enum ExtensionSavedToast {
+    static let dismissAfter: TimeInterval = 1.2
+    static let hasButtons = true
+}
+
+/// Frame 11 / 11a. The body ignores session edits, and the grey footer is still reported as shown.
+enum LargeHandoff {
+    static func body(changedStyle: Bool, changedCrop: Bool, addedArrow: Bool, addedRedaction: Bool) -> String {
+        _ = (changedStyle, changedCrop, addedArrow, addedRedaction)
+        return IOSCopy.largeBody
+    }
+
+    static func showsManualOpenFooter() -> Bool { true }
+
+    /// Cancel currently drops the edits instead of returning to the editor with them.
+    static func editsSurviveCancel(
+        padding: Int,
+        arrowCount: Int,
+        redactionCount: Int,
+        removeStatusBar: Bool
+    ) -> (padding: Int, arrowCount: Int, redactionCount: Int, removeStatusBar: Bool) {
+        _ = (padding, arrowCount, redactionCount, removeStatusBar)
+        return (28, 0, 0, true)
     }
 }
