@@ -73,11 +73,9 @@ struct RGBAImage: Equatable {
                 space: space,
                 bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
             ) else { return false }
-            // Quartz origin is the bottom-left, so an unflipped draw writes the image's top
-            // into the last buffer row. Flip the CTM once; the buffer is then top-down.
+            // This bitmap context stores row 0 at the top. A CTM flip or a later row swap
+            // turns the image upside down (confirmed by testCGImageRoundTripKeepsTopRowAtTheTop).
             context.interpolationQuality = .none
-            context.translateBy(x: 0, y: CGFloat(height))
-            context.scaleBy(x: 1, y: -1)
             context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
             return true
         }
