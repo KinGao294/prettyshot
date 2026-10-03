@@ -80,7 +80,16 @@ jobs:
           esac
 
       - name: Test shared module (macOS)
-        run: swift test --package-path PrettyShotCore
+        id: core
+        continue-on-error: true
+        run: |
+          set +e
+          set -o pipefail
+          export NSUnbufferedIO=YES
+          swift test --package-path PrettyShotCore 2>&1 | tee /tmp/swift-test.log
+          status=$?
+          python3 .github/scripts/annotate-xctest.py /tmp/swift-test.log
+          exit $status
 
       - name: Build shared module (iOS Simulator)
         working-directory: PrettyShotCore
@@ -93,12 +102,27 @@ jobs:
             build
 
       - name: Test Mac app (XCTest)
+        id: mac
+        if: always()
+        continue-on-error: true
         run: |
+          set +e
+          set -o pipefail
+          export NSUnbufferedIO=YES
           xcodebuild -project PrettyShot.xcodeproj -scheme PrettyShot \
             -destination 'platform=macOS' \
             -derivedDataPath build/macos-tests \
             CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="-" DEVELOPMENT_TEAM="" \
-            test
+            test 2>&1 | tee /tmp/xcode-test.log
+          status=$?
+          python3 .github/scripts/annotate-xctest.py /tmp/xcode-test.log
+          exit $status
+
+      - name: Evidence result
+        if: always()
+        run: |
+          echo "core=${{ steps.core.outcome }} mac=${{ steps.mac.outcome }}"
+          test "${{ steps.core.outcome }}" = "success" && test "${{ steps.mac.outcome }}" = "success"
 
       - name: Package DMG
         run: |

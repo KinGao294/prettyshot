@@ -409,6 +409,7 @@ private enum StitchArchive {
         var kind: String
         var overlap: Int?
         var suggestedOverlap: Int?
+        var note: String?
     }
 
     static func encode(_ manifest: Manifest) throws -> Data {
@@ -446,11 +447,11 @@ private enum StitchArchive {
         let seams = assembly.seams.map { seam -> Seam in
             switch seam.kind {
             case .needsAlignment:
-                return Seam(kind: "needsAlignment", overlap: nil, suggestedOverlap: seam.suggestedOverlap)
+                return Seam(kind: "needsAlignment", overlap: nil, suggestedOverlap: seam.suggestedOverlap, note: seam.note)
             case .aligned(let overlap):
-                return Seam(kind: "aligned", overlap: overlap, suggestedOverlap: seam.suggestedOverlap)
+                return Seam(kind: "aligned", overlap: overlap, suggestedOverlap: seam.suggestedOverlap, note: seam.note)
             case .joinedAsIs:
-                return Seam(kind: "joinedAsIs", overlap: nil, suggestedOverlap: seam.suggestedOverlap)
+                return Seam(kind: "joinedAsIs", overlap: nil, suggestedOverlap: seam.suggestedOverlap, note: seam.note)
             }
         }
         let pending = assembly.pendingSticky.map {
@@ -489,7 +490,7 @@ private enum StitchArchive {
             default:
                 kind = .needsAlignment
             }
-            return ScrollSeam(kind: kind, suggestedOverlap: seam.suggestedOverlap)
+            return ScrollSeam(kind: kind, suggestedOverlap: seam.suggestedOverlap, note: seam.note)
         }
         let pending = manifest.pending.map {
             PendingStickyConfirmation(headerRows: $0.headerRows, footerRows: $0.footerRows, seamCount: $0.seamCount, keepOnce: $0.keepOnce)

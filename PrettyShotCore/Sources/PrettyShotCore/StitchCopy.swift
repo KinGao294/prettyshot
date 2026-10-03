@@ -18,6 +18,8 @@ public enum StitchCopy {
     public static let keepDedupe = "保持去重"
     public static let exportSegments = "分段导出"
     public static let restoreHelp = "把去掉的页眉和页脚按接缝插回去"
+    /// Shown on the existing seam card when a frame is too blank to align.
+    public static let blankSeam = "这一段几乎是空白，看不出该接在哪"
     public static let overLimitNote = "不会悄悄截断。可以分段导出（每段都不超上限），或保持去重。"
 
     /// en_US grouping (comma, groups of three). Does not read `Locale.current`.
