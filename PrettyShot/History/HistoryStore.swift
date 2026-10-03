@@ -395,6 +395,10 @@ private enum StitchArchive {
         var rowCount: Int
         var segmentIndex: Int
         var startRow: Int
+        /// Missing on stitches saved before the seam-offset identity existed.
+        var offset: Int?
+        var seamMoved: Bool?
+        var movedSeamNumber: Int?
     }
 
     struct Pending: Codable {
@@ -480,7 +484,10 @@ private enum StitchArchive {
                 seamNumber: candidate.seamNumber,
                 rowCount: candidate.rowCount,
                 segmentIndex: candidate.segmentIndex,
-                startRow: candidate.startRow
+                startRow: candidate.startRow,
+                offset: candidate.offset,
+                seamMoved: candidate.seamMoved,
+                movedSeamNumber: candidate.movedSeamNumber
             )
         }
         return Manifest(
@@ -540,7 +547,10 @@ private enum StitchArchive {
                 seamNumber: record.seamNumber,
                 rowCount: record.rowCount,
                 segmentIndex: record.segmentIndex,
-                startRow: record.startRow
+                startRow: record.startRow,
+                offset: record.offset ?? 0,
+                seamMoved: record.seamMoved ?? false,
+                movedSeamNumber: record.movedSeamNumber
             )
         }
         return ScrollAssembly(

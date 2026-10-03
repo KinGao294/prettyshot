@@ -192,13 +192,18 @@ final class StitchPreviewModel: ObservableObject {
     func restoreAutoAlignment() {
         guard let selectedBoundary else { return }
         let boundary = selectedBoundary
-        assembly.restoreAutoAlignment(seam: boundary)
+        let summary = assembly.restoreAutoAlignment(seam: boundary)
         overlap = Double(assembly.seams[boundary].editorOverlap)
         clearDuplicateChrome()
-        showRedetectToast(StitchCopy.restoreAutoRedetected(
+        if let text = StitchCopy.restoreAutoRedetected(
             seam: assembly.visibleSeamNumber(boundary: boundary),
-            pending: assembly.pendingDuplicateConfirmCount
-        ))
+            kept: summary.keptChoiceCount,
+            pending: summary.pendingCount,
+            clearedSeam: summary.clearedSeamNumber,
+            clearedCount: summary.clearedChoiceCount
+        ) {
+            showRedetectToast(text)
+        }
         refreshOverLimitMessage()
         refresh()
     }
@@ -216,14 +221,17 @@ final class StitchPreviewModel: ObservableObject {
         if let boundary {
             assembly.align(seam: boundary, overlap: applied)
         }
-        assembly.completeManualAlignment()
+        let summary = assembly.completeManualAlignment()
         clearDuplicateChrome()
-        if let boundary {
-            showRedetectToast(StitchCopy.manualAlignmentRedetected(
-                seam: assembly.visibleSeamNumber(boundary: boundary),
-                overlap: applied,
-                pending: assembly.pendingDuplicateConfirmCount
-            ))
+        if let boundary, let text = StitchCopy.manualAlignmentRedetected(
+            seam: assembly.visibleSeamNumber(boundary: boundary),
+            overlap: assembly.seams[boundary].editorOverlap,
+            kept: summary.keptChoiceCount,
+            pending: summary.pendingCount,
+            clearedSeam: summary.clearedSeamNumber,
+            clearedCount: summary.clearedChoiceCount
+        ) {
+            showRedetectToast(text)
         }
         refreshOverLimitMessage()
         refresh()
@@ -259,8 +267,8 @@ final class StitchPreviewModel: ObservableObject {
     }
 
     /// Re-detect empties the undo stack, so the notice cannot be undone.
+    /// Shown when a choice was kept or is still pending, including when every choice was kept.
     private func showRedetectToast(_ text: String) {
-        guard assembly.pendingDuplicateConfirmCount > 0 else { return }
         duplicateToast = text
         duplicateToastCanUndo = false
     }
@@ -609,6 +617,12 @@ struct StitchPreviewView: View {
                         Capsule(style: .continuous)
                             .strokeBorder(duplicateAmber, style: StrokeStyle(lineWidth: 1, dash: [3, 2]))
                     )
+                if candidate.seamMoved {
+                    Text(StitchCopy.duplicateSeamMovedNote(seam: candidate.movedSeamNumber ?? candidate.seamNumber))
+                        .font(.system(size: 12))
+                        .foregroundStyle(Palette.charcoal)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 if candidate.rowCount > 0 {
                     Text(candidate.locationLine)
                         .font(.system(size: 11))
