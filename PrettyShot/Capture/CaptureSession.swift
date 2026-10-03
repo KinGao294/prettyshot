@@ -234,7 +234,7 @@ final class CaptureSession {
         controller.onComplete = { [weak self] output in
             guard let self else { return }
             let notice = output.reachedLimit ? ScrollOutputLimit.notice : nil
-            if output.assembly.needsReview || output.assembly.hasStickyRepeats {
+            if output.assembly.opensStitchReview {
                 self.finish(.reviewScrolling(ScrollingReview(scale: snapshot.scale, assembly: output.assembly, notice: notice)))
             } else if let image = output.assembly.flattenedIfResolved()?.cgImage() {
                 self.finish(.captured(CaptureResult(image: image, scale: snapshot.scale, mode: .scrolling, notice: notice)))

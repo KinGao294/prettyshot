@@ -15,6 +15,8 @@ final class ScrollStitcherTests: XCTestCase {
 
         let assembly = stitcher.takeAssembly()
         XCTAssertFalse(assembly.needsReview)
+        XCTAssertFalse(assembly.opensStitchReview)
+        XCTAssertTrue(assembly.hasStickyRepeats)
         XCTAssertEqual(assembly.segments.count, 1)
         XCTAssertEqual(assembly.segments[0].confidentSeamYs, [52, 67])
 
@@ -239,11 +241,47 @@ final class ScrollStitcherTests: XCTestCase {
         XCTAssertEqual(stitcher.ingest(ScrollFixtures.viewport(scroll: 30)), .appended(15))
         var assembly = stitcher.takeAssembly()
         XCTAssertTrue(assembly.hasStickyRepeats)
-        XCTAssertEqual(assembly.flattenedIfResolved()?.height, 90)
+        XCTAssertFalse(assembly.opensStitchReview)
+        let deduped = try XCTUnwrap(assembly.flattenedIfResolved())
+        XCTAssertEqual(deduped.height, 90)
+        XCTAssertEqual(ScrollFixtures.row(deduped, 0), ScrollFixtures.color(slot: 0))
+
         assembly.dedupeStickyBars = false
-        XCTAssertEqual(assembly.flattenedIfResolved()?.height, 90 + 2 * (ScrollFixtures.header + ScrollFixtures.footer))
+        let restored = try XCTUnwrap(assembly.flattenedIfResolved())
+        XCTAssertEqual(restored.height, 90 + 2 * (ScrollFixtures.header + ScrollFixtures.footer))
+        XCTAssertFalse(assembly.needsReview)
+        let firstSeam = 52
+        XCTAssertEqual(ScrollFixtures.row(restored, firstSeam), ScrollFixtures.color(slot: 100))
+        XCTAssertEqual(ScrollFixtures.row(restored, firstSeam + ScrollFixtures.footer), ScrollFixtures.color(slot: 0))
+
         assembly.dedupeStickyBars = true
-        XCTAssertEqual(assembly.flattenedIfResolved()?.height, 90)
+        let again = try XCTUnwrap(assembly.flattenedIfResolved())
+        XCTAssertEqual(again.height, 90)
+        XCTAssertEqual(again.pixels, deduped.pixels)
+    }
+
+    func testLowConfidenceStickyDedupeNeedsConfirmation() throws {
+        var stitcher = ScrollStitcher()
+        let first = ScrollFixtures.softHeaderViewport(scroll: 0)
+        let second = ScrollFixtures.softHeaderViewport(scroll: 12)
+        XCTAssertEqual(stitcher.ingest(first), .seeded)
+        XCTAssertEqual(stitcher.ingest(second), .unmatched)
+
+        var assembly = stitcher.takeAssembly()
+        XCTAssertEqual(assembly.segments.count, 2)
+        XCTAssertEqual(assembly.seams.count, 1)
+        XCTAssertEqual(assembly.seams[0].kind, .needsAlignment)
+        XCTAssertTrue(assembly.needsReview)
+        XCTAssertTrue(assembly.opensStitchReview)
+        XCTAssertNil(assembly.flattenedIfResolved())
+
+        assembly.joinAsIs(seam: 0)
+        XCTAssertFalse(assembly.needsReview)
+        XCTAssertFalse(assembly.opensStitchReview)
+        let joined = try XCTUnwrap(assembly.flattenedIfResolved())
+        XCTAssertEqual(joined.height, first.height + second.height)
+        XCTAssertEqual(ScrollFixtures.row(joined, 0), ScrollFixtures.row(first, 0))
+        XCTAssertEqual(ScrollFixtures.row(joined, first.height), ScrollFixtures.row(second, 0))
     }
 
     func testSeamLoupeIsFullResolutionAndTracksOverlap() throws {
@@ -284,6 +322,32 @@ private enum ScrollFixtures {
     static func row(_ image: RGBAImage, _ y: Int) -> [UInt8] {
         let i = y * image.width * 4
         return [image.pixels[i], image.pixels[i + 1], image.pixels[i + 2]]
+    }
+
+    /// Header rows stay put, but the first content row only drifts a little, so the bar is not safe to strip.
+    static func softHeaderViewport(scroll: Int) -> RGBAImage {
+        let height = 48
+        let header = 8
+        var pixels = [UInt8](repeating: 255, count: width * height * 4)
+        let nudge = UInt8(scroll == 0 ? 0 : 24)
+        for y in 0..<height {
+            let rgb: [UInt8]
+            if y < header {
+                rgb = color(slot: y)
+            } else if y == header {
+                rgb = [80 &+ nudge, 40 &+ nudge, 160 &+ nudge]
+            } else {
+                rgb = color(slot: contentSlot + scroll + (y - header))
+            }
+            for x in 0..<width {
+                let i = (y * width + x) * 4
+                pixels[i] = rgb[0]
+                pixels[i + 1] = rgb[1]
+                pixels[i + 2] = rgb[2]
+                pixels[i + 3] = 255
+            }
+        }
+        return RGBAImage(width: width, height: height, pixels: pixels)
     }
 
     static func viewport(scroll: Int) -> RGBAImage {

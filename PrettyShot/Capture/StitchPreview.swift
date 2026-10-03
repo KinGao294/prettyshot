@@ -225,19 +225,17 @@ struct StitchPreviewView: View {
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(Palette.bloomDeep)
             }
-            if model.assembly.hasStickyRepeats {
-                HStack(spacing: 12) {
-                    Toggle("固定栏只保留一次", isOn: Binding(
-                        get: { model.assembly.dedupeStickyBars },
-                        set: { model.setDedupeStickyBars($0) }
-                    ))
-                    .toggleStyle(.switch)
-                    .font(.system(size: 12))
-                    Button("还原固定栏") { model.setDedupeStickyBars(false) }
-                        .buttonStyle(LightButtonStyle())
-                        .disabled(!model.assembly.dedupeStickyBars)
-                        .help("把去掉的页眉和页脚按接缝插回去")
-                }
+            HStack(spacing: 12) {
+                Toggle("固定栏只保留一次", isOn: Binding(
+                    get: { model.assembly.dedupeStickyBars },
+                    set: { model.setDedupeStickyBars($0) }
+                ))
+                .toggleStyle(.switch)
+                .font(.system(size: 12))
+                Button("还原固定栏") { model.setDedupeStickyBars(false) }
+                    .buttonStyle(LightButtonStyle())
+                    .disabled(!model.assembly.dedupeStickyBars || !model.assembly.hasStickyRepeats)
+                    .help("把去掉的页眉和页脚按接缝插回去")
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

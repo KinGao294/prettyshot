@@ -241,6 +241,10 @@ struct ScrollAssembly: Equatable {
 
     var needsReview: Bool { seams.contains { !$0.isResolved } }
 
+    /// The stitch preview opens only while a seam still needs a decision.
+    /// A confident sticky-bar dedupe stays on and does not open it or block Done.
+    var opensStitchReview: Bool { needsReview }
+
     var hasStickyRepeats: Bool {
         segments.contains { segment in
             segment.stickyRepeats.contains { $0.header.height > 0 || $0.footer.height > 0 }
@@ -499,8 +503,10 @@ struct ScrollAssembly: Equatable {
 /// Consecutive frames are aligned by a vertical shift (positive = user scrolled down, new pixels
 /// at the bottom). Rows that stay put at the top or bottom of the viewport while the middle moves
 /// are a sticky header / footer: they are kept once inside a confident run, not repeated on every
-/// slice. Identical frames add nothing. A frame that cannot be aligned is NOT force-joined; it
-/// starts a new segment and the seam is marked as needing alignment.
+/// slice. That dedupe is on by default and does not ask for confirmation. A sticky band whose edge
+/// is soft, or that was extended across gaps, is not applied; that join is marked as needing
+/// alignment instead. Identical frames add nothing. A frame that cannot be aligned is NOT
+/// force-joined; it starts a new segment and the seam is marked as needing alignment.
 struct ScrollStitcher {
     struct Options: Equatable {
         var sampleCount = 24
@@ -578,12 +584,26 @@ struct ScrollStitcher {
         } else {
             let detectedHeader = RowSamples.stickyPrefix(prevRows, nextRows, options: options)
             let detectedFooter = RowSamples.stickySuffix(prevRows, nextRows, options: options)
-            let contentSpan = frame.height - detectedHeader - detectedFooter
-            let bandsOK = (detectedHeader > 0 || detectedFooter > 0)
+            // A plausible but uncertain bar is not stripped. The join needs confirmation,
+            // the same way an unconfident overlap does, so Done stays disabled.
+            if (detectedHeader.rows > 0 && !detectedHeader.confident)
+                || (detectedFooter.rows > 0 && !detectedFooter.confident) {
+                let guess = RowSamples.bestShift(
+                    prevRows,
+                    nextRows,
+                    header: detectedHeader.rows,
+                    footer: detectedFooter.rows,
+                    options: options
+                )
+                let suggested = guess.map { max(0, frame.height - abs($0.shift)) }
+                return breakUnmatched(frame, suggested: suggested)
+            }
+            let contentSpan = frame.height - detectedHeader.rows - detectedFooter.rows
+            let bandsOK = (detectedHeader.rows > 0 || detectedFooter.rows > 0)
                 && contentSpan >= options.minOverlapRows * 2
-                && detectedHeader + detectedFooter <= Int(Double(frame.height) * options.maxBandFraction)
-            headerH = bandsOK ? detectedHeader : 0
-            footerH = bandsOK ? detectedFooter : 0
+                && detectedHeader.rows + detectedFooter.rows <= Int(Double(frame.height) * options.maxBandFraction)
+            headerH = bandsOK ? detectedHeader.rows : 0
+            footerH = bandsOK ? detectedFooter.rows : 0
         }
 
         let found = RowSamples.bestShift(prevRows, nextRows, header: headerH, footer: footerH, options: options)
@@ -819,12 +839,18 @@ private enum RowSamples {
         return drift * 5 < compared
     }
 
+    struct StickyBand: Equatable {
+        var rows: Int
+        /// False when a band is plausible but its end is soft or was extended across gaps.
+        var confident: Bool
+    }
+
     /// Leading rows that stayed put while something below them moved. Blank rows do not start a band.
-    static func stickyPrefix(_ a: [RowSample], _ b: [RowSample], options: ScrollStitcher.Options) -> Int {
+    static func stickyPrefix(_ a: [RowSample], _ b: [RowSample], options: ScrollStitcher.Options) -> StickyBand {
         stickyRun(a, b, options: options, fromTop: true)
     }
 
-    static func stickySuffix(_ a: [RowSample], _ b: [RowSample], options: ScrollStitcher.Options) -> Int {
+    static func stickySuffix(_ a: [RowSample], _ b: [RowSample], options: ScrollStitcher.Options) -> StickyBand {
         stickyRun(a, b, options: options, fromTop: false)
     }
 
@@ -878,39 +904,51 @@ private enum RowSamples {
 
     // MARK: - Private
 
-    private static func stickyRun(_ a: [RowSample], _ b: [RowSample], options: ScrollStitcher.Options, fromTop: Bool) -> Int {
+    private static func stickyRun(_ a: [RowSample], _ b: [RowSample], options: ScrollStitcher.Options, fromTop: Bool) -> StickyBand {
         let count = min(a.count, b.count)
         let limit = min(count, max(1, Int(Double(count) * options.maxBandFraction)))
         var confirmed = 0
-        var gaps = 0
+        var pendingGaps = 0
+        var absorbedGaps = 0
         var sawDetail = false
         for step in 0..<limit {
             let y = fromTop ? step : (count - 1 - step)
             let same = distance(a[y], b[y]) <= options.matchDistance
             let detailed = a[y].distinctive || b[y].distinctive
             if same && detailed {
+                absorbedGaps += pendingGaps
+                pendingGaps = 0
                 sawDetail = true
-                gaps = 0
                 confirmed = step + 1
             } else if same && sawDetail {
-                gaps = 0
+                absorbedGaps += pendingGaps
+                pendingGaps = 0
                 confirmed = step + 1
             } else {
-                gaps += 1
-                if gaps > 2 { break }
+                pendingGaps += 1
+                if pendingGaps > 2 { break }
             }
         }
-        guard sawDetail, confirmed > 0 else { return 0 }
+        let absent = StickyBand(rows: 0, confident: true)
+        guard sawDetail, confirmed > 0 else { return absent }
         // The band must actually end: a distinctive row just past it has to have moved.
+        // A move that only barely clears the align distance, or a band stitched across gaps,
+        // is a real candidate but not safe to strip without confirmation.
         let look = min(6, count - confirmed)
+        var edgeDistance: Int?
         for step in 0..<look {
             let y = fromTop ? (confirmed + step) : (count - 1 - confirmed - step)
             guard y >= 0, y < count else { break }
-            if (a[y].distinctive || b[y].distinctive) && distance(a[y], b[y]) > options.alignDistance {
-                return confirmed
+            let delta = distance(a[y], b[y])
+            if (a[y].distinctive || b[y].distinctive) && delta > options.alignDistance {
+                edgeDistance = delta
+                break
             }
         }
-        return 0
+        guard let edgeDistance else { return absent }
+        let clearBreak = options.alignDistance * 2
+        let confident = absorbedGaps == 0 && edgeDistance >= clearBreak
+        return StickyBand(rows: confirmed, confident: confident)
     }
 
     private static func verify(
