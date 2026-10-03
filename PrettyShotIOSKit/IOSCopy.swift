@@ -62,8 +62,6 @@ enum IOSCopy {
     static let toastSavedDetail = "原图未改动"
     static let toastCopied = "已复制"
     static let toastCopiedDetail = "可直接粘贴到聊天、备忘录等"
-    static let toastPreviewResolution = "已按预览尺寸保存"
-    static let toastPreviewResolutionDetail = "原图未改动。这张图太大，扩展里没有按原分辨率导出。"
     static let photoUsage = "用于把美化后的图片存为一张新照片。PrettyShot 不会读取、修改或删除你已有的照片。"
     static let deniedTitle = "没法存入相册"
     static let deniedBody = "PrettyShot 还没有「添加照片」权限，这张图暂未保存。可以先复制，再粘贴到聊天、备忘录等 App。"
@@ -71,20 +69,28 @@ enum IOSCopy {
     static let useCopyInstead = "改为复制"
     static let openSettings = "前往设置开启"
     static let later = "稍后再说"
+    static let close = "关闭"
+    static let readFailedOK = "好的"
     static let readFailedTitle = "没能读取这张图片"
     static let readFailedBody = "收到的可能不是图片，或文件已损坏。原图没有被改动。"
     static let retry = "重试"
-    static let memoryFailedTitle = "打不开这张图"
-    static let memoryFailedBody = "内存不够，或文件已损坏。原图没有被改动。"
+    /// 帧 19。只出现在主 App。
+    static let memoryFailedTitle = "这张图片打不开"
+    static let memoryFailedBody = "可能还在 iCloud 中未下载、格式暂不支持，或图片过大导致内存不足。"
+    static let pickAgain = "重新选图"
+    static let backHome = "返回首页"
 
+    /// 帧 11。只出现在分享扩展，且只有能把原文件交给 App 时。主 App 不用这句。
     static let largeTitle = "图片较大，去 App 里处理"
     static let largeBody = "如果没有自动打开 App：图片已暂存，手动打开 PrettyShot 即可从这里继续。"
-    static let largeInlineBody = "免费签名不能把原图交给 App。请打开 PrettyShot，从相册选同一张继续。扩展里可以先按预览尺寸保存。"
-    static let openApp = "打开 PrettyShot"
-    static let savePreviewAnyway = "按预览尺寸保存"
-    static let handoffInterruptedTitle = "还没交到 App"
-    static let handoffInterruptedBody = "图片还在这里，没有丢掉。可以再试一次，或先按预览尺寸保存。"
-    static let handoffInlineInterruptedBody = "当前签名不能把原图交给 App。原图还在，可以按预览尺寸保存，或打开 PrettyShot 从相册再选。"
+    static let continueInApp = "在 App 中继续"
+    /// S10c。帧还在画，先按说明做。
+    static let handoffProgressTitle = "正在交给 PrettyShot"
+    static let handoffProgressBody = "原图还在，没有改动。"
+    /// S10d。扩展交不出原图时的兜底，主按钮打开 App 内的照片选择器。
+    static let reselectTitle = "请在 App 里重新选图"
+    static let reselectInApp = "改用 PrettyShot App 选图"
+    static let reselectBody = "原图没有被改动。请在 PrettyShot App 里重新选择这张图，按原分辨率继续。"
     static let handoffRetry = "再试一次"
 
     // MARK: - 分享多张 · 帧 12 S11
@@ -110,7 +116,7 @@ enum IOSCopy {
     static let stitchStart = "开始拼接"
     static let stitchRemoved = "已移除 1 张 · 原图未删除"
     static let stitchSizeMismatch = "有的图尺寸不一致，拼接时被跳过。请用同一台手机的竖屏截图。"
-    static let stitchPreviewNote = "骨架按加载后的宽度拼接。原宽导出等真机内存实测（M4）。"
+    static let stitchPreviewNote = "预览可以缩小。拼接输入和导出走文件里的像素，这里不降采样。"
     static let keepOnce = "固定栏只保留一次"
     static let keepOnceDetail = "顶栏只留第 1 张 · 底栏只留最后 1 张"
     static let exclusionBands = "排除带"
@@ -120,12 +126,29 @@ enum IOSCopy {
     static let alignDragHint = "上下拖动调整重叠。接近重合时可以停在建议值。"
     static let alignDone = "完成"
     static let joinAsIs = "直接拼"
+    static let manualAlign = "手动对齐"
     static let exportSeparate = "分开导出"
+    static let exportSeparateDetail = "不拼了，分别美化后存入相册"
     static let failBody = "没找到可靠的重叠部分。可以手动对齐、直接上下拼接，或分开导出。"
-    static let untrustedTitle = "接缝不太确定"
     static let untrustedBody = "重叠的位置没法唯一确定，不会静默拼上。"
     static let confirmCurrent = "确认当前位置"
+    static let confirmBlockedNote = "处理完所有「待确认」接缝前，不能进入下一步"
     static let laterSeam = "稍后再说"
+
+    /// 帧 51。有建议重叠、但还不能唯一确定时用。
+    static func untrustedSeamTitle(seamIndex: Int) -> String {
+        let pair = shotPair(seamIndex: seamIndex)
+        return "\(shotPairTitle(pair.0, pair.1))的位置无法唯一确定"
+    }
+
+    static func positionA(_ points: Int) -> String {
+        "位置 A · \(points) pt · 当前"
+    }
+
+    static func positionB(delta: Int) -> String {
+        let sign = delta >= 0 ? "+" : ""
+        return "位置 B · \(sign)\(delta) pt"
+    }
 
     /// 接缝和固定栏共用。N 只数这一步自己的类：接缝 = 待对齐数，固定栏固定为 1。
     static func handleNext(_ count: Int) -> String {

@@ -13,21 +13,20 @@ import ImageIO
 ///
 /// Full resolution stays inline while two RGBA copies fit under the cap (12MP × 2 × 4 = 96MB).
 /// Editing and handoff keep the file URL or encoded bytes plus one preview. They do not decode
-/// a second full-size bitmap. A larger image is handed off as that file, or the extension asks
-/// before saving a preview.
+/// a second full-size bitmap. A larger image is handed off as that original file. If the
+/// extension cannot hand it to the app, the user reselects it there. There is no downscaled export.
 enum ExtensionMemoryBudget {
     static let limitBytes = 120 * 1024 * 1024
     static let bytesPerPixel = 4
     static let previewMaxLongSide = 1280
-    /// Stitch input cap for the skeleton. Full-width export waits on the M4 device measurement.
-    static let stitchInputMaxLongSide = 1600
     static let fullSizeCopiesWhileExporting = 2
     static let forbiddenSimultaneousFullSizeCopies = 3
 
     enum Plan: Equatable {
         case fullResolutionInline
         case handoffToApp
-        case previewResolutionInline
+        /// The extension cannot pass the original file. The user reselects it in the app.
+        case reselectInApp
     }
 
     static func rgbaBytes(pixels: Int, copies: Int) -> Int {
@@ -65,7 +64,7 @@ enum ExtensionMemoryBudget {
         if canTransferToApp {
             return .handoffToApp
         }
-        return .previewResolutionInline
+        return .reselectInApp
     }
 
     struct MemoryHold: Equatable {
@@ -106,6 +105,17 @@ enum ImagePrep {
     static func downsample(_ url: URL, maxLongSide: Int) -> CGImage? {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
         return downsample(source, maxLongSide: maxLongSide)
+    }
+
+    /// Native pixel size. Used for export and stitch input, never a long-side cap.
+    static func fullImage(_ data: Data) -> CGImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        return CGImageSourceCreateImageAtIndex(source, 0, nil)
+    }
+
+    static func fullImage(_ url: URL) -> CGImage? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+        return CGImageSourceCreateImageAtIndex(source, 0, nil)
     }
 
     private static func pixelSize(_ source: CGImageSource) -> (width: Int, height: Int)? {

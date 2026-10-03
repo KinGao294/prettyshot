@@ -218,6 +218,21 @@ final class StitchGateCopyTests: XCTestCase {
             "第 1、2 张接缝处 · 程序判断不了是重叠还是本来就重复"
         )
         XCTAssertFalse(IOSCopy.redetectToast(first: 2, second: 3, pending: 2).contains("撤销"))
+        XCTAssertEqual(IOSCopy.untrustedSeamTitle(seamIndex: 1), "第 2、3 张的位置无法唯一确定")
+        XCTAssertEqual(IOSCopy.positionA(0), "位置 A · 0 pt · 当前")
+        XCTAssertEqual(IOSCopy.positionB(delta: 22), "位置 B · +22 pt")
+        XCTAssertEqual(IOSCopy.exportSeparate, "分开导出")
+        XCTAssertEqual(IOSCopy.exportSeparateDetail, "不拼了，分别美化后存入相册")
+        XCTAssertEqual(IOSCopy.confirmBlockedNote, "处理完所有「待确认」接缝前，不能进入下一步")
+        XCTAssertEqual(IOSCopy.reselectInApp, "改用 PrettyShot App 选图")
+        XCTAssertEqual(IOSCopy.handoffProgressTitle, "正在交给 PrettyShot")
+        XCTAssertEqual(IOSCopy.handoffProgressBody, "原图还在，没有改动。")
+        XCTAssertTrue(IOSCopy.reselectBody.contains("原图没有被改动"))
+        XCTAssertFalse(IOSCopy.reselectBody.contains("去 App 里处理"))
+        XCTAssertFalse(IOSCopy.reselectBody.contains("预览尺寸"))
+        XCTAssertEqual(IOSCopy.memoryFailedTitle, "这张图片打不开")
+        XCTAssertEqual(IOSCopy.readFailedOK, "好的")
+        XCTAssertEqual(IOSCopy.continueInApp, "在 App 中继续")
     }
 
     private func assembly(unaligned: Int, duplicates: Int, sticky: Bool) -> ScrollAssembly {
@@ -251,7 +266,7 @@ final class ExtensionMemoryBudgetTests: XCTestCase {
     func testLargerImageHandsOffOnlyWhenTransferExists() {
         let pixels = 20_000_000
         XCTAssertEqual(ExtensionMemoryBudget.plan(pixelCount: pixels, canTransferToApp: true), .handoffToApp)
-        XCTAssertEqual(ExtensionMemoryBudget.plan(pixelCount: pixels, canTransferToApp: false), .previewResolutionInline)
+        XCTAssertEqual(ExtensionMemoryBudget.plan(pixelCount: pixels, canTransferToApp: false), .reselectInApp)
     }
 
     func testPreviewLongSideAndHeaderSize() throws {
@@ -368,20 +383,20 @@ final class ShareAcceptanceTests: XCTestCase {
     func testTwelveMegapixelPathDoesNotDecodeUntilExport() throws {
         let pixels = 12_000_000
         XCTAssertEqual(
-            ExportFidelityRouter.decide(pixelCount: pixels, canTransferToApp: false, userChosePreview: false),
+            ExportFidelityRouter.decide(pixelCount: pixels, canTransferToApp: false),
             .fullResolutionPNG
         )
         XCTAssertEqual(
-            ExportFidelityRouter.decide(pixelCount: pixels, canTransferToApp: true, userChosePreview: false),
+            ExportFidelityRouter.decide(pixelCount: pixels, canTransferToApp: true),
             .fullResolutionPNG
         )
         XCTAssertEqual(
-            ExportFidelityRouter.decide(pixelCount: 20_000_000, canTransferToApp: false, userChosePreview: false),
-            .askBeforeDownscale
+            ExportFidelityRouter.decide(pixelCount: 20_000_000, canTransferToApp: false),
+            .reselectInApp
         )
         XCTAssertEqual(
-            ExportFidelityRouter.decide(pixelCount: 20_000_000, canTransferToApp: false, userChosePreview: true),
-            .previewChosen
+            ExportFidelityRouter.decide(pixelCount: 20_000_000, canTransferToApp: true),
+            .handOffOriginal
         )
 
         let previewPixels = ExtensionMemoryBudget.previewPixelCount(width: 4000, height: 3000)
@@ -417,6 +432,41 @@ final class ShareAcceptanceTests: XCTestCase {
         }
         XCTAssertEqual(try Data(contentsOf: try store.files(for: ticket.id)[0]), try Data(contentsOf: url))
         XCTAssertEqual(carrier.fullDecodedCopiesHeld, 0)
+    }
+
+    func testStitchInputAndExportKeepSourcePixelSize() throws {
+        let tmp = try makeTemp()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let width = 1800
+        let height = 40
+        let data = try patternedPNG(width: width, height: height, directory: tmp).png
+        let stitched = StitchSourceLoader.images(from: [data])
+        XCTAssertEqual(stitched.map { ($0.width, $0.height) }, [(width, height)])
+
+        let full = try XCTUnwrap(ImagePrep.fullImage(data))
+        XCTAssertEqual(full.width, width)
+        XCTAssertEqual(full.height, height)
+        let preview = try XCTUnwrap(ImagePrep.downsample(data, maxLongSide: ExtensionMemoryBudget.previewMaxLongSide))
+        XCTAssertLessThanOrEqual(max(preview.width, preview.height), ExtensionMemoryBudget.previewMaxLongSide)
+        XCTAssertLessThan(max(preview.width, preview.height), width)
+
+        let model = EditorModel()
+        model.load(data)
+        model.removeStatusBar = false
+        let exported = try XCTUnwrap(model.exportOriginalResolution())
+        let padding = Int((model.style.padding * 2).rounded())
+        XCTAssertEqual(exported.width, width + padding)
+        XCTAssertEqual(exported.height, height + padding)
+        XCTAssertGreaterThanOrEqual(exported.width, width)
+        XCTAssertGreaterThanOrEqual(exported.height, height)
+
+        let attempt = try XCTUnwrap(model.export(canTransferToApp: false))
+        guard case .image(let inline) = attempt else {
+            XCTFail("a source under the extension budget exports full resolution, got \(attempt)")
+            return
+        }
+        XCTAssertEqual(inline.width, width + padding)
+        XCTAssertEqual(inline.height, height + padding)
     }
 
     private func makeTemp() throws -> URL {

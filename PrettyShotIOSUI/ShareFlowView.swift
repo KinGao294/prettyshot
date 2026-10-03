@@ -1,6 +1,7 @@
 import SwiftUI
 
-/// Frames 02–14. The extension stays on one image; several images or a PDF stop at the handoff page.
+/// Frames 02–14, plus S10c / S10d while those frames are still being drawn.
+/// The extension stays on one image; several images or a PDF stop at the handoff page.
 struct ShareFlowView: View {
     @ObservedObject var model: EditorModel
     var phase: SharePhase
@@ -10,7 +11,7 @@ struct ShareFlowView: View {
     var onCopy: () -> Void
     var onSave: () -> Void
     var onStitchInApp: () -> Void
-    var onSavePreview: () -> Void
+    var onReselectInApp: () -> Void
     var onRetryHandoff: () -> Void
     var onDismissLarge: () -> Void
 
@@ -30,9 +31,11 @@ struct ShareFlowView: View {
             case .multi(let classification):
                 multiPage(classification)
             case .failed:
-                messagePage(title: IOSCopy.readFailedTitle, body: IOSCopy.readFailedBody)
-            case .handoffInterrupted:
-                interruptedPage
+                readFailedPage
+            case .handoffProgress:
+                progressPage
+            case .reselectInApp:
+                reselectPage
             case .denied:
                 deniedPage
             case .saved(let title, let detail):
@@ -52,32 +55,78 @@ struct ShareFlowView: View {
                 .foregroundStyle(IOSTheme.charcoal)
             Text(question(classification))
                 .font(.system(size: 17))
-            Text(IOSCopy.multiDetail)
+            Text(canTransferToApp ? IOSCopy.multiDetail : IOSCopy.reselectBody)
                 .font(.system(size: 14))
                 .foregroundStyle(IOSTheme.muted)
-            Button(IOSCopy.multiStitch, action: onStitchInApp).buttonStyle(BloomButtonStyle())
-            Text(canTransferToApp ? IOSCopy.multiFootnote : IOSCopy.multiInlineFootnote)
-                .font(.system(size: 12))
-                .foregroundStyle(IOSTheme.muted)
+            if canTransferToApp {
+                Button(IOSCopy.multiStitch, action: onStitchInApp).buttonStyle(BloomButtonStyle())
+                Text(IOSCopy.multiFootnote)
+                    .font(.system(size: 12))
+                    .foregroundStyle(IOSTheme.muted)
+            } else {
+                Button(IOSCopy.reselectInApp, action: onReselectInApp).buttonStyle(BloomButtonStyle())
+            }
             Spacer()
         }
         .padding(20)
         .background(IOSTheme.paper)
     }
 
-    private var interruptedPage: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text(IOSCopy.handoffInterruptedTitle).font(.system(size: 21, weight: .bold))
-            Text(canTransferToApp ? IOSCopy.handoffInterruptedBody : IOSCopy.handoffInlineInterruptedBody)
+    /// S10c. The staged file stays until the app confirms.
+    private var progressPage: some View {
+        VStack(spacing: 12) {
+            ProgressView()
+            Text(IOSCopy.handoffProgressTitle)
+                .font(.system(size: 21, weight: .bold))
+                .foregroundStyle(IOSTheme.charcoal)
+            Text(IOSCopy.handoffProgressBody)
                 .font(.system(size: 15))
+                .foregroundStyle(IOSTheme.muted)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(IOSTheme.paper)
+    }
+
+    /// S10d. Primary opens the in-app picker. Nothing here deletes the shared photo.
+    private var reselectPage: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(IOSCopy.reselectTitle).font(.system(size: 21, weight: .bold))
+            Text(IOSCopy.reselectBody).font(.system(size: 15))
+            Button(IOSCopy.reselectInApp, action: onReselectInApp).buttonStyle(BloomButtonStyle())
             if canTransferToApp {
-                Button(IOSCopy.handoffRetry, action: onRetryHandoff).buttonStyle(BloomButtonStyle())
+                Button(IOSCopy.handoffRetry, action: onRetryHandoff).buttonStyle(PlainCardButtonStyle())
             }
-            Button(IOSCopy.savePreviewAnyway, action: onSavePreview).buttonStyle(PlainCardButtonStyle())
             Button(IOSCopy.cancel, action: onCancel).buttonStyle(PlainCardButtonStyle())
         }
         .padding(20)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+        .background(IOSTheme.paper)
+    }
+
+    /// Frame 13. 「好的」closes. The text button opens the in-app picker.
+    private var readFailedPage: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Button(IOSCopy.close, action: onCancel)
+                    .foregroundStyle(IOSTheme.charcoal)
+                Spacer()
+            }
+            Spacer()
+            Text(IOSCopy.readFailedTitle)
+                .font(.system(size: 28, weight: .bold))
+                .foregroundStyle(IOSTheme.charcoal)
+            Text(IOSCopy.readFailedBody)
+                .font(.system(size: 16))
+                .foregroundStyle(IOSTheme.muted)
+            Button(IOSCopy.readFailedOK, action: onCancel).buttonStyle(BloomButtonStyle())
+            Button(IOSCopy.reselectInApp, action: onReselectInApp)
+                .font(.system(size: 16, weight: .semibold))
+                .frame(maxWidth: .infinity)
+                .foregroundStyle(IOSTheme.charcoal)
+            Spacer()
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(IOSTheme.paper)
     }
 
@@ -109,16 +158,20 @@ struct ShareFlowView: View {
         Binding(get: { showsLargeSheet }, set: { if !$0 { onDismissLarge() } })
     }
 
+    /// Frame 11, extension only, and only when the original file can be handed off.
     private var largeSheet: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(IOSCopy.largeTitle).font(.system(size: 21, weight: .bold))
-            Text(canTransferToApp ? IOSCopy.largeBody : IOSCopy.largeInlineBody)
-                .font(.system(size: 15))
             if canTransferToApp {
-                Button(IOSCopy.openApp, action: onStitchInApp).buttonStyle(BloomButtonStyle())
+                Text(IOSCopy.largeTitle).font(.system(size: 21, weight: .bold))
+                Text(IOSCopy.largeBody).font(.system(size: 15))
+                Button(IOSCopy.continueInApp, action: onStitchInApp).buttonStyle(BloomButtonStyle())
+                Button(IOSCopy.cancel, action: onDismissLarge).buttonStyle(PlainCardButtonStyle())
+            } else {
+                Text(IOSCopy.reselectTitle).font(.system(size: 21, weight: .bold))
+                Text(IOSCopy.reselectBody).font(.system(size: 15))
+                Button(IOSCopy.reselectInApp, action: onReselectInApp).buttonStyle(BloomButtonStyle())
+                Button(IOSCopy.cancel, action: onDismissLarge).buttonStyle(PlainCardButtonStyle())
             }
-            Button(IOSCopy.savePreviewAnyway, action: onSavePreview).buttonStyle(PlainCardButtonStyle())
-            Button(IOSCopy.cancel, action: onDismissLarge).buttonStyle(PlainCardButtonStyle())
         }
         .padding(20)
         .presentationDetents([.medium])
@@ -143,8 +196,10 @@ enum SharePhase: Equatable {
     case failed
     case denied
     case saved(title: String, detail: String)
-    /// The file is still in the inbox. The user can retry or save a preview.
-    case handoffInterrupted
+    /// S10c. A ticket may already be staged. This phase does not discard it.
+    case handoffProgress
+    /// S10d. The photo library original stays. The user reselects it in the app.
+    case reselectInApp
 }
 
 extension ShareClassification {

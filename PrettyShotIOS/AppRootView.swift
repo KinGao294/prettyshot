@@ -14,7 +14,7 @@ struct AppRootView: View {
     @State private var showPDF = false
     @State private var pdfStub = false
     @State private var pending: [HandoffTicket] = []
-    @State private var loadError = false
+    @State private var showSinglePicker = false
     private let store: HandoffStore = HandoffStoreFactory.live()
 
     var body: some View {
@@ -31,17 +31,18 @@ struct AppRootView: View {
                         StitchScreen(model: stitch, onBack: { route = nil }, onBeautify: openFlattened, onExportSegments: saveSegments)
                             .navigationBarHidden(true)
                     case .error:
-                        VStack(spacing: 12) {
-                            Text(IOSCopy.memoryFailedTitle).font(.title2.weight(.semibold))
-                            Text(IOSCopy.memoryFailedBody).foregroundStyle(IOSTheme.muted)
-                            Button(IOSCopy.cancel) { route = nil }.buttonStyle(PlainCardButtonStyle())
-                        }
-                        .padding(24)
+                        openFailedPage
                     }
                 }
         }
         .onAppear(perform: refreshPending)
-        .onOpenURL { _ in refreshPending() }
+        .onOpenURL { url in
+            refreshPending()
+            if url.host?.lowercased() == "pick" {
+                showSinglePicker = true
+            }
+        }
+        .photosPicker(isPresented: $showSinglePicker, selection: $singleItem, matching: .images, photoLibrary: .shared())
         .fileImporter(isPresented: $showPDF, allowedContentTypes: [.pdf]) { result in
             if case .success = result {
                 pdfStub = true
@@ -51,7 +52,9 @@ struct AppRootView: View {
             VStack(alignment: .leading, spacing: 12) {
                 Text(IOSCopy.pdfTitle).font(.title2.weight(.bold))
                 Text(IOSCopy.pdfBody)
+                #if DEBUG
                 Text(IOSCopy.pdfPickedStub).foregroundStyle(IOSTheme.muted)
+                #endif
                 Button(IOSCopy.cancel) { pdfStub = false }.buttonStyle(PlainCardButtonStyle())
             }
             .padding(20)
@@ -101,21 +104,7 @@ struct AppRootView: View {
                     Text(IOSCopy.homeShareHintDetail).font(.system(size: 13)).foregroundStyle(IOSTheme.muted)
                 }
                 if !pending.isEmpty {
-                    Button(action: openPending) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(IOSCopy.handoffBannerTitle).font(.system(size: 15, weight: .semibold))
-                            Text(IOSCopy.handoffBannerDetail(count: pending.reduce(0) { $0 + $1.fileNames.count }))
-                                .font(.system(size: 12))
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(12)
-                        .background(IOSTheme.rail, in: RoundedRectangle(cornerRadius: 14))
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(IOSTheme.charcoal)
-                }
-                if pdfStub == false && loadError {
-                    Text(IOSCopy.readFailedBody).font(.footnote).foregroundStyle(IOSTheme.muted)
+                    continueShareBanner
                 }
                 Text(IOSCopy.homeFooter).font(.system(size: 12)).foregroundStyle(IOSTheme.muted)
                 Text(IOSCopy.pdfBody).font(.system(size: 12)).foregroundStyle(IOSTheme.muted)
@@ -136,7 +125,7 @@ struct AppRootView: View {
             }
             .environment(\.editMode, .constant(.active))
             Button(IOSCopy.stitchStart) {
-                let images = ordered.compactMap { ImagePrep.downsample($0.data, maxLongSide: ExtensionMemoryBudget.stitchInputMaxLongSide) }
+                let images = StitchSourceLoader.images(from: ordered.map(\.data))
                 stitch.ingest(images)
                 route = .stitch
             }
@@ -145,6 +134,60 @@ struct AppRootView: View {
             .padding(.horizontal, 16)
         }
         .navigationTitle(IOSCopy.stitchCardTitle)
+    }
+
+    /// A1b. The frame is still being drawn; this is the banner from the description.
+    private var continueShareBanner: some View {
+        Button(action: openPending) {
+            HStack(spacing: 12) {
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(IOSTheme.bloom)
+                    .frame(width: 4, height: 36)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(IOSCopy.handoffBannerTitle)
+                        .font(.system(size: 16, weight: .semibold))
+                    Text(IOSCopy.handoffBannerDetail(count: pending.reduce(0) { $0 + $1.fileNames.count }))
+                        .font(.system(size: 13))
+                        .foregroundStyle(IOSTheme.muted)
+                }
+                Spacer(minLength: 8)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(IOSTheme.muted)
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(IOSTheme.card, in: RoundedRectangle(cornerRadius: 16))
+            .overlay(RoundedRectangle(cornerRadius: 16).stroke(IOSTheme.bloom.opacity(0.7)))
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(IOSTheme.charcoal)
+    }
+
+    /// Frame 19. Reselect opens the system picker at the file's original resolution.
+    private var openFailedPage: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Spacer()
+            Text(IOSCopy.memoryFailedTitle)
+                .font(.system(size: 28, weight: .bold))
+                .foregroundStyle(IOSTheme.charcoal)
+            Text(IOSCopy.memoryFailedBody)
+                .font(.system(size: 16))
+                .foregroundStyle(IOSTheme.muted)
+            Button(IOSCopy.pickAgain) {
+                route = nil
+                showSinglePicker = true
+            }
+            .buttonStyle(BloomButtonStyle())
+            Button(IOSCopy.backHome) { route = nil }
+                .font(.system(size: 16, weight: .semibold))
+                .frame(maxWidth: .infinity)
+                .foregroundStyle(IOSTheme.muted)
+            Spacer()
+        }
+        .padding(24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(IOSTheme.paper)
     }
 
     private func card(_ title: String, _ detail: String) -> some View {
@@ -162,7 +205,7 @@ struct AppRootView: View {
     private func loadSingle(_ item: PhotosPickerItem) async {
         do {
             guard let data = try await item.loadTransferable(type: Data.self) else {
-                loadError = true
+                await MainActor.run { route = .error }
                 return
             }
             await MainActor.run {
@@ -199,13 +242,13 @@ struct AppRootView: View {
             return ShotFile(label: "\(index + 1)", data: data)
         }
         guard !urls.isEmpty, loaded.count == urls.count else {
-            loadError = true
+            route = .error
             return
         }
         do {
             try store.confirmReceipt(ticketID: ticket.id)
         } catch {
-            loadError = true
+            route = .error
             return
         }
         ordered = loaded
@@ -219,40 +262,25 @@ struct AppRootView: View {
     }
 
     private func copyEditor() {
-        switch editor.export(canTransferToApp: store.canTransferToApp) {
-        case .image(let image, false):
-            PhotoLibrarySaver.copyToPasteboard(image)
-            editor.showToast(IOSCopy.toastCopied, detail: IOSCopy.toastCopiedDetail)
-        case .image, .handoff, nil:
-            editor.showToast(IOSCopy.handoffInterruptedTitle, detail: IOSCopy.largeInlineBody)
+        guard let image = editor.exportOriginalResolution() else {
+            route = .error
+            return
         }
+        PhotoLibrarySaver.copyToPasteboard(image)
+        editor.showToast(IOSCopy.toastCopied, detail: IOSCopy.toastCopiedDetail)
     }
 
     private func saveEditor() {
-        switch editor.export(canTransferToApp: store.canTransferToApp) {
-        case .handoff:
-            if let url = editor.handoffSourceURL() {
-                switch HandoffTransfer.persist(copying: [url], kind: .singleImage, store: store) {
-                case .waitingForApp, .interrupted:
-                    editor.showToast(IOSCopy.largeTitle, detail: store.canTransferToApp ? IOSCopy.largeBody : IOSCopy.largeInlineBody)
-                case .failed:
-                    editor.showToast(IOSCopy.handoffInterruptedTitle, detail: IOSCopy.handoffInterruptedBody)
-                }
-            } else {
-                editor.showToast(IOSCopy.handoffInterruptedTitle, detail: IOSCopy.handoffInterruptedBody)
-            }
-        case .image(let image, let preview):
-            guard let data = ShotEncoder.pngData(image) else { return }
-            PhotoLibrarySaver.savePNG(data) { status in
-                if PhotoSaveRouter.route(for: status) == .offerCopy {
-                    editor.showToast(IOSCopy.deniedTitle, detail: IOSCopy.deniedBody)
-                } else {
-                    editor.showToast(preview ? IOSCopy.toastPreviewResolution : IOSCopy.toastSaved,
-                                      detail: preview ? IOSCopy.toastPreviewResolutionDetail : IOSCopy.toastSavedDetail)
-                }
-            }
-        case nil:
+        guard let image = editor.exportOriginalResolution(), let data = ShotEncoder.pngData(image) else {
             route = .error
+            return
+        }
+        PhotoLibrarySaver.savePNG(data) { status in
+            if PhotoSaveRouter.route(for: status) == .offerCopy {
+                editor.showToast(IOSCopy.deniedTitle, detail: IOSCopy.deniedBody)
+            } else {
+                editor.showToast(IOSCopy.toastSaved, detail: IOSCopy.toastSavedDetail)
+            }
         }
     }
 

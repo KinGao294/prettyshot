@@ -5,8 +5,10 @@ import PrettyShotCore
 import UIKit
 
 enum ExportAttempt {
-    case image(CGImage, previewResolution: Bool)
+    /// Full-resolution PNG. Beautify may add padding; the source bitmap is not downscaled.
+    case image(CGImage)
     case handoff
+    case reselectInApp
 }
 
 enum ShotEncoder {
@@ -30,7 +32,6 @@ final class EditorModel: ObservableObject {
     @Published var preview: UIImage?
     @Published var toastTitle: String?
     @Published var toastDetail: String?
-    @Published var usingPreviewResolution = false
     @Published var pixelWidth = 0
     @Published var pixelHeight = 0
     @Published private(set) var canUndo = false
@@ -86,41 +87,40 @@ final class EditorModel: ObservableObject {
         return writeEncodedToTemporaryFile()
     }
 
-    func export(canTransferToApp: Bool, userChosePreview: Bool = false) -> ExportAttempt? {
+    /// Extension export. Over the memory budget this hands off the original file, or asks the user
+    /// to reselect it in the app. It never returns a downscaled bitmap.
+    func export(canTransferToApp: Bool) -> ExportAttempt? {
         guard pixelCount > 0, sourceURL != nil || !encoded.isEmpty else { return nil }
-        switch ExportFidelityRouter.decide(
-            pixelCount: pixelCount,
-            canTransferToApp: canTransferToApp,
-            userChosePreview: userChosePreview
-        ) {
-        case .askBeforeDownscale:
+        switch ExportFidelityRouter.decide(pixelCount: pixelCount, canTransferToApp: canTransferToApp) {
+        case .handOffOriginal:
             return .handoff
-        case .previewChosen:
-            guard let current = preview?.cgImage else { return nil }
-            usingPreviewResolution = true
-            return render(current).map { .image($0, previewResolution: true) }
+        case .reselectInApp:
+            return .reselectInApp
         case .fullResolutionPNG:
-            preview = nil
-            let longSide = max(pixelWidth, pixelHeight)
-            let rendered: CGImage? = {
-                let full: CGImage?
-                if let sourceURL {
-                    full = ImagePrep.downsample(sourceURL, maxLongSide: longSide)
-                } else {
-                    full = ImagePrep.downsample(encoded, maxLongSide: longSide)
-                }
-                guard let full else { return nil }
-                return render(full)
-            }()
-            refreshPreview()
-            return rendered.map { .image($0, previewResolution: false) }
+            return renderFullResolution().map { .image($0) }
         }
     }
 
-    func exportPreviewResolution() -> CGImage? {
-        guard let current = preview?.cgImage else { return nil }
-        usingPreviewResolution = true
-        return render(current)
+    /// App export. Ignores the extension memory budget and always renders the source pixels.
+    func exportOriginalResolution() -> CGImage? {
+        guard pixelCount > 0, sourceURL != nil || !encoded.isEmpty else { return nil }
+        return renderFullResolution()
+    }
+
+    private func renderFullResolution() -> CGImage? {
+        preview = nil
+        let rendered: CGImage? = {
+            let full: CGImage?
+            if let sourceURL {
+                full = ImagePrep.fullImage(sourceURL)
+            } else {
+                full = ImagePrep.fullImage(encoded)
+            }
+            guard let full else { return nil }
+            return render(full)
+        }()
+        refreshPreview()
+        return rendered
     }
 
     func addArrow(start: CGPoint, end: CGPoint, in viewSize: CGSize) {

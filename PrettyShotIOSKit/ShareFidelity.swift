@@ -1,26 +1,31 @@
 import CoreGraphics
 import Foundation
 
-/// What happens to pixels when the extension saves or hands off.
-/// A downscale is only `previewChosen`, after the user taps that button.
+/// Export is full-resolution PNG, or the original file is handed to the app.
+/// A downscaled bitmap is never an export.
 enum ExportFidelity: Equatable {
-    /// Lossless PNG of the full-resolution render. No JPEG, no downscale.
     case fullResolutionPNG
-    /// Too big to decode twice. Ask before handing off the file or saving a preview.
-    case askBeforeDownscale
-    /// The user explicitly chose 「按预览尺寸保存」.
-    case previewChosen
+    case handOffOriginal
+    case reselectInApp
 }
 
 enum ExportFidelityRouter {
-    static func decide(pixelCount: Int, canTransferToApp: Bool, userChosePreview: Bool) -> ExportFidelity {
-        if userChosePreview { return .previewChosen }
+    static func decide(pixelCount: Int, canTransferToApp: Bool) -> ExportFidelity {
         switch ExtensionMemoryBudget.plan(pixelCount: pixelCount, canTransferToApp: canTransferToApp) {
         case .fullResolutionInline:
             return .fullResolutionPNG
-        case .handoffToApp, .previewResolutionInline:
-            return .askBeforeDownscale
+        case .handoffToApp:
+            return .handOffOriginal
+        case .reselectInApp:
+            return .reselectInApp
         }
+    }
+}
+
+/// Decodes stitch sources at the size stored in the file. No long-side cap.
+enum StitchSourceLoader {
+    static func images(from blobs: [Data]) -> [CGImage] {
+        blobs.compactMap { ImagePrep.fullImage($0) }
     }
 }
 

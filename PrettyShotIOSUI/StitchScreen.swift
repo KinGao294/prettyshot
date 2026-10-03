@@ -11,6 +11,7 @@ final class StitchModel: ObservableObject {
     @Published var showOverLimit = false
     @Published var overlap = 0
     @Published var selectedSeam = 0
+    @Published var manualAlign = false
     @Published var note = ""
     @Published var flattened: CGImage?
 
@@ -47,7 +48,10 @@ final class StitchModel: ObservableObject {
         switch session.gate.step {
         case .seams:
             selectedSeam = session.assembly.seams.firstIndex { !$0.isResolved } ?? 0
-            overlap = session.assembly.seams.indices.contains(selectedSeam) ? session.assembly.seams[selectedSeam].editorOverlap : 0
+            let seam = session.assembly.seams.indices.contains(selectedSeam) ? session.assembly.seams[selectedSeam] : nil
+            // An unresolved suggestion is not applied, so the picture on screen is overlap 0.
+            overlap = seam?.suggestedOverlap == nil ? (seam?.editorOverlap ?? 0) : 0
+            manualAlign = false
             showChoices = true
         case .sticky:
             showSticky = true
@@ -126,42 +130,54 @@ struct StitchScreen: View {
                             .scaledToFit()
                             .frame(maxWidth: .infinity)
                     }
-                    Text(model.note)
-                        .font(.system(size: 12))
-                        .foregroundStyle(IOSTheme.muted)
+                    if model.note == IOSCopy.stitchSizeMismatch {
+                        Text(model.note)
+                            .font(.system(size: 12))
+                            .foregroundStyle(IOSTheme.muted)
+                    }
+                    #if DEBUG
+                    if model.note == IOSCopy.stitchPreviewNote {
+                        Text(model.note)
+                            .font(.system(size: 12))
+                            .foregroundStyle(IOSTheme.muted)
+                    }
+                    Text(IOSCopy.exclusionStub).font(.system(size: 12)).foregroundStyle(IOSTheme.muted)
+                    Text(IOSCopy.duplicateWiringNote).font(.system(size: 12)).foregroundStyle(IOSTheme.muted)
+                    #endif
                     Toggle(IOSCopy.keepOnce, isOn: Binding(
                         get: { model.session.assembly.dedupeStickyBars },
                         set: { model.setDedupe($0) }
                     ))
                     Text(IOSCopy.keepOnceDetail).font(.system(size: 12)).foregroundStyle(IOSTheme.muted)
-                    Text(IOSCopy.exclusionStub).font(.system(size: 12)).foregroundStyle(IOSTheme.muted)
-                    Text(IOSCopy.duplicateWiringNote).font(.system(size: 12)).foregroundStyle(IOSTheme.muted)
                     ForEach(model.session.assembly.duplicateCandidates) { candidate in
                         duplicateCard(candidate)
-                    }
-                    if let bar = model.session.gate.bottomBar {
-                        Text(bar)
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundStyle(IOSTheme.charcoal)
-                            .padding(12)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(IOSTheme.warn.opacity(0.2), in: RoundedRectangle(cornerRadius: 12))
                     }
                 }
                 .padding(16)
             }
-            Button(model.session.gate.primaryTitle) {
-                model.primaryTapped()
-                if let image = model.flattened {
-                    onBeautify(image)
+            VStack(spacing: 10) {
+                if let bar = model.session.gate.bottomBar {
+                    Text(bar)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(IOSTheme.charcoal)
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(IOSTheme.warn.opacity(0.2), in: RoundedRectangle(cornerRadius: 12))
+                }
+                HStack(spacing: 10) {
+                    Button(IOSCopy.exclusionBands) { }
+                        .buttonStyle(PlainCardButtonStyle())
+                    Button(model.session.gate.primaryTitle) {
+                        model.primaryTapped()
+                        if let image = model.flattened {
+                            onBeautify(image)
+                        }
+                    }
+                    .buttonStyle(BloomButtonStyle())
                 }
             }
-            .font(.system(size: 16.5, weight: .semibold))
-            .frame(maxWidth: .infinity)
-            .frame(height: 52)
-            .background(model.session.gate.canAdvance ? IOSTheme.bloom : IOSTheme.rail)
-            .foregroundStyle(IOSTheme.bloomInk)
             .padding(16)
+            .background(IOSTheme.paper)
         }
         .background(IOSTheme.paper)
         .sheet(isPresented: $model.showChoices) { choiceSheet }
@@ -188,21 +204,100 @@ struct StitchScreen: View {
         .background(IOSTheme.card, in: RoundedRectangle(cornerRadius: 14))
     }
 
+    /// Frame 51 when a suggestion exists. Frame 39 when the seam has no reliable overlap.
     private var choiceSheet: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(IOSCopy.seamMissTitle(seamIndex: model.selectedSeam)).font(.system(size: 21, weight: .bold))
-            Text(IOSCopy.failBody).font(.system(size: 15))
-            Stepper(value: $model.overlap, in: 0...4000) {
-                Text("\(model.overlap) pt")
+        let seam = activeSeam
+        let suggested = seam?.suggestedOverlap
+        return VStack(alignment: .leading, spacing: 12) {
+            if let suggested {
+                Text(IOSCopy.untrustedSeamTitle(seamIndex: model.selectedSeam))
+                    .font(.system(size: 21, weight: .bold))
+                Text(IOSCopy.untrustedBody).font(.system(size: 15))
+                HStack(spacing: 8) {
+                    positionChip(IOSCopy.positionA(0), selected: model.overlap == 0) {
+                        model.overlap = 0
+                    }
+                    positionChip(IOSCopy.positionB(delta: suggested), selected: model.overlap == suggested) {
+                        model.overlap = suggested
+                    }
+                }
+                Button(IOSCopy.confirmCurrent, action: model.align).buttonStyle(BloomButtonStyle())
+                manualAlignControls
+                Button(IOSCopy.joinAsIs, action: model.join).buttonStyle(PlainCardButtonStyle())
+                separateExportButton
+                Text(IOSCopy.confirmBlockedNote)
+                    .font(.system(size: 12))
+                    .foregroundStyle(IOSTheme.muted)
+            } else {
+                Text(IOSCopy.seamMissTitle(seamIndex: model.selectedSeam))
+                    .font(.system(size: 21, weight: .bold))
+                Text(IOSCopy.failBody).font(.system(size: 15))
+                manualAlignControls
+                Button(IOSCopy.joinAsIs, action: model.join).buttonStyle(PlainCardButtonStyle())
+                separateExportButton
+                Button(IOSCopy.laterSeam) { model.showChoices = false }
+                    .font(.system(size: 16, weight: .semibold))
+                    .frame(maxWidth: .infinity)
+                    .foregroundStyle(IOSTheme.muted)
             }
-            Button(IOSCopy.alignDone, action: model.align).buttonStyle(BloomButtonStyle())
-            Button(IOSCopy.reDetect, action: model.restoreAuto).buttonStyle(PlainCardButtonStyle())
-            Button(IOSCopy.joinAsIs, action: model.join).buttonStyle(PlainCardButtonStyle())
-            Button(IOSCopy.laterSeam) { model.showChoices = false }.buttonStyle(PlainCardButtonStyle())
-            Text(IOSCopy.alignDragHint).font(.system(size: 12)).foregroundStyle(IOSTheme.muted)
         }
         .padding(20)
         .presentationDetents([.medium, .large])
+    }
+
+    @ViewBuilder
+    private var manualAlignControls: some View {
+        if model.manualAlign {
+            Stepper(value: $model.overlap, in: 0...4000) {
+                Text("\(model.overlap) pt")
+            }
+            Text(IOSCopy.alignDragHint).font(.system(size: 12)).foregroundStyle(IOSTheme.muted)
+            Button(IOSCopy.alignDone, action: model.align).buttonStyle(BloomButtonStyle())
+            Button(IOSCopy.reDetect, action: model.restoreAuto).buttonStyle(PlainCardButtonStyle())
+        } else {
+            Button(IOSCopy.manualAlign) { model.manualAlign = true }
+                .buttonStyle(PlainCardButtonStyle())
+        }
+    }
+
+    private var separateExportButton: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Button(action: exportSegmentsSeparately) {
+                Text(IOSCopy.exportSeparate)
+            }
+            .buttonStyle(PlainCardButtonStyle())
+            Text(IOSCopy.exportSeparateDetail)
+                .font(.system(size: 12))
+                .foregroundStyle(IOSTheme.muted)
+        }
+    }
+
+    private var activeSeam: ScrollSeam? {
+        guard model.session.assembly.seams.indices.contains(model.selectedSeam) else { return nil }
+        return model.session.assembly.seams[model.selectedSeam]
+    }
+
+    private func positionChip(_ title: String, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(IOSTheme.charcoal)
+                .padding(.horizontal, 10)
+                .frame(maxWidth: .infinity)
+                .frame(height: 40)
+                .background(selected ? IOSTheme.bloom.opacity(0.35) : IOSTheme.card, in: Capsule())
+                .overlay(Capsule().stroke(selected ? IOSTheme.bloom : IOSTheme.hairline))
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// Each segment's own pixels. Unresolved seams make `exportWithinLimits` return nothing.
+    private func exportSegmentsSeparately() {
+        let images = model.session.assembly.segments.compactMap { $0.image.cgImage() }
+        model.showChoices = false
+        if !images.isEmpty {
+            onExportSegments(images)
+        }
     }
 
     private var stickySheet: some View {

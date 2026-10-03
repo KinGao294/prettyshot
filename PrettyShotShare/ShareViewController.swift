@@ -37,10 +37,10 @@ final class ShareViewController: UIViewController {
             canTransferToApp: store.canTransferToApp,
             onCancel: { [weak self] in self?.cancel() },
             onCopy: { [weak self] in self?.copyOut() },
-            onSave: { [weak self] in self?.saveOut(forcePreview: false) },
-            onStitchInApp: { [weak self] in self?.handOff() },
-            onSavePreview: { [weak self] in self?.saveOut(forcePreview: true) },
-            onRetryHandoff: { [weak self] in self?.handOff() },
+            onSave: { [weak self] in self?.saveOut() },
+            onStitchInApp: { [weak self] in self?.beginHandoff() },
+            onReselectInApp: { [weak self] in self?.openPicker() },
+            onRetryHandoff: { [weak self] in self?.beginHandoff() },
             onDismissLarge: { [weak self] in
                 self?.showsLarge = false
                 self?.refresh()
@@ -110,45 +110,58 @@ final class ShareViewController: UIViewController {
     }
 
     private func copyOut() {
-        guard case .image(let image, false) = editor.export(canTransferToApp: store.canTransferToApp) else {
-            showsLarge = true
-            pendingKind = .singleImage
+        switch editor.export(canTransferToApp: store.canTransferToApp) {
+        case .image(let image):
+            PhotoLibrarySaver.copyToPasteboard(image)
+            phase = .saved(title: IOSCopy.toastCopied, detail: IOSCopy.toastCopiedDetail)
             refresh()
-            return
+            finishSoon()
+        case .handoff, .reselectInApp, nil:
+            presentOverBudget()
         }
-        PhotoLibrarySaver.copyToPasteboard(image)
-        phase = .saved(title: IOSCopy.toastCopied, detail: IOSCopy.toastCopiedDetail)
-        refresh()
-        finishSoon()
     }
 
-    private func saveOut(forcePreview: Bool) {
-        let attempt = editor.export(canTransferToApp: store.canTransferToApp, userChosePreview: forcePreview)
-        guard case .image(let image, let preview) = attempt, preview == forcePreview else {
-            showsLarge = true
-            pendingKind = .singleImage
-            refresh()
-            return
-        }
-        guard let data = ShotEncoder.pngData(image) else {
-            phase = .failed
-            refresh()
-            return
-        }
-        PhotoLibrarySaver.savePNG(data) { [weak self] status in
-            guard let self else { return }
-            if PhotoSaveRouter.route(for: status) == .offerCopy {
-                self.phase = .denied
-                self.refresh()
+    private func saveOut() {
+        switch editor.export(canTransferToApp: store.canTransferToApp) {
+        case .image(let image):
+            guard let data = ShotEncoder.pngData(image) else {
+                phase = .failed
+                refresh()
                 return
             }
-            self.phase = .saved(
-                title: preview ? IOSCopy.toastPreviewResolution : IOSCopy.toastSaved,
-                detail: preview ? IOSCopy.toastPreviewResolutionDetail : IOSCopy.toastSavedDetail
-            )
-            self.refresh()
-            self.finishSoon()
+            PhotoLibrarySaver.savePNG(data) { [weak self] status in
+                guard let self else { return }
+                if PhotoSaveRouter.route(for: status) == .offerCopy {
+                    self.phase = .denied
+                    self.refresh()
+                    return
+                }
+                self.phase = .saved(title: IOSCopy.toastSaved, detail: IOSCopy.toastSavedDetail)
+                self.refresh()
+                self.finishSoon()
+            }
+        case .handoff, .reselectInApp, nil:
+            presentOverBudget()
         }
+    }
+
+    /// Frame 11 only when the original file can move to the app. Otherwise S10d.
+    private func presentOverBudget() {
+        pendingKind = .singleImage
+        if store.canTransferToApp {
+            showsLarge = true
+        } else {
+            showsLarge = false
+            phase = .reselectInApp
+        }
+        refresh()
+    }
+
+    private func beginHandoff() {
+        showsLarge = false
+        phase = .handoffProgress
+        refresh()
+        handOff()
     }
 
     private func handOff() {
@@ -158,7 +171,7 @@ final class ShareViewController: UIViewController {
         }
         if pendingKind == .singleImage {
             guard let url = editor.handoffSourceURL() else {
-                phase = .handoffInterrupted
+                phase = .reselectInApp
                 refresh()
                 return
             }
@@ -176,13 +189,13 @@ final class ShareViewController: UIViewController {
         case .waitingForApp(let ticket), .interrupted(let ticket):
             stagedTicket = ticket
             guard store.canTransferToApp else {
-                phase = .handoffInterrupted
+                phase = .reselectInApp
                 refresh()
                 return
             }
             openApp(ticket)
         case .failed:
-            phase = .handoffInterrupted
+            phase = .reselectInApp
             refresh()
         }
     }
@@ -210,7 +223,7 @@ final class ShareViewController: UIViewController {
 
     private func openApp(_ ticket: HandoffTicket) {
         guard let url = URL(string: "prettyshot://handoff") else {
-            phase = .handoffInterrupted
+            phase = .reselectInApp
             refresh()
             return
         }
@@ -221,7 +234,27 @@ final class ShareViewController: UIViewController {
                 case .waitingForApp:
                     self.finishSoon()
                 case .interrupted, .failed:
-                    self.phase = .handoffInterrupted
+                    self.phase = .reselectInApp
+                    self.refresh()
+                }
+            }
+        }
+    }
+
+    /// Opens the in-app photo picker. Does not discard a staged ticket or the shared photo.
+    private func openPicker() {
+        guard let url = URL(string: "prettyshot://pick") else {
+            phase = .reselectInApp
+            refresh()
+            return
+        }
+        extensionContext?.open(url) { [weak self] success in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if success {
+                    self.finishSoon()
+                } else {
+                    self.phase = .reselectInApp
                     self.refresh()
                 }
             }

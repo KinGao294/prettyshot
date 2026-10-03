@@ -46,7 +46,7 @@ Bundle ID：主 App `app.prettyshot.ios`，扩展 `app.prettyshot.ios.share`。U
 5. 如果 Bundle ID 已被别人占用，只改这两个 target 的 Bundle ID，扩展必须是主 App 的子 ID（例如 `app.prettyshot.ios.kin` 和 `app.prettyshot.ios.kin.share`），并同步改 URL scheme 的 `CFBundleURLName`。
 6. 选自己的 iPhone，Run。手机上：设置 → 通用 → VPN 与设备管理，信任这台开发者。
 7. 7 天后描述文件过期。重新 Run 一次。设备或 App ID 名额满了，用 Xcode → Window → Devices and Simulators 删掉旧的描述文件 / App，再装。
-8. 扩展里选多张图或 PDF 时，界面会说明当前签名不能把原图交给 App，需要在 App 里从相册再选。单张图在扩展里编辑、复制或按预览尺寸保存。
+8. 扩展交不出原图时（默认 inline 就是这样），出现「改用 PrettyShot App 选图」。它打开 App 里的照片选择器，按原分辨率重新选。扩展里不提供「按预览尺寸保存」。单张图在内存预算内仍可在扩展里编辑、复制、存入相册，导出是原分辨率 PNG。
 
 ## 若要试 App Group
 
@@ -56,4 +56,14 @@ Bundle ID：主 App `app.prettyshot.ios`，扩展 `app.prettyshot.ios.share`。U
 
 TestFlight、公证和上架仍然要付费开发者账号。M4 的真机内存测量也一样。
 
-分享扩展的三条验收（12MP 不崩、交接被打断图还在、不静默压缩）里，模拟器替代不了的步骤写在 [ios-manual-tests.md](ios-manual-tests.md)。
+## M3：免费个人团队下，扩展能不能把原图交给 App
+
+CI 验不了。模拟器 job 关掉了签名（`CODE_SIGNING_ALLOWED=NO`），也没有 Personal Team。
+
+仓库默认 `InlineHandoffStore.canTransferToApp == false`。能力表给免费列勾了 App Groups，但免费账号进不了 Identifiers 门户，Xcode 在 Personal Team 上是否肯签发 `group.app.prettyshot.ios` 还没在 Kin 的机器上试过。所以这次不能写成「免费签名下扩展可以把原图交给 App」。
+
+交不出原图时走「改用 PrettyShot App 选图」（`prettyshot://pick`），原图留在相册里，用户在 App 里按原分辨率重选。转交失败不删已暂存的票，要等 App 确认收到才 `confirmReceipt`。
+
+真机步骤见 [ios-manual-tests.md](ios-manual-tests.md) 第 4 步。
+
+分享扩展的验收里，模拟器替代不了的步骤也写在那份手测说明里。
