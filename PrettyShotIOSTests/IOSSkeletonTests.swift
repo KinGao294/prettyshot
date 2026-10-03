@@ -1244,7 +1244,8 @@ final class ShareAcceptanceTests: XCTestCase {
         XCTAssertEqual(data, [Data([8, 8, 8, 8])])
         let left = try store.pendingTickets()
         XCTAssertEqual(left.map(\.kind), [.pdf])
-        XCTAssertEqual(try store.files(for: left[0].id).count, 1)
+        let pdfTicket = try XCTUnwrap(left.first)
+        XCTAssertEqual(try store.files(for: pdfTicket.id).count, 1)
     }
 
     func testLaterTicketDeleteDoesNotDropImagesAlreadyRead() throws {
