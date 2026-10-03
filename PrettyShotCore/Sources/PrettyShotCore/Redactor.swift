@@ -68,7 +68,46 @@ public enum Redactor {
                 output = effect.cropped(to: ciRect).composited(over: output)
             }
         }
-        return context.createCGImage(output, from: extent) ?? image
+        return autoreleasepool { () -> CGImage in
+            guard let rendered = context.createCGImage(output, from: extent) else { return image }
+            let width = rendered.width
+            let height = rendered.height
+            let bytesPerRow = (width * 4 + 15) & ~15
+            let byteCount = bytesPerRow * height
+            guard width > 0, height > 0, byteCount > 0,
+                  let space = CGColorSpace(name: CGColorSpace.sRGB) else { return rendered }
+            // One destination buffer. `makeImage()` would keep a third full-size copy
+            // beside the Core Image result and the context.
+            let owned = OwnedBitmap(byteCount: byteCount)
+            guard let copy = CGContext(
+                data: owned.baseAddress, width: width, height: height,
+                bitsPerComponent: 8, bytesPerRow: bytesPerRow,
+                space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else { return rendered }
+            copy.interpolationQuality = .none
+            copy.draw(rendered, in: CGRect(x: 0, y: 0, width: width, height: height))
+            copy.flush()
+            context.clearCaches()
+            let info = Unmanaged.passRetained(owned).toOpaque()
+            guard let provider = CGDataProvider(
+                dataInfo: info, data: owned.baseAddress, size: byteCount,
+                releaseData: { info, _, _ in
+                    guard let info else { return }
+                    Unmanaged<OwnedBitmap>.fromOpaque(info).takeRetainedValue()
+                }
+            ) else {
+                Unmanaged<OwnedBitmap>.fromOpaque(info).takeRetainedValue()
+                return rendered
+            }
+            guard let detached = CGImage(
+                width: width, height: height,
+                bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: bytesPerRow,
+                space: space,
+                bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent
+            ) else { return rendered }
+            return detached
+        }
     }
 
     /// Downscaled copy of `image` for cheap live previews.

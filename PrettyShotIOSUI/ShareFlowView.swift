@@ -19,6 +19,12 @@ struct ShareFlowView: View {
     var onDismissLarge: () -> Void
     var onDismissDenied: () -> Void
     var onOpenSettings: () -> Void
+    /// S12. Set when the app did not open and nothing was staged. The page stays `.multi`.
+    var showsS12OpenHint = false
+    /// Frame 13. Opening the app from the read-failed page failed.
+    var showsReadFailedOpenHint = false
+    /// S10f for a multi-image or PDF share that cannot hand files to the app.
+    var showsMultiInlineFootnote = false
 
     var body: some View {
         ZStack {
@@ -61,7 +67,7 @@ struct ShareFlowView: View {
             case .cannotHandOff(let manualOpenHint):
                 cannotHandOffPage(manualOpenHint: manualOpenHint)
             case .saved(let title, let detail):
-                messagePage(title: title, body: detail)
+                messagePage(title: title, body: detail, showsButton: ExtensionSavedToast.hasButtons)
             }
         }
     }
@@ -81,6 +87,11 @@ struct ShareFlowView: View {
                 .font(.system(size: 14))
                 .foregroundStyle(IOSTheme.muted)
             Button(IOSCopy.multiStitch, action: onStitchInApp).buttonStyle(BloomButtonStyle())
+            if showsS12OpenHint {
+                Text(IOSCopy.s12OpenFailedHint)
+                    .font(.system(size: 14))
+                    .foregroundStyle(IOSTheme.charcoal)
+            }
             if canTransferToApp {
                 Text(IOSCopy.multiFootnote)
                     .font(.system(size: 12))
@@ -210,13 +221,13 @@ struct ShareFlowView: View {
             Spacer()
             Image(systemName: "checkmark")
                 .font(.system(size: 36, weight: .semibold))
-                .foregroundStyle(Color(hex: 0x3E8F78))
+                .foregroundStyle(IOSTheme.stagedCheck)
                 .frame(width: 96, height: 96)
-                .background(Color(hex: 0xD7EBE4), in: Circle())
+                .background(IOSTheme.stagedCircle, in: Circle())
             Text(IOSCopy.stagedTitle(count))
                 .font(.system(size: 22, weight: .bold))
                 .foregroundStyle(IOSTheme.charcoal)
-            Text(IOSCopy.stagedBody)
+            Text(IOSCopy.stagedBody(count: count))
                 .font(.system(size: 15))
                 .multilineTextAlignment(.center)
                 .foregroundStyle(IOSTheme.muted)
@@ -254,7 +265,7 @@ struct ShareFlowView: View {
             Text(IOSCopy.cannotHandTitle)
                 .font(.system(size: 22, weight: .bold))
                 .multilineTextAlignment(.center)
-            Text(IOSCopy.cannotHandBody)
+            Text(showsMultiInlineFootnote ? IOSCopy.multiInlineFootnote : IOSCopy.cannotHandBody)
                 .font(.system(size: 15))
                 .multilineTextAlignment(.center)
                 .foregroundStyle(IOSTheme.muted)
@@ -290,6 +301,11 @@ struct ShareFlowView: View {
             Text(IOSCopy.readFailedBody)
                 .font(.system(size: 16))
                 .foregroundStyle(IOSTheme.muted)
+            if showsReadFailedOpenHint {
+                Text(IOSCopy.s12OpenFailedHint)
+                    .font(.system(size: 14))
+                    .foregroundStyle(IOSTheme.charcoal)
+            }
             Button(IOSCopy.readFailedOK, action: onCancel).buttonStyle(BloomButtonStyle())
             Button(IOSCopy.reselectInApp, action: onReselectInApp)
                 .font(.system(size: 16, weight: .semibold))
@@ -329,11 +345,13 @@ struct ShareFlowView: View {
         }
     }
 
-    private func messagePage(title: String, body: String) -> some View {
+    private func messagePage(title: String, body: String, showsButton: Bool) -> some View {
         VStack(spacing: 10) {
             Text(title).font(.system(size: 20, weight: .semibold))
             Text(body).font(.system(size: 14)).multilineTextAlignment(.center).foregroundStyle(IOSTheme.muted)
-            Button(IOSCopy.cancel, action: onCancel).buttonStyle(PlainCardButtonStyle())
+            if showsButton {
+                Button(IOSCopy.cancel, action: onCancel).buttonStyle(PlainCardButtonStyle())
+            }
         }
         .padding(24)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -352,7 +370,13 @@ struct ShareFlowView: View {
     private var largeSheet: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text(IOSCopy.largeTitle).font(.system(size: 21, weight: .bold))
-            Text(IOSCopy.largeBody).font(.system(size: 15))
+            Text(LargeHandoff.body(
+                changedStyle: model.changedStyleThisSession,
+                changedCrop: model.changedCropThisSession,
+                addedArrow: model.addedArrowThisSession,
+                addedRedaction: model.addedRedactionThisSession
+            ))
+            .font(.system(size: 15))
             Button(IOSCopy.continueInApp, action: onStitchInApp).buttonStyle(BloomButtonStyle())
             Button(IOSCopy.cancel, action: onDismissLarge).buttonStyle(PlainCardButtonStyle())
         }

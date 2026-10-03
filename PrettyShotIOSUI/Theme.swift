@@ -14,10 +14,21 @@ enum IOSTheme {
     static let hairline = dynamic(light: 0xE2DDD4, dark: 0x3A3735)
     static let card = dynamic(light: 0xFFFFFF, dark: 0x3A3735)
 
+    /// Frame 63b check mark. Light is Mint Deep. Dark is Soft Mint.
+    static let stagedCheck = dynamic(light: 0x4F8F7E, dark: 0x7EB8A8)
+    static let stagedCheckColor = dynamicUIColor(light: 0x4F8F7E, dark: 0x7EB8A8)
+    /// Frame 63b circle. The light wash stays; dark mode uses a dark Mint field.
+    static let stagedCircle = dynamic(light: 0xD7EBE4, dark: 0x243833)
+    static let stagedCircleColor = dynamicUIColor(light: 0xD7EBE4, dark: 0x243833)
+
     static func dynamic(light: UInt32, dark: UInt32) -> Color {
-        Color(uiColor: UIColor { traits in
+        Color(uiColor: dynamicUIColor(light: light, dark: dark))
+    }
+
+    static func dynamicUIColor(light: UInt32, dark: UInt32) -> UIColor {
+        UIColor { traits in
             UIColor(hex: traits.userInterfaceStyle == .dark ? dark : light)
-        })
+        }
     }
 }
 

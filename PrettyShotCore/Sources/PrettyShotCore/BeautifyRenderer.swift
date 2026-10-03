@@ -68,7 +68,10 @@ public enum BeautifyRenderer {
         let canvas = CGRect(origin: .zero, size: layout.canvasSize)
 
         context.saveGState()
-        context.interpolationQuality = .high
+        // A 1:1 device blit does not resample. High quality still allocates a filter
+        // buffer beside the shadow layer; nearest-neighbor matches those pixels.
+        // Scaled draws (and a zoomed editor canvas) keep the high-quality filter.
+        context.interpolationQuality = imageIsOneToOneDeviceBlit(input, context: context) ? .none : .high
 
         let imageClip: CGPath
         if let preset = input.background.preset {
@@ -83,7 +86,10 @@ public enum BeautifyRenderer {
                 context.setShadow(offset: metrics.offset, blur: metrics.blur,
                                   color: CGColor(srgbRed: 0.17, green: 0.16, blue: 0.16, alpha: 0.32))
                 // Shadow the composited layer, so transparent window corners cast a correct shadow.
+                // The layer starts with its own interpolation. A 1:1 blit must set `.none` again
+                // or Core Graphics allocates a filter buffer beside this layer.
                 context.beginTransparencyLayer(auxiliaryInfo: nil)
+                context.interpolationQuality = imageIsOneToOneDeviceBlit(input, context: context) ? .none : .high
                 drawBase(input, layout: layout, clip: imageClip, in: context)
                 context.endTransparencyLayer()
                 context.restoreGState()
@@ -95,6 +101,7 @@ public enum BeautifyRenderer {
             drawBase(input, layout: layout, clip: imageClip, in: context)
         }
 
+        context.interpolationQuality = .high
         context.saveGState()
         context.addPath(imageClip)
         context.clip()
@@ -113,23 +120,48 @@ public enum BeautifyRenderer {
     }
 
     /// Renders to a new sRGB bitmap at output resolution.
+    /// The bitmap is the context's own buffer. `makeImage()` would keep a second canvas-sized
+    /// copy alive next to the shadow layer, which pushes a 1179×2556 export over the extension cap.
     public static func render(
         _ input: BeautifyInput,
         drawAnnotations: ((CGContext) -> Void)? = nil
     ) -> CGImage? {
-        let layout = BeautifyRenderer.layout(for: input)
-        let width = Int(layout.canvasSize.width.rounded(.up))
-        let height = Int(layout.canvasSize.height.rounded(.up))
-        guard width > 0, height > 0,
-              let space = CGColorSpace(name: CGColorSpace.sRGB),
-              let context = CGContext(
-                  data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
-                  space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-              ) else { return nil }
-        context.translateBy(x: 0, y: CGFloat(height))
-        context.scaleBy(x: 1, y: -1)
-        draw(input, in: context, drawAnnotations: drawAnnotations)
-        return context.makeImage()
+        autoreleasepool {
+            let layout = BeautifyRenderer.layout(for: input)
+            let width = Int(layout.canvasSize.width.rounded(.up))
+            let height = Int(layout.canvasSize.height.rounded(.up))
+            let bytesPerRow = (width * 4 + 15) & ~15
+            let byteCount = bytesPerRow * height
+            guard width > 0, height > 0, byteCount > 0,
+                  let space = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
+            let owned = OwnedBitmap(byteCount: byteCount)
+            guard let context = CGContext(
+                data: owned.baseAddress, width: width, height: height, bitsPerComponent: 8, bytesPerRow: bytesPerRow,
+                space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else { return nil }
+            context.translateBy(x: 0, y: CGFloat(height))
+            context.scaleBy(x: 1, y: -1)
+            draw(input, in: context, drawAnnotations: drawAnnotations)
+            context.flush()
+            let info = Unmanaged.passRetained(owned).toOpaque()
+            guard let provider = CGDataProvider(
+                dataInfo: info, data: owned.baseAddress, size: byteCount,
+                releaseData: { info, _, _ in
+                    guard let info else { return }
+                    Unmanaged<OwnedBitmap>.fromOpaque(info).takeRetainedValue()
+                }
+            ) else {
+                Unmanaged<OwnedBitmap>.fromOpaque(info).takeRetainedValue()
+                return nil
+            }
+            return CGImage(
+                width: width, height: height,
+                bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: bytesPerRow,
+                space: space,
+                bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent
+            )
+        }
     }
 
     /// Draws a CGImage into a y-down context without flipping it upside down.
@@ -137,8 +169,28 @@ public enum BeautifyRenderer {
         context.saveGState()
         context.translateBy(x: rect.minX, y: rect.maxY)
         context.scaleBy(x: 1, y: -1)
-        context.draw(image, in: CGRect(origin: .zero, size: rect.size))
+        let dest = CGRect(origin: .zero, size: rect.size)
+        if isDevicePixelBlit(image, in: dest, context: context) {
+            context.interpolationQuality = .none
+        }
+        context.draw(image, in: dest)
         context.restoreGState()
+    }
+
+    private static func isDevicePixelBlit(_ image: CGImage, in rect: CGRect, context: CGContext) -> Bool {
+        let device = context.convertToDeviceSpace(rect)
+        return abs(abs(device.width) - CGFloat(image.width)) < 0.01
+            && abs(abs(device.height) - CGFloat(image.height)) < 0.01
+    }
+
+    /// True when `base` lands on exactly its own pixels in device space, so no resampling happens.
+    private static func imageIsOneToOneDeviceBlit(_ input: BeautifyInput, context: CGContext) -> Bool {
+        let layout = BeautifyRenderer.layout(for: input)
+        let size = input.baseSize ?? CGSize(width: input.base.width, height: input.base.height)
+        let rect = CGRect(origin: layout.canvasPoint(fromImage: .zero), size: size)
+        let device = context.convertToDeviceSpace(rect)
+        return abs(abs(device.width) - CGFloat(input.base.width)) < 0.01
+            && abs(abs(device.height) - CGFloat(input.base.height)) < 0.01
     }
 
     private static func drawBase(_ input: BeautifyInput, layout: RenderLayout, clip: CGPath, in context: CGContext) {
@@ -158,5 +210,21 @@ public enum BeautifyRenderer {
         let deviceScale = max(hypot(t.c, t.d), 0.0001)
         let down: CGFloat = t.d < 0 ? -1 : 1
         return (CGSize(width: 0, height: down * amount * 0.25 * deviceScale), amount * 0.6 * deviceScale)
+    }
+}
+
+/// Backing store for a rendered bitmap. Freed when the CGImage provider releases it.
+final class OwnedBitmap {
+    let baseAddress: UnsafeMutableRawPointer
+    let byteCount: Int
+
+    init(byteCount: Int) {
+        self.byteCount = byteCount
+        baseAddress = UnsafeMutableRawPointer.allocate(byteCount: byteCount, alignment: 16)
+        baseAddress.initializeMemory(as: UInt8.self, repeating: 0, count: byteCount)
+    }
+
+    deinit {
+        baseAddress.deallocate()
     }
 }
