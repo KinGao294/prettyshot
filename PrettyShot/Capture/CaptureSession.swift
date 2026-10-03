@@ -17,6 +17,8 @@ final class CaptureHUDModel: ObservableObject {
 final class CaptureSession {
     enum Outcome {
         case captured(CaptureResult)
+        /// Scrolling capture ended with at least one seam that was not safe to join automatically.
+        case reviewScrolling(ScrollingReview)
         case cancelled
         case failed(CaptureError)
     }
@@ -30,6 +32,9 @@ final class CaptureSession {
     private var finished = false
     /// Set by `cancel()` at any point — also before `run()` has reached the HUD (no continuation yet).
     private var cancelled = false
+    private var scrolling: ScrollingCaptureController?
+    /// Fired once the region is locked and scrolling capture is running. Esc should finish, not discard.
+    var onScrollingBegan: (() -> Void)?
 
     init(mode: CaptureMode, service: ScreenCaptureService, retryBlankFrames: Bool = false) {
         self.service = service
@@ -75,6 +80,11 @@ final class CaptureSession {
     func cancel() {
         cancelled = true
         finish(.cancelled)
+    }
+
+    /// Esc during an active scrolling capture: stitch and finish instead of discarding.
+    func finishActiveScrolling() {
+        scrolling?.finish()
     }
 
     private func finishedCancelled() -> Outcome {
@@ -143,7 +153,14 @@ final class CaptureSession {
 
         for snapshot in snapshots {
             let view = CaptureSelectionView(snapshot: snapshot, windows: windows, model: model)
-            view.onRegion = { [weak self] rect in self?.finishRegion(rect, in: snapshot) }
+            view.onRegion = { [weak self] rect in
+                guard let self else { return }
+                if self.model.mode == .scrolling {
+                    self.beginScrolling(rect, snapshot: snapshot)
+                } else {
+                    self.finishRegion(rect, in: snapshot)
+                }
+            }
             view.onWindow = { [weak self] window in self?.finishWindow(window, fallback: snapshot) }
             view.onFullscreen = { [weak self] in
                 self?.finish(.captured(CaptureResult(image: snapshot.image, scale: snapshot.scale, mode: .fullscreen)))
@@ -193,9 +210,64 @@ final class CaptureSession {
         }
     }
 
+    private func beginScrolling(_ rect: CGRect, snapshot: ScreenSnapshot) {
+        guard rect.width >= 24, rect.height >= 48 else {
+            finish(.failed(.failed("滚动区域太小，请框选更高的一块")))
+            return
+        }
+        let local = rect.intersection(CGRect(origin: .zero, size: snapshot.screen.frame.size))
+        let sourceRect = ScrollingCaptureGeometry.sourceRect(selection: local, screenSize: snapshot.screen.frame.size)
+        guard !sourceRect.isNull, sourceRect.width >= 24, sourceRect.height >= 48 else {
+            finish(.failed(.failed("滚动区域太小，请框选更高的一块")))
+            return
+        }
+        let pixelWidth = max(1, Int((sourceRect.width * snapshot.scale).rounded()))
+        let pixelHeight = max(1, Int((sourceRect.height * snapshot.scale).rounded()))
+        // Drop the frozen HUD so the user can scroll the real page. Our chrome is excluded from capture.
+        overlays.forEach { $0.orderOut(nil) }
+        overlays.removeAll()
+
+        let global = local.offsetBy(dx: snapshot.screen.frame.minX, dy: snapshot.screen.frame.minY)
+        let controller = ScrollingCaptureController(service: service)
+        scrolling = controller
+        onScrollingBegan?()
+        controller.onComplete = { [weak self] output in
+            guard let self else { return }
+            let notice = output.reachedLimit ? ScrollOutputLimit.notice : nil
+            if output.assembly.opensStitchReview {
+                self.finish(.reviewScrolling(ScrollingReview(scale: snapshot.scale, assembly: output.assembly, notice: notice)))
+            } else if let image = output.assembly.flattenedIfResolved()?.cgImage() {
+                self.finish(.captured(CaptureResult(
+                    image: image,
+                    scale: snapshot.scale,
+                    mode: .scrolling,
+                    notice: notice,
+                    scrollingAssembly: output.assembly.hasStickyRepeats ? output.assembly : nil
+                )))
+            } else {
+                self.finish(.failed(.failed("没有可保存的画面")))
+            }
+        }
+        controller.onCancel = { [weak self] in
+            self?.finish(.cancelled)
+        }
+        controller.onFail = { [weak self] error in
+            self?.finish(.failed(error))
+        }
+        controller.start(
+            screen: snapshot.screen,
+            globalRect: global,
+            sourceRect: sourceRect,
+            pixelWidth: pixelWidth,
+            pixelHeight: pixelHeight
+        )
+    }
+
     private func finish(_ outcome: Outcome) {
         guard !finished else { return }
         finished = true
+        scrolling?.stop()
+        scrolling = nil
         overlays.forEach { $0.orderOut(nil) }
         overlays.removeAll()
         continuation?.resume(returning: outcome)
@@ -314,7 +386,7 @@ final class CaptureSelectionView: NSView {
     }
 
     override func resetCursorRects() {
-        addCursorRect(bounds, cursor: mode == .region ? .crosshair : .pointingHand)
+        addCursorRect(bounds, cursor: mode == .region || mode == .scrolling ? .crosshair : .pointingHand)
     }
 
     private func modeDidChange(to newMode: CaptureMode) {
@@ -348,14 +420,14 @@ final class CaptureSelectionView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
-        guard mode == .region else { return }
+        guard mode == .region || mode == .scrolling else { return }
         dragStart = convert(event.locationInWindow, from: nil)
         selection = nil
         needsDisplay = true
     }
 
     override func mouseDragged(with event: NSEvent) {
-        guard mode == .region, let start = dragStart else { return }
+        guard mode == .region || mode == .scrolling, let start = dragStart else { return }
         let point = convert(event.locationInWindow, from: nil)
         let rect = NSRect(
             x: min(start.x, point.x), y: min(start.y, point.y),
@@ -367,7 +439,7 @@ final class CaptureSelectionView: NSView {
 
     override func mouseUp(with event: NSEvent) {
         switch mode {
-        case .region:
+        case .region, .scrolling:
             defer { dragStart = nil }
             if let selection, selection.width >= 4, selection.height >= 4 {
                 onRegion?(selection)
@@ -403,7 +475,7 @@ final class CaptureSelectionView: NSView {
 
         let highlight: NSRect? = {
             switch mode {
-            case .region: return selection
+            case .region, .scrolling: return selection
             case .window: return hoveredIndex.map { localFrames[$0].intersection(bounds) }
             case .fullscreen: return nil
             }
@@ -427,7 +499,7 @@ final class CaptureSelectionView: NSView {
             rose.setStroke()
             border.stroke()
 
-            if mode == .region {
+            if mode == .region || mode == .scrolling {
                 drawHandles(around: highlight)
             }
             drawSizeLabel(for: highlight)
@@ -468,6 +540,7 @@ final class CaptureSelectionView: NSView {
         case .region: text = "拖拽选择区域 · Esc 取消"
         case .window: text = "点击选择窗口 · Esc 取消"
         case .fullscreen: text = "点击捕获全屏 · Esc 取消"
+        case .scrolling: text = "拖拽选择滚动区域 · Esc 取消"
         }
         let attributed = pillText(text)
         let size = attributed.size()

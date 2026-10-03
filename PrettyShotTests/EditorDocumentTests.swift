@@ -138,6 +138,26 @@ final class EditorDocumentTests: XCTestCase {
         XCTAssertEqual(doc.redactions.first?.rect.minX, 200)
     }
 
+    func testTallScrollingCaptureUsesDisplayPreviewButExportsFullResolution() {
+        let doc = EditorDocument(
+            image: TestImages.make(width: 200, height: 5000),
+            scale: 1,
+            mode: .scrolling,
+            background: BackgroundStyle(presetKey: nil, padding: 0, radius: 0, shadow: 0),
+            sourceHistoryID: nil
+        )
+        let input = doc.renderInput(forCropEditing: false)
+        XCTAssertLessThan(input.base.height, 5000)
+        XCTAssertEqual(input.baseSize, CGSize(width: 200, height: 5000))
+        let exported = doc.exportImage()
+        XCTAssertEqual(exported?.width, 200)
+        XCTAssertEqual(exported?.height, 5000)
+    }
+
+    func testOrdinaryScreenshotSkipsDisplayPreview() {
+        XCTAssertNil(Redactor.displaySource(for: TestImages.make(width: 1800, height: 1200)))
+    }
+
     func testStyleAppliesToSelection() {
         let doc = makeDocument(scale: 2)
         doc.tool = .rectangle

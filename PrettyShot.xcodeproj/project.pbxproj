@@ -31,6 +31,10 @@
 			isa = PBXBuildFile;
 			fileRef = 6C81B0B124C6A64E1EF69075;
 		};
+		3063DB780D8B79EFCBE9FADE = {
+			isa = PBXBuildFile;
+			fileRef = 990EC1215F39696F63A29C22;
+		};
 		363785D1B80AC7F5E90B6482 = {
 			isa = PBXBuildFile;
 			fileRef = 845992FB025C1C572C3EBD00;
@@ -46,6 +50,10 @@
 		47B41E103578C4772AB05845 = {
 			isa = PBXBuildFile;
 			fileRef = 7FA019032B0F80521E3D396E;
+		};
+		51FB713B87DE914B2C655C88 = {
+			isa = PBXBuildFile;
+			fileRef = DF9F3D6B47356B3FC0345BBA;
 		};
 		5775DBD34590FE86542E9520 = {
 			isa = PBXBuildFile;
@@ -74,6 +82,10 @@
 		7C401FE3A5E7DCD9062A19DA = {
 			isa = PBXBuildFile;
 			fileRef = 8138026CAA5EDBADF3A45420;
+		};
+		7CDB12BEEC4AD598AE65D68E = {
+			isa = PBXBuildFile;
+			fileRef = 36989C1F4340563CDEB96E27;
 		};
 		807F140ED71A2CCD466CFB96 = {
 			isa = PBXBuildFile;
@@ -111,6 +123,10 @@
 			isa = PBXBuildFile;
 			fileRef = 6B267F5E1A63342993777D51;
 		};
+		A151D24664793446628F8E74 = {
+			isa = PBXBuildFile;
+			fileRef = 5399D768FBDA5E8BFE0A45EE;
+		};
 		A5B08CA1047B1DBA03DACAC9 = {
 			isa = PBXBuildFile;
 			fileRef = 920C5D19133348D51C686347;
@@ -122,6 +138,10 @@
 		BE66F4EA74770BF8242B24E5 = {
 			isa = PBXBuildFile;
 			fileRef = 433ECE6F44DF17E1F44B7EE2;
+		};
+		C271682049BABF0C24323592 = {
+			isa = PBXBuildFile;
+			fileRef = A489AE02B78633C1EAC0E15F;
 		};
 		C9FE3B8B3BB52EFF43401B22 = {
 			isa = PBXBuildFile;
@@ -204,6 +224,12 @@
 			path = MenuPopover.swift;
 			sourceTree = "<group>";
 		};
+		36989C1F4340563CDEB96E27 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = ScrollStitcher.swift;
+			sourceTree = "<group>";
+		};
 		433ECE6F44DF17E1F44B7EE2 = {
 			isa = PBXFileReference;
 			lastKnownFileType = sourcecode.swift;
@@ -214,6 +240,12 @@
 			isa = PBXFileReference;
 			lastKnownFileType = sourcecode.swift;
 			path = RendererTests.swift;
+			sourceTree = "<group>";
+		};
+		5399D768FBDA5E8BFE0A45EE = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = StitchCopy.swift;
 			sourceTree = "<group>";
 		};
 		5C99E4A254D82F4E3EC24FB9 = {
@@ -314,6 +346,12 @@
 			path = EditorView.swift;
 			sourceTree = "<group>";
 		};
+		990EC1215F39696F63A29C22 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = ScrollStitcherTests.swift;
+			sourceTree = "<group>";
+		};
 		9A30BEC597DD976595406E6F = {
 			isa = PBXFileReference;
 			lastKnownFileType = sourcecode.swift;
@@ -324,6 +362,12 @@
 			isa = PBXFileReference;
 			lastKnownFileType = sourcecode.swift;
 			path = ShortcutRecorder.swift;
+			sourceTree = "<group>";
+		};
+		A489AE02B78633C1EAC0E15F = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = ScrollingCapture.swift;
 			sourceTree = "<group>";
 		};
 		A82D2B178ECFA6EB359280E6 = {
@@ -378,6 +422,12 @@
 			isa = PBXFileReference;
 			lastKnownFileType = sourcecode.swift;
 			path = Annotation.swift;
+			sourceTree = "<group>";
+		};
+		DF9F3D6B47356B3FC0345BBA = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = StitchPreview.swift;
 			sourceTree = "<group>";
 		};
 		E52791757A2D876935E5D25C = {
@@ -489,6 +539,7 @@
 				2A4975192FFD9F4B8BD29247,
 				D0D343968069D3A3CC47FD72,
 				52560578F5C1B9D6F7372997,
+				990EC1215F39696F63A29C22,
 				AED36A62FB3B05E8688DC85B,
 				F76C95108D24842533E0E923,
 			);
@@ -592,6 +643,10 @@
 			children = (
 				EC1C2ECD42F69BE4CD43D760,
 				D3EA0EE4DA9657223E56BFD3,
+				A489AE02B78633C1EAC0E15F,
+				36989C1F4340563CDEB96E27,
+				5399D768FBDA5E8BFE0A45EE,
+				DF9F3D6B47356B3FC0345BBA,
 				069BF8018D99E7006B7E1809,
 			);
 			path = Capture;
@@ -711,6 +766,10 @@
 				807F140ED71A2CCD466CFB96,
 				4258839F5A29D825AE5B9FAC,
 				24CC7979DC1D6DD301A5CBBB,
+				7CDB12BEEC4AD598AE65D68E,
+				C271682049BABF0C24323592,
+				A151D24664793446628F8E74,
+				51FB713B87DE914B2C655C88,
 				9A99753F92E4BEDDE7D15E4C,
 				04BD982B535C5E1D9D1FF200,
 				702B9467B53C9AEB3D54E584,
@@ -745,6 +804,7 @@
 				5775DBD34590FE86542E9520,
 				E2B09302BFE6201D0E119EBE,
 				79F09BF3C5D5456186EECEF8,
+				3063DB780D8B79EFCBE9FADE,
 				82D06AA773806FC09C30243B,
 				A603EF62DE40A87260876E77,
 			);

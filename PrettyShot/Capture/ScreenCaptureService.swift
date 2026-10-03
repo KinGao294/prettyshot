@@ -1,8 +1,10 @@
 import AppKit
+import CoreMedia
+import CoreVideo
 import ScreenCaptureKit
 
 enum CaptureMode: String, CaseIterable, Identifiable, Codable {
-    case region, window, fullscreen
+    case region, window, fullscreen, scrolling
 
     var id: String { rawValue }
 
@@ -12,6 +14,7 @@ enum CaptureMode: String, CaseIterable, Identifiable, Codable {
         case .region: return "区域"
         case .window: return "窗口"
         case .fullscreen: return "全屏"
+        case .scrolling: return "滚动"
         }
     }
 
@@ -21,6 +24,7 @@ enum CaptureMode: String, CaseIterable, Identifiable, Codable {
         case .region: return "捕获区域"
         case .window: return "捕获窗口"
         case .fullscreen: return "捕获全屏"
+        case .scrolling: return "滚动捕获"
         }
     }
 
@@ -29,6 +33,7 @@ enum CaptureMode: String, CaseIterable, Identifiable, Codable {
         case .region: return "rectangle.dashed"
         case .window: return "macwindow"
         case .fullscreen: return "display"
+        case .scrolling: return "arrow.up.and.down.square"
         }
     }
 }
@@ -38,6 +43,16 @@ struct CaptureResult {
     /// Pixels per point of the source display.
     let scale: CGFloat
     let mode: CaptureMode
+    /// Shown after a scrolling capture that stopped itself (length cap). Nil for ordinary shots.
+    var notice: String? = nil
+    /// Kept when a confident sticky dedupe can still be restored. Nil for ordinary shots.
+    var scrollingAssembly: ScrollAssembly? = nil
+}
+
+struct ScrollingReview {
+    var scale: CGFloat
+    var assembly: ScrollAssembly
+    var notice: String?
 }
 
 enum CaptureError: LocalizedError {
@@ -94,6 +109,35 @@ final class ScreenCaptureService {
         }
         let image = try await captureDisplay(display, content: content)
         return CaptureResult(image: image, scale: CGFloat(image.width) / CGFloat(max(display.width, 1)), mode: .fullscreen)
+    }
+
+    /// Filter + stream config for one rectangle of `screen`. `sourceRect` is in points, origin at the
+    /// top-left of the display (see `ScrollingCaptureGeometry`). PrettyShot's own windows are excluded
+    /// so the scrolling chrome is not part of the frame.
+    func regionStreamSetup(
+        for screen: NSScreen,
+        sourceRect: CGRect,
+        pixelWidth: Int,
+        pixelHeight: Int
+    ) async throws -> (SCContentFilter, SCStreamConfiguration) {
+        let content = try await shareableContent()
+        guard let display = self.display(for: screen, in: content) ?? content.displays.first else {
+            throw CaptureError.noDisplay
+        }
+        let ownBundleID = Bundle.main.bundleIdentifier
+        let ownApps = content.applications.filter { $0.bundleIdentifier == ownBundleID }
+        let filter = SCContentFilter(display: display, excludingApplications: ownApps, exceptingWindows: [])
+        let config = SCStreamConfiguration()
+        config.sourceRect = sourceRect
+        config.width = max(1, pixelWidth)
+        config.height = max(1, pixelHeight)
+        config.showsCursor = false
+        config.capturesAudio = false
+        config.pixelFormat = kCVPixelFormatType_32BGRA
+        config.minimumFrameInterval = CMTime(value: 1, timescale: 8)
+        config.queueDepth = 3
+        config.captureResolution = .best
+        return (filter, config)
     }
 
     /// Captures a single window independent of what overlaps it (keeps rounded-corner alpha).

@@ -92,7 +92,7 @@ struct Shortcut: Codable, Hashable {
 }
 
 enum HotkeyAction: String, CaseIterable, Codable, Identifiable {
-    case captureRegion, captureWindow, captureFullscreen, openHistory, pinLatest
+    case captureRegion, captureWindow, captureFullscreen, captureScrolling, openHistory, pinLatest
 
     var id: String { rawValue }
 
@@ -101,18 +101,20 @@ enum HotkeyAction: String, CaseIterable, Codable, Identifiable {
         case .captureRegion: return "捕获区域"
         case .captureWindow: return "捕获窗口"
         case .captureFullscreen: return "捕获全屏"
+        case .captureScrolling: return "滚动捕获"
         case .openHistory: return "打开历史"
         case .pinLatest: return "Pin 最近一张"
         }
     }
 
-    /// Defaults from DESIGN §6: ⌥⌘1 / ⌥⌘2 / ⌥⌘3 / ⌥⌘H / ⌥⌘P.
+    /// Defaults: ⌥⌘1 / ⌥⌘2 / ⌥⌘3 / ⌥⌘4 / ⌥⌘H / ⌥⌘P.
     var defaultShortcut: Shortcut {
         let mods = Shortcut.option | Shortcut.command
         switch self {
         case .captureRegion: return Shortcut(keyCode: kVK_ANSI_1, modifiers: mods)
         case .captureWindow: return Shortcut(keyCode: kVK_ANSI_2, modifiers: mods)
         case .captureFullscreen: return Shortcut(keyCode: kVK_ANSI_3, modifiers: mods)
+        case .captureScrolling: return Shortcut(keyCode: kVK_ANSI_4, modifiers: mods)
         case .openHistory: return Shortcut(keyCode: kVK_ANSI_H, modifiers: mods)
         case .pinLatest: return Shortcut(keyCode: kVK_ANSI_P, modifiers: mods)
         }

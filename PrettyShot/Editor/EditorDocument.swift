@@ -72,6 +72,9 @@ final class EditorDocument: ObservableObject {
     /// True while `redactedBase` is a low-res preview (a redaction is being dragged); full bake on pointer-up.
     private(set) var redactionPreviewActive = false
     private lazy var redactionPreviewSource = Redactor.previewSource(for: original)
+    /// Cached downscale of `redactedBase` used only to paint the canvas when the capture is very tall.
+    private var displayPreviewSource: CGImage?
+    private var displayPreviewImage: CGImage?
     private static let undoLimit = 100
 
     init(image: CGImage, scale: CGFloat, mode: CaptureMode, background: BackgroundStyle, sourceHistoryID: UUID?) {
@@ -104,7 +107,7 @@ final class EditorDocument: ObservableObject {
         var hidden: Set<UUID> = []
         if let replacing = pendingText?.replacing { hidden.insert(replacing.id) }
         return RenderInput(
-            base: redactedBase,
+            base: canvasImage(),
             crop: forCropEditing ? imageBounds : effectiveCrop,
             annotations: vectorAnnotations.filter { !hidden.contains($0.id) },
             background: forCropEditing ? BackgroundStyle(presetKey: nil, padding: 0, radius: 0, shadow: 0) : background,
@@ -116,7 +119,28 @@ final class EditorDocument: ObservableObject {
     func exportImage() -> CGImage? {
         commitPendingText()
         bakeRedactionsIfPreview()
-        return Renderer.render(renderInput(forCropEditing: false))
+        var input = renderInput(forCropEditing: false)
+        // The canvas may be showing a downscaled stand-in. Export always uses the full bitmap.
+        input.base = redactedBase
+        return Renderer.render(input)
+    }
+
+    /// Live canvas bitmap. Tall scrolling captures are drawn from a pixel-capped preview so each
+    /// frame doesn't resample a multi-hundred-megabyte image. Redaction drags already use their own
+    /// smaller preview (`redactionPreviewActive`).
+    private func canvasImage() -> CGImage {
+        if redactionPreviewActive { return redactedBase }
+        if displayPreviewSource === redactedBase, let displayPreviewImage {
+            return displayPreviewImage
+        }
+        if let preview = Redactor.displaySource(for: redactedBase)?.image {
+            displayPreviewSource = redactedBase
+            displayPreviewImage = preview
+            return preview
+        }
+        displayPreviewSource = nil
+        displayPreviewImage = nil
+        return redactedBase
     }
 
     // MARK: - Undo

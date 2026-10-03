@@ -8,6 +8,40 @@ struct QuickOverlayActions {
     var save: () -> Void
     var pin: () -> Void
     var dismiss: () -> Void
+    /// Deduped captures offer restore; a capture that was just restored offers undo.
+    var stickyChip: OverlayStickyChip? = nil
+    var onStickyChip: (() -> Void)? = nil
+    /// Automatic dismissal stays off while the pointer is over the card.
+    var pointerInside: ((Bool) -> Void)? = nil
+}
+
+/// ML10 completion chip. The two halves stay separate so the action is a button.
+enum OverlayStickyChip: Equatable {
+    case deduped
+    case restored
+
+    var leading: String {
+        switch self {
+        case .deduped: return StitchCopy.overlayDeduped
+        case .restored: return StitchCopy.overlayRestored
+        }
+    }
+
+    var actionTitle: String {
+        switch self {
+        case .deduped: return StitchCopy.restoreSticky
+        case .restored: return StitchCopy.undoSticky
+        }
+    }
+
+    var line: String { leading + StitchCopy.joiner + actionTitle }
+}
+
+enum OverlayDismissPolicy {
+    /// An automatic hide is allowed only when the pointer is outside the card.
+    static func allowsAutomaticDismiss(pointerInside: Bool) -> Bool {
+        !pointerInside
+    }
 }
 
 /// F3 · Quick Access Overlay. Shown after every capture in the bottom-left corner of the active screen.
@@ -15,16 +49,26 @@ struct QuickOverlayActions {
 @MainActor
 final class QuickOverlayController {
     private var panel: OverlayPanel?
+    private var pointerInside = false
 
     var isVisible: Bool { panel?.isVisible == true }
+
+    func dismissAutomatically() {
+        guard OverlayDismissPolicy.allowsAutomaticDismiss(pointerInside: pointerInside) else { return }
+        hide()
+    }
 
     func show(image: NSImage, fileURL: URL, actions: QuickOverlayActions) {
         hide()
 
+        pointerInside = false
         var wrapped = actions
         wrapped.dismiss = { [weak self] in
             actions.dismiss()
             self?.hide()
+        }
+        wrapped.pointerInside = { [weak self] inside in
+            self?.pointerInside = inside
         }
 
         let view = QuickOverlayView(image: image, fileURL: fileURL, actions: wrapped)
@@ -130,11 +174,23 @@ struct QuickOverlayView: View {
             }
 
             dragHandle
+            if let chip = actions.stickyChip {
+                HStack(spacing: 0) {
+                    Text(chip.leading)
+                    Text(StitchCopy.joiner)
+                    Button(chip.actionTitle) { actions.onStickyChip?() }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(Palette.ivory)
+                }
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(Palette.ivoryMuted)
+            }
         }
         .padding(12)
         .frame(width: 420)
         .background(FrostedChrome())
         .background(copyShortcut)
+        .onHover { inside in actions.pointerInside?(inside) }
     }
 
     private var thumbnail: some View {

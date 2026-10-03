@@ -193,6 +193,7 @@ struct MenuPopoverView: View {
         case .region: return .captureRegion
         case .window: return .captureWindow
         case .fullscreen: return .captureFullscreen
+        case .scrolling: return .captureScrolling
         }
     }
 }

@@ -21,7 +21,7 @@ struct SettingsView: View {
                 .tabItem { Label("关于", systemImage: "info.circle") }
         }
         .tint(Palette.bloomDeep)
-        .frame(width: 580, height: 440)
+        .frame(width: 580, height: 520)
     }
 }
 
@@ -120,9 +120,10 @@ private struct ShortcutSettings: View {
                 Text("全局快捷键")
             } footer: {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("默认 ⌥⌘1 / ⌥⌘2 / ⌥⌘3 / ⌥⌘H / ⌥⌘P，均为建议值，可随时重映射。")
+                    Text("默认 ⌥⌘1 / ⌥⌘2 / ⌥⌘3 / ⌥⌘4 / ⌥⌘H / ⌥⌘P，均为建议值，可随时重映射。")
                     Text("PrettyShot 不会占用系统截图键 ⌘⇧3 / ⌘⇧4 / ⌘⇧5。与其它 App 冲突时会在对应行提示。")
-                    Text("捕获中：Esc 取消；Quick Overlay：↩ / ⌘C 复制，Esc 关闭。")
+                    Text("框选、窗口、全屏：Esc 取消。滚动捕获在框选阶段也是 Esc 取消；开始滚动后 Esc 与「停止」结束并拼接，点「取消」或再按一次快捷键则丢弃。")
+                    Text("Quick Overlay：↩ / ⌘C 复制，Esc 关闭。")
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -151,7 +152,7 @@ private struct PermissionSettings: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(permissions.screenCaptureGranted ? "已授权" : "未授权")
                             .font(.system(size: 13, weight: .semibold))
-                        Text("捕获区域 / 窗口 / 全屏都需要此权限。截图只保存在本机。")
+                        Text("捕获区域 / 窗口 / 全屏 / 滚动都需要此权限。截图只保存在本机。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }

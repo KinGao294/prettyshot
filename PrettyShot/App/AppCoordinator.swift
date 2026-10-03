@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import PrettyShotCore
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -20,7 +21,10 @@ final class AppCoordinator: ObservableObject {
     private var captureSession: CaptureSession?
     /// The in-flight capture (popover fade + ScreenCaptureKit + HUD); cancelled on toggle / Esc.
     private var captureTask: Task<Void, Never>?
+    /// Once a scrolling capture has locked its region, Esc finishes the stitch instead of discarding it.
+    private var escapeFinishesScrolling = false
     private var editors: [EditorWindowController] = []
+    private var stitchPreview: StitchPreviewController?
     private var historyWindow: NSWindow?
     /// Capture was started from History. Bring that window back if the shot is cancelled or fails.
     private var returnToHistoryOnCancel = false
@@ -39,7 +43,7 @@ final class AppCoordinator: ObservableObject {
         guard !Self.isRunningTests else { return }
         statusItem = StatusItemController(coordinator: self)
         hotkeys.onTrigger = { [weak self] action in self?.perform(action) }
-        hotkeys.onEscape = { [weak self] in self?.cancelCapture() }
+        hotkeys.onEscape = { [weak self] in self?.handleEscape() }
         hotkeys.registerAll()
         permissions.refresh()
     }
@@ -53,6 +57,7 @@ final class AppCoordinator: ObservableObject {
         case .captureRegion: startCapture(.region)
         case .captureWindow: startCapture(.window)
         case .captureFullscreen: startCapture(.fullscreen)
+        case .captureScrolling: startCapture(.scrolling)
         case .openHistory: showHistory()
         case .pinLatest: pinLatest()
         }
@@ -71,6 +76,10 @@ final class AppCoordinator: ObservableObject {
             cancelCapture()
             return
         }
+        if stitchPreview != nil {
+            ToastPresenter.shared.show("请先完成或关闭拼接预览", style: .info, duration: 3)
+            return
+        }
         // Sample before anything below (popover close, HUD) can activate PrettyShot.
         let focusTarget = focusTarget(for: trigger)
         statusItem?.closePopover()
@@ -84,6 +93,9 @@ final class AppCoordinator: ObservableObject {
 
         appBeforeCapture = focusTarget
         let session = CaptureSession(mode: mode, service: captureService, retryBlankFrames: permissions.grantIsFresh)
+        session.onScrollingBegan = { [weak self] in
+            self?.escapeFinishesScrolling = true
+        }
         captureSession = session
         hotkeys.beginEscapeMonitoring()
         captureTask = Task { @MainActor [weak self] in
@@ -98,6 +110,7 @@ final class AppCoordinator: ObservableObject {
 
     /// Cancels the in-flight capture immediately (Esc, or the capture hotkey pressed again) — also while
     /// still in the popover delay or awaiting ScreenCaptureKit, and for fullscreen, which has no HUD.
+    /// Scrolling capture is the exception once the region is locked: Esc finishes instead (see `handleEscape`).
     func cancelCapture() {
         guard let session = captureSession else { return }
         captureTask?.cancel()
@@ -106,8 +119,19 @@ final class AppCoordinator: ObservableObject {
         handle(.cancelled)
     }
 
+    /// Global Esc. During region / window / fullscreen, and during scrolling *selection*, this cancels.
+    /// After a scrolling region is locked, Esc ends the capture and keeps the stitched image.
+    private func handleEscape() {
+        if escapeFinishesScrolling {
+            captureSession?.finishActiveScrolling()
+        } else {
+            cancelCapture()
+        }
+    }
+
     private func endCapture() {
         hotkeys.endEscapeMonitoring()
+        escapeFinishesScrolling = false
         captureSession = nil
         captureTask = nil
     }
@@ -134,14 +158,16 @@ final class AppCoordinator: ObservableObject {
         switch outcome {
         case .captured(let result):
             returnToHistoryOnCancel = false
-            do {
-                let item = try history.add(image: result.image, scale: result.scale, mode: result.mode)
-                showOverlay(for: item, image: result.image)
-            } catch {
-                // Still let the user copy what they captured even if history is unwritable.
-                Clipboard.copy(result.image, scale: result.scale)
-                ToastPresenter.shared.show("无法写入历史，已直接复制到剪贴板：\(error.localizedDescription)", style: .error, duration: 4)
+            if let notice = result.notice {
+                ToastPresenter.shared.show(notice, style: .info, duration: 5)
             }
+            deliverCaptured(image: result.image, scale: result.scale, mode: result.mode, assembly: result.scrollingAssembly)
+        case .reviewScrolling(let review):
+            returnToHistoryOnCancel = false
+            if let notice = review.notice {
+                ToastPresenter.shared.show(notice, style: .info, duration: 5)
+            }
+            showStitchPreview(review)
         case .cancelled:
             restoreFocus()
             resumeHistoryIfNeeded()
@@ -154,6 +180,61 @@ final class AppCoordinator: ObservableObject {
             }
             resumeHistoryIfNeeded()
         }
+    }
+
+    private func deliverCaptured(image: CGImage, scale: CGFloat, mode: CaptureMode, assembly: ScrollAssembly? = nil) {
+        do {
+            var item = try history.add(image: image, scale: scale, mode: mode)
+            if let assembly, assembly.hasStickyRepeats {
+                try history.saveStitch(assembly, for: item)
+                item = history.items.first(where: { $0.id == item.id }) ?? item
+            }
+            showOverlay(for: item, image: image)
+        } catch {
+            // Still let the user copy what they captured even if history is unwritable.
+            Clipboard.copy(image, scale: scale)
+            ToastPresenter.shared.show("无法写入历史，已直接复制到剪贴板：\(error.localizedDescription)", style: .error, duration: 4)
+        }
+    }
+
+    private func showStitchPreview(_ review: ScrollingReview) {
+        let controller = StitchPreviewController(review: review)
+        controller.onCommit = { [weak self] image, assembly in
+            guard let self else { return }
+            self.stitchPreview = nil
+            self.deliverCaptured(image: image, scale: review.scale, mode: .scrolling, assembly: assembly)
+        }
+        controller.onExportSegments = { [weak self] images in
+            guard let self else { return }
+            self.stitchPreview = nil
+            var first: (HistoryItem, CGImage)?
+            var failed = 0
+            for image in images {
+                do {
+                    let item = try self.history.add(image: image, scale: review.scale, mode: .scrolling)
+                    if first == nil { first = (item, image) }
+                } catch {
+                    failed += 1
+                }
+            }
+            if failed > 0 {
+                ToastPresenter.shared.show("有 \(failed) 段没有写入历史", style: .error, duration: 4)
+            } else if images.count > 1 {
+                ToastPresenter.shared.show("已把 \(images.count) 段分别放进历史", style: .success, duration: 4)
+            }
+            if let first {
+                self.showOverlay(for: first.0, image: first.1)
+            } else if let image = images.first {
+                self.deliverCaptured(image: image, scale: review.scale, mode: .scrolling)
+            }
+        }
+        controller.onDiscard = { [weak self] in
+            self?.stitchPreview = nil
+            ToastPresenter.shared.show("已关闭拼接预览，这次长图没有保存", style: .info, duration: 3)
+            self?.restoreFocus()
+        }
+        stitchPreview = controller
+        controller.present()
     }
 
     /// Leave History only after permission is confirmed, so a denied grant does not close the page.
@@ -181,7 +262,7 @@ final class AppCoordinator: ObservableObject {
         let scale = CGFloat(item.scale)
         let dragURL = dragCopy(of: item) ?? history.url(for: item)
         overlay.show(
-            image: ImageCodec.nsImage(image, scale: scale),
+            image: ImageCodec.nsImage(Self.overlayPreview(of: image), scale: scale),
             fileURL: dragURL,
             actions: QuickOverlayActions(
                 copy: { [weak self] in
@@ -195,9 +276,97 @@ final class AppCoordinator: ObservableObject {
                 },
                 save: { [weak self] in self?.save(image: image) },
                 pin: { [weak self] in self?.pins.pin(image: image, scale: scale) },
-                dismiss: { [weak self] in self?.restoreFocus() }
+                dismiss: { [weak self] in self?.restoreFocus() },
+                stickyChip: stickyChip(for: item),
+                onStickyChip: stickyChip(for: item) == nil ? nil : { [weak self] in
+                    self?.handleStickyChip(for: item, fromOverlay: true)
+                }
             )
         )
+    }
+
+    /// Deduped stitch offers restore; a restored stitch offers undo. Nil when this image has no sticky bars.
+    private func stickyChip(for item: HistoryItem) -> OverlayStickyChip? {
+        guard let assembly = history.loadStitch(for: item),
+              assembly.hasStickyRepeats,
+              assembly.pendingSticky?.isUnresolved != true else { return nil }
+        return assembly.dedupeStickyBars ? .deduped : .restored
+    }
+
+    private func handleStickyChip(for item: HistoryItem, fromOverlay: Bool) {
+        guard let assembly = history.loadStitch(for: item) else { return }
+        if assembly.dedupeStickyBars {
+            restoreStickyBars(for: item, fromOverlay: fromOverlay)
+        } else {
+            undoStickyBars(for: item, fromOverlay: fromOverlay)
+        }
+    }
+
+    /// Puts the deduped image back after a restore on this history item.
+    private func undoStickyBars(for item: HistoryItem, fromOverlay: Bool) {
+        guard var assembly = history.loadStitch(for: item) else { return }
+        assembly.confirmStickyBars(keepOnce: true)
+        guard let image = assembly.flattenedIfResolved()?.cgImage() else { return }
+        do {
+            try history.replaceImage(of: item.id, with: image)
+            if let updated = history.items.first(where: { $0.id == item.id }) {
+                try history.saveStitch(assembly, for: updated)
+                if fromOverlay {
+                    showOverlay(for: updated, image: image)
+                }
+            }
+        } catch {
+            ToastPresenter.shared.show(StitchCopy.restoreFailed(error.localizedDescription), style: .error, duration: 4)
+        }
+    }
+
+    /// Restores sticky bars on this history image only. Over the single-image cap, offers a split export.
+    private func restoreStickyBars(for item: HistoryItem, fromOverlay: Bool) {
+        guard var assembly = history.loadStitch(for: item) else { return }
+        switch assembly.restoreStickyBars() {
+        case .restored:
+            guard let image = assembly.flattenedIfResolved()?.cgImage() else { return }
+            do {
+                try history.replaceImage(of: item.id, with: image)
+                if let updated = history.items.first(where: { $0.id == item.id }) {
+                    try history.saveStitch(assembly, for: updated)
+                }
+            } catch {
+                ToastPresenter.shared.show(StitchCopy.restoreFailed(error.localizedDescription), style: .error, duration: 4)
+                return
+            }
+            if fromOverlay, let updated = history.items.first(where: { $0.id == item.id }) {
+                showOverlay(for: updated, image: image)
+            }
+        case .exceedsLimit(_, let message):
+            let alert = NSAlert()
+            alert.messageText = message
+            alert.informativeText = StitchCopy.overLimitNote
+            alert.addButton(withTitle: StitchCopy.exportSegments)
+            alert.addButton(withTitle: StitchCopy.keepDedupe)
+            let response = alert.runModal()
+            guard response == .alertFirstButtonReturn else { return }
+            let chunks = assembly.exportWithinLimits(dedupeStickyBars: false)
+            guard !chunks.isEmpty else { return }
+            var saved = 0
+            for chunk in chunks {
+                guard let image = chunk.cgImage() else { continue }
+                if (try? history.add(image: image, scale: CGFloat(item.scale), mode: .scrolling)) != nil {
+                    saved += 1
+                }
+            }
+            ToastPresenter.shared.show(StitchCopy.savedSegments(saved), style: .success, duration: 4)
+        case .alreadyRestored, .nothingToRestore:
+            break
+        }
+    }
+
+    /// The overlay is a small thumbnail. Very tall scrolling captures stay full size for copy / edit / save,
+    /// but the panel itself only holds a bounded preview so a long image isn't uploaded to the window server twice.
+    private static func overlayPreview(of image: CGImage) -> CGImage {
+        let pixels = Int64(image.width) * Int64(image.height)
+        guard max(image.width, image.height) > 1600 || pixels > 1_600_000 else { return image }
+        return Redactor.previewSource(for: image, maxSide: 1600, maxPixels: 1_600_000)?.image ?? image
     }
 
     /// Drag-out uses a nicely named temp copy ("PrettyShot 2026-09-27 at 10.35.06.png") instead of the UUID file.
@@ -357,6 +526,9 @@ final class AppCoordinator: ObservableObject {
                     },
                     captureRegion: { [weak self] in
                         self?.startCaptureFromHistory()
+                    },
+                    restoreSticky: { [weak self] item in
+                        self?.restoreStickyBars(for: item, fromOverlay: false)
                     }
                 )
             )
@@ -369,7 +541,7 @@ final class AppCoordinator: ObservableObject {
         statusItem?.closePopover()
         if settingsWindow == nil {
             let view = SettingsView(preferences: preferences, hotkeys: hotkeys, permissions: permissions, history: history)
-            settingsWindow = makeWindow(title: "PrettyShot 设置", size: NSSize(width: 580, height: 440), root: view, resizable: false)
+            settingsWindow = makeWindow(title: "PrettyShot 设置", size: NSSize(width: 580, height: 520), root: view, resizable: false)
         }
         present(settingsWindow)
     }
