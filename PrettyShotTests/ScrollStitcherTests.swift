@@ -457,7 +457,7 @@ final class ScrollStitcherTests: XCTestCase {
         XCTAssertTrue(ready.primaryExports)
         XCTAssertTrue(ready.segmentExportEnabled)
         XCTAssertNil(ready.segmentExportCaption)
-        XCTAssertFalse(model.assembly.exportWithinLimits().isEmpty)
+        XCTAssertFalse(model.assembly.exportWithinLimits(dedupeStickyBars: true).isEmpty)
     }
 
     func testFrameCopyUsesGroupedNumbersAndOmitsEmptyRemainder() {
