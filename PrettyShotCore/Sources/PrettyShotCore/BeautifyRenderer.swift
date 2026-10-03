@@ -68,7 +68,7 @@ public enum BeautifyRenderer {
         let canvas = CGRect(origin: .zero, size: layout.canvasSize)
 
         context.saveGState()
-        context.interpolationQuality = .none
+        context.interpolationQuality = .high
 
         let imageClip: CGPath
         if let preset = input.background.preset {
