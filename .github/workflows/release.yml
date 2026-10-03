@@ -80,6 +80,8 @@ jobs:
           esac
 
       - name: Test shared module (macOS)
+        id: core
+        continue-on-error: true
         run: |
           set +e
           set -o pipefail
@@ -112,7 +114,9 @@ jobs:
             build
 
       - name: Test Mac app (XCTest)
+        id: mac
         if: always()
+        continue-on-error: true
         run: |
           set +e
           set -o pipefail
@@ -135,6 +139,12 @@ jobs:
           status=$?
           python3 .github/scripts/annotate-xctest.py /tmp/xcode-test.log
           exit $status
+
+      - name: Evidence result
+        if: always()
+        run: |
+          echo "core=${{ steps.core.outcome }} mac=${{ steps.mac.outcome }}"
+          test "${{ steps.core.outcome }}" = "success" && test "${{ steps.mac.outcome }}" = "success"
 
       - name: Package DMG
         run: |

@@ -11,10 +11,11 @@ from pathlib import Path
 
 path = Path(sys.argv[1])
 text = path.read_text(errors="replace") if path.exists() else ""
+text = re.sub(r"(?m)^\d{4}-\d{2}-\d{2}T[0-9:.]+Z ", "", text)
 
 case_re = re.compile(r"Test Case '-\[(?P<name>[^\]]+)\]' failed")
 err_re = re.compile(
-    r"^(?:(?P<file>.+?\.swift):(?P<line>\d+): )?error: -\[(?P<name>[^\]]+)\] : (?P<msg>.*)$",
+    r"(?:^|\s)(?:(?P<file>\S+?\.swift):(?P<line>\d+): )?error: -\[(?P<name>[^\]]+)\] : (?P<msg>.*)$",
     re.M,
 )
 
@@ -26,6 +27,11 @@ failed: list[str] = []
 seen: set[str] = set()
 for match in case_re.finditer(text):
     name = match.group("name")
+    if name in seen:
+        continue
+    seen.add(name)
+    failed.append(name)
+for name in errors:
     if name in seen:
         continue
     seen.add(name)
