@@ -924,6 +924,62 @@ final class ShareAcceptanceTests: XCTestCase {
         XCTAssertFalse(IOSCopy.handoffBannerDetail(count: 4).contains("次分享"))
     }
 
+    /// Share 1 is 4 images with #3 missing. Share 2 is 3 images with #2 missing.
+    /// The banner must say 第 3 张、第 6 张, not the per-share numbers 第 2 张、第 3 张.
+    func testMissingOrdinalsOffsetByEarlierShareCounts() throws {
+        let pending = try stageSharesWithMissing(files: [3, 2], missing: [[3], [2]])
+        let missing = pending.flatMap { $0.missingShots.map(\.ordinal) }.sorted()
+        XCTAssertEqual(missing, [3, 6])
+        XCTAssertEqual(IOSCopy.missingBanner(missing), "少了 2 张 · 第 3 张、第 6 张没读出来")
+    }
+
+    /// Both shares are missing their own #2. That must not become 「第 2 张、第 2 张」.
+    /// Putting the second share's image back lands between the global neighbors, not at the end.
+    func testBothSharesMissingTheirSecondImageUseGlobalOrdinals() throws {
+        let pending = try stageSharesWithMissing(files: [3, 2], missing: [[2], [2]])
+        let missing = pending.flatMap { $0.missingShots.map(\.ordinal) }.sorted()
+        XCTAssertEqual(missing, [2, 6])
+        XCTAssertEqual(Set(missing).count, missing.count)
+        XCTAssertEqual(IOSCopy.missingBanner(missing), "少了 2 张 · 第 2 张、第 6 张没读出来")
+        XCTAssertFalse(IOSCopy.missingBanner(missing).contains("第 2 张、第 2 张"))
+        let placed = ShotOrdering.inserting(
+            OrderedShot(id: "readded", capturedAt: nil),
+            into: [
+                OrderedShot(id: "g1", capturedAt: nil),
+                OrderedShot(id: "g3", capturedAt: nil),
+                OrderedShot(id: "g4", capturedAt: nil),
+                OrderedShot(id: "g5", capturedAt: nil),
+                OrderedShot(id: "g7", capturedAt: nil),
+            ],
+            missingOrdinal: 6
+        )
+        XCTAssertEqual(placed.map(\.id), ["g1", "g3", "g4", "g5", "readded", "g7"])
+    }
+
+    private func stageSharesWithMissing(files: [Int], missing: [[Int]]) throws -> [HandoffTicket] {
+        let tmp = try makeTemp()
+        addTeardownBlock { try? FileManager.default.removeItem(at: tmp) }
+        let source = try patternedPNG(width: 4, height: 3, directory: tmp)
+        let store = InlineHandoffStore(root: tmp.appendingPathComponent("inbox", isDirectory: true))
+        for (index, count) in files.enumerated() {
+            if index > 0 {
+                Thread.sleep(forTimeInterval: 0.05)
+            }
+            let shots = missing[index].map { MissingShot(ordinal: $0) }
+            let receipt = HandoffTransfer.persist(
+                copying: Array(repeating: source.url, count: count),
+                kind: .stitch,
+                store: store,
+                missingShots: shots
+            )
+            guard case .waitingForApp = receipt else {
+                XCTFail("expected a staged share, got \(receipt)")
+                continue
+            }
+        }
+        return try store.pendingTickets()
+    }
+
     func testBeginNewPickDropsPreviousOrdinals() {
         let previous = MissingShotSession.remember(failedOrdinals: [2, 5], loadedCount: 4)
         let next = MissingShotSession.beginNewPick(replacing: previous, failedOrdinals: [9], loadedCount: 2)
@@ -1019,9 +1075,14 @@ final class FollowUp34CopyTests: XCTestCase {
     func testTwoPickedOneUnreadableUsesTheMultiErrorPage() {
         XCTAssertEqual(InAppStitchLoader.outcome(readableCount: 1, failedOrdinals: [2]), .failed)
         XCTAssertEqual(IOSCopy.memoryFailedTitle, "这张图片打不开")
-        XCTAssertEqual(InAppStitchLoader.errorTitle(pickedCount: 2), "有的图片没读出来")
-        XCTAssertEqual(InAppStitchLoader.errorBody(pickedCount: 2), IOSCopy.multiUnreadableBody)
-        XCTAssertTrue(IOSCopy.multiUnreadableBody.contains("不会只用读出来的那张继续"))
+        XCTAssertEqual(InAppStitchLoader.errorTitle(pickedCount: 2), "有图片没读出来")
+        XCTAssertEqual(
+            InAppStitchLoader.errorBody(pickedCount: 2),
+            "可能还在 iCloud 中未下载，或文件已损坏。拼长图至少要 2 张，请重新选图。相册里的原图没动。"
+        )
+        XCTAssertFalse(InAppStitchLoader.errorBody(pickedCount: 2).contains("读出来的那张"))
+        XCTAssertEqual(InAppStitchLoader.outcome(readableCount: 0, failedOrdinals: [1, 2]), .failed)
+        XCTAssertEqual(InAppStitchLoader.errorTitle(pickedCount: 2), "有图片没读出来")
         XCTAssertEqual(InAppStitchLoader.errorTitle(pickedCount: 1), "这张图片打不开")
         XCTAssertFalse(InAppStitchLoader.reselectOpensMultiPicker(pickedCount: 1))
         XCTAssertTrue(InAppStitchLoader.reselectOpensMultiPicker(pickedCount: 2))
@@ -1029,13 +1090,22 @@ final class FollowUp34CopyTests: XCTestCase {
     }
 
     func testS12OpenFailureStaysOnS12WithOneHint() {
-        XCTAssertEqual(IOSCopy.s12OpenFailedHint, "没有打开 PrettyShot。请自己打开 App，从这一页继续。")
-        XCTAssertEqual(IOSCopy.multiFootnote, "若没有自动打开，手动打开 PrettyShot 即可继续。")
+        XCTAssertEqual(IOSCopy.readFailedTitle, "没能读取这张图片")
+        XCTAssertEqual(IOSCopy.reselectInApp, "改用 PrettyShot App 选图")
         XCTAssertEqual(
-            S12Launch.afterOpenFailed(stagedFileCount: 0),
-            .stayOnMultiPage(hint: IOSCopy.s12OpenFailedHint)
+            IOSCopy.s12OpenFailedHint,
+            "没能打开 PrettyShot。请从主屏幕打开它，在 App 里选图。"
         )
-        XCTAssertEqual(S12Launch.afterOpenFailed(stagedFileCount: 2), .notThisPage)
+        XCTAssertNotEqual(IOSCopy.s12OpenFailedHint, IOSCopy.pickerOpenFailedHint)
+        XCTAssertNotEqual(IOSCopy.s12OpenFailedHint, IOSCopy.cannotHandTitle)
+    }
+
+    func testMultiImagePageSaysImagesCannotBeHandedOff() {
+        XCTAssertEqual(
+            IOSCopy.multiInlineFootnote,
+            "这些图没法从分享菜单交给 App · 原图没动。请打开 PrettyShot，用「拼长图」从相册再选一次。"
+        )
+        XCTAssertEqual(IOSCopy.multiFootnote, "若没有自动打开，手动打开 PrettyShot 即可继续。")
     }
 
     func testSingleImageStagedBodyOmitsStitchWord() {
@@ -1071,6 +1141,14 @@ final class FollowUp34CopyTests: XCTestCase {
         XCTAssertEqual(model.note, IOSCopy.stitchSizeMismatch(ordinals: [2]))
     }
 
+    /// Card 2 never decoded. The later size mismatch is card 3, not the second decoded image.
+    func testSizeMismatchUsesTheCardNumberWhenAnEarlierImageWasUnreadable() throws {
+        let model = StitchModel()
+        model.ingest([try solid(width: 40, height: 80), try solid(width: 48, height: 80)])
+        XCTAssertEqual(model.skippedOrdinals, [3])
+        XCTAssertEqual(model.note, IOSCopy.stitchSizeMismatch(ordinals: [3]))
+    }
+
     func testStagedMarkUsesMintInDarkMode() {
         let light = IOSTheme.stagedCheckColor.resolvedColor(with: UITraitCollection(userInterfaceStyle: .light))
         let dark = IOSTheme.stagedCheckColor.resolvedColor(with: UITraitCollection(userInterfaceStyle: .dark))
@@ -1084,10 +1162,12 @@ final class FollowUp34CopyTests: XCTestCase {
         var darkAlpha: CGFloat = 0
         XCTAssertTrue(light.getRed(&lightRed, green: &lightGreen, blue: &lightBlue, alpha: &lightAlpha))
         XCTAssertTrue(dark.getRed(&darkRed, green: &darkGreen, blue: &darkBlue, alpha: &darkAlpha))
-        XCTAssertEqual(lightRed, CGFloat(0x7E) / 255, accuracy: 0.02)
-        XCTAssertEqual(lightGreen, CGFloat(0xB8) / 255, accuracy: 0.02)
-        XCTAssertEqual(lightBlue, CGFloat(0xA8) / 255, accuracy: 0.02)
-        XCTAssertNotEqual(lightRed, darkRed)
+        XCTAssertEqual(lightRed, CGFloat(0x4F) / 255, accuracy: 0.02)
+        XCTAssertEqual(lightGreen, CGFloat(0x8F) / 255, accuracy: 0.02)
+        XCTAssertEqual(lightBlue, CGFloat(0x7E) / 255, accuracy: 0.02)
+        XCTAssertEqual(darkRed, CGFloat(0x8F) / 255, accuracy: 0.02)
+        XCTAssertEqual(darkGreen, CGFloat(0xCB) / 255, accuracy: 0.02)
+        XCTAssertEqual(darkBlue, CGFloat(0xBC) / 255, accuracy: 0.02)
         let circleLight = IOSTheme.stagedCircleColor.resolvedColor(with: UITraitCollection(userInterfaceStyle: .light))
         let circleDark = IOSTheme.stagedCircleColor.resolvedColor(with: UITraitCollection(userInterfaceStyle: .dark))
         var circleLightRed: CGFloat = 0
