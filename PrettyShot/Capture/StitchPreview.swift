@@ -420,26 +420,54 @@ struct StitchPreviewView: View {
         .background(Palette.drawer)
     }
 
+    private func seamCard(for mark: SeamMark) -> SeamCard? {
+        guard let index = mark.boundaryIndex, model.assembly.seams.indices.contains(index) else { return nil }
+        return model.assembly.seams[index].card(number: index + 1)
+    }
+
     private func seamRow(_ mark: SeamMark) -> some View {
         let selected = mark.boundaryIndex != nil && mark.boundaryIndex == model.selectedBoundary
+        let card = seamCard(for: mark)
+        let pending = card?.chrome == .amberDashed
+        let labelText = card?.label ?? label(for: mark.state)
+        let labelTint = pending ? Palette.amber : tint(for: mark.state)
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                Text(label(for: mark.state))
+                Text(labelText)
                     .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(tint(for: mark.state))
+                    .foregroundStyle(labelTint)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
-                    .background(Capsule().fill(tint(for: mark.state).opacity(0.15)))
+                    .background {
+                        if pending {
+                            Capsule().stroke(labelTint, style: StrokeStyle(lineWidth: 1, dash: [3, 2]))
+                        } else {
+                            Capsule().fill(labelTint.opacity(0.15))
+                        }
+                    }
                 Text("距顶部 \(mark.y) px")
                     .font(.system(size: 11))
                     .foregroundStyle(Palette.muted)
                 Spacer()
             }
-            if let note = mark.note {
-                Text(note)
+            if let title = card?.title {
+                Text(title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Palette.charcoal)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let reason = card?.reason ?? mark.note {
+                Text(reason)
                     .font(.system(size: 11))
                     .foregroundStyle(Palette.charcoal)
                     .fixedSize(horizontal: false, vertical: true)
+            }
+            if let candidates = card?.candidates, !candidates.isEmpty {
+                ForEach(candidates, id: \.self) { line in
+                    Text(line)
+                        .font(.system(size: 11))
+                        .foregroundStyle(Palette.charcoal)
+                }
             }
             if let index = mark.boundaryIndex, selected, model.assembly.seams.indices.contains(index) {
                 Text("重叠 \(Int(model.overlap.rounded())) px（盖住下一段顶部）· 方向键 ±1 px")

@@ -152,9 +152,12 @@ public struct ScrollSeam: Equatable {
     }
 
     /// Review copy for this boundary. `number` is the 1-based seam index.
-    /// This still returns today's plain 「需要对齐」 label; the amber pending style is not applied yet.
+    /// A lone reverse candidate uses the amber dashed 「待确认」 label and keeps its reason line.
     public func card(number: Int) -> SeamCard {
         precondition(number >= 1)
+        if case .needsAlignment = kind, note == StitchCopy.reverseSeam {
+            return SeamCard(label: "待确认", chrome: .amberDashed, reason: note)
+        }
         let label: String
         switch kind {
         case .needsAlignment:
@@ -637,8 +640,22 @@ public struct ScrollAssembly: Equatable {
                     suggestedOverlap: seam.suggestedOverlap,
                     note: seam.note
                 ))
-                let color: (UInt8, UInt8, UInt8) = seam.isResolved ? (126, 184, 168) : (232, 160, 168)
-                paintLine(at: y, fullHeight: fullHeight, factor: factor, outW: outW, outH: outH, color: color, into: &pixels)
+                let card = seam.card(number: segmentIndex + 1)
+                if card.chrome == .amberDashed {
+                    paintLine(
+                        at: y,
+                        fullHeight: fullHeight,
+                        factor: factor,
+                        outW: outW,
+                        outH: outH,
+                        color: (232, 163, 61),
+                        dashed: true,
+                        into: &pixels
+                    )
+                } else {
+                    let color: (UInt8, UInt8, UInt8) = seam.isResolved ? (126, 184, 168) : (232, 160, 168)
+                    paintLine(at: y, fullHeight: fullHeight, factor: factor, outW: outW, outH: outH, color: color, into: &pixels)
+                }
             }
         }
         return (RGBAImage(width: outW, height: outH, pixels: pixels), marks)
@@ -803,11 +820,14 @@ public struct ScrollAssembly: Equatable {
         outW: Int,
         outH: Int,
         color: (UInt8, UInt8, UInt8),
+        dashed: Bool = false,
         into pixels: inout [UInt8]
     ) {
         guard fullHeight > 0 else { return }
         let row = min(outH - 1, max(0, Int((CGFloat(fullY) * factor).rounded(.down))))
         for x in 0..<outW {
+            // 4 px on, 4 px off, in preview pixels.
+            if dashed, x % 8 >= 4 { continue }
             let d = (row * outW + x) * 4
             pixels[d] = color.0
             pixels[d + 1] = color.1
