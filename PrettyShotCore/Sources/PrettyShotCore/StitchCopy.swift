@@ -149,6 +149,26 @@ public enum StitchCopy {
         "重复段 \(index) 已还原为待确认 · 待确认还剩 \(remaining) 处"
     }
 
+    /// Shown with 「撤销」 right after 「只保留一次」 or 「都保留」.
+    public static func duplicateChoiceToast(index: Int, choice: DuplicateSegmentChoice, remaining: Int) -> String {
+        let name = choice == .keepOnce ? keepDuplicateOnce : keepDuplicateBoth
+        return "重复段 \(index) 已改为\(name) · 待确认还剩 \(remaining) 处"
+    }
+
+    public static func duplicatesRedetected(_ count: Int) -> String {
+        "重复段已重新识别，\(count) 处待确认"
+    }
+
+    /// ML6l, after manual alignment 「完成」.
+    public static func manualAlignmentRedetected(seam: Int, overlap: Int, pending: Int) -> String {
+        "接缝 \(seam) 已对齐（手动 +\(overlap) px）" + joiner + duplicatesRedetected(pending)
+    }
+
+    /// After 「还原自动」. Re-detect still drops the undo stack, so this toast has no 「撤销」.
+    public static func restoreAutoRedetected(seam: Int, pending: Int) -> String {
+        "接缝 \(seam) 已还原自动" + joiner + duplicatesRedetected(pending)
+    }
+
     public static func savedSegments(_ count: Int) -> String {
         "已把 \(count) 段分别放进历史"
     }

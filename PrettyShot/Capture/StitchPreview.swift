@@ -105,6 +105,10 @@ final class StitchPreviewModel: ObservableObject {
     @Published var loupe: NSImage?
     @Published var restoreLimitMessage: String?
     @Published var duplicateToast: String?
+    /// False for the re-detect notice: that action clears the undo stack.
+    @Published var duplicateToastCanUndo = false
+    @Published var duplicateMarks: [DuplicateRegionMark] = []
+    @Published var previewFullHeight = 0
     @Published var selectedDuplicateID: String?
     @Published var highlightPendingSticky = false
     let notice: String?
@@ -129,6 +133,8 @@ final class StitchPreviewModel: ObservableObject {
     }
 
     func refresh() {
+        duplicateMarks = assembly.duplicateRegionMarks()
+        previewFullHeight = assembly.previewStackHeight()
         guard let rendered = assembly.renderPreview() else {
             preview = nil
             marks = []
@@ -140,6 +146,10 @@ final class StitchPreviewModel: ObservableObject {
             preview = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
         }
         refreshLoupe()
+    }
+
+    static func duplicatePreviewScrollID(_ candidateID: String) -> String {
+        ScrollAssembly.duplicatePreviewScrollID(candidateID)
     }
 
     func select(boundary: Int) {
@@ -178,12 +188,17 @@ final class StitchPreviewModel: ObservableObject {
         refresh()
     }
 
-    /// 「还原自动」. Restores the selected seam's suggested overlap and clears duplicate review.
+    /// 「还原自动」. Restores the suggested overlap, then re-runs duplicate detection.
     func restoreAutoAlignment() {
         guard let selectedBoundary else { return }
-        assembly.restoreAutoAlignment(seam: selectedBoundary)
-        overlap = Double(assembly.seams[selectedBoundary].editorOverlap)
+        let boundary = selectedBoundary
+        assembly.restoreAutoAlignment(seam: boundary)
+        overlap = Double(assembly.seams[boundary].editorOverlap)
         clearDuplicateChrome()
+        showRedetectToast(StitchCopy.restoreAutoRedetected(
+            seam: assembly.visibleSeamNumber(boundary: boundary),
+            pending: assembly.pendingDuplicateConfirmCount
+        ))
         refreshOverLimitMessage()
         refresh()
     }
@@ -194,13 +209,22 @@ final class StitchPreviewModel: ObservableObject {
         clearDuplicateChrome()
     }
 
-    /// Manual alignment 「完成」. Applies the current overlap, then clears duplicate review.
+    /// Manual alignment 「完成」. Applies the current overlap, then re-runs duplicate detection.
     func finishManualAlignment() {
-        if let selectedBoundary {
-            assembly.align(seam: selectedBoundary, overlap: Int(overlap.rounded()))
+        let boundary = selectedBoundary
+        let applied = Int(overlap.rounded())
+        if let boundary {
+            assembly.align(seam: boundary, overlap: applied)
         }
         assembly.completeManualAlignment()
         clearDuplicateChrome()
+        if let boundary {
+            showRedetectToast(StitchCopy.manualAlignmentRedetected(
+                seam: assembly.visibleSeamNumber(boundary: boundary),
+                overlap: applied,
+                pending: assembly.pendingDuplicateConfirmCount
+            ))
+        }
         refreshOverLimitMessage()
         refresh()
     }
@@ -229,8 +253,16 @@ final class StitchPreviewModel: ObservableObject {
 
     private func clearDuplicateChrome() {
         duplicateToast = nil
+        duplicateToastCanUndo = false
         selectedDuplicateID = nil
         highlightPendingSticky = false
+    }
+
+    /// Re-detect empties the undo stack, so the notice cannot be undone.
+    private func showRedetectToast(_ text: String) {
+        guard assembly.pendingDuplicateConfirmCount > 0 else { return }
+        duplicateToast = text
+        duplicateToastCanUndo = false
     }
 
     func setDedupeStickyBars(_ enabled: Bool) {
@@ -254,16 +286,28 @@ final class StitchPreviewModel: ObservableObject {
         }
     }
 
-    /// 「只保留一次」 or 「都保留」. The bottom bar recounts unresolved duplicate segments immediately.
+    /// 「只保留一次」 or 「都保留」. The choice goes on the undo stack and a toast offers 「撤销」.
     func resolveDuplicateCandidate(_ id: String, choice: DuplicateSegmentChoice) {
+        guard let index = assembly.duplicateCandidates.firstIndex(where: { $0.id == id }) else { return }
+        let before = assembly.duplicateUndoCount
         assembly.resolveDuplicateCandidate(id, choice: choice)
-        duplicateToast = nil
+        guard assembly.duplicateUndoCount > before else { return }
+        duplicateToast = StitchCopy.duplicateChoiceToast(
+            index: index + 1,
+            choice: choice,
+            remaining: assembly.pendingDuplicateConfirmCount
+        )
+        duplicateToastCanUndo = true
+        selectedDuplicateID = id
+        refresh()
     }
 
     /// Puts the last duplicate-segment choice back into 「待确认」.
     func undoDuplicateCandidateChoice() {
         assembly.undoLastDuplicateCandidateChoice()
         duplicateToast = nil
+        duplicateToastCanUndo = false
+        refresh()
     }
 
     /// Puts one candidate back to unresolved and shows the restore toast. Undo restores the previous choice.
@@ -274,13 +318,18 @@ final class StitchPreviewModel: ObservableObject {
         assembly.restoreDuplicateCandidate(id)
         let remaining = assembly.pendingDuplicateConfirmCount
         duplicateToast = StitchCopy.duplicateRestoredToast(index: displayIndex, remaining: remaining)
+        duplicateToastCanUndo = true
         selectedDuplicateID = id
+        refresh()
     }
 
-    /// 「撤销」 on the restore toast. One undo puts the choice back; the toast goes away.
+    /// 「撤销」 on a choice or restore toast. One undo puts the previous choice back and restores removed rows.
     func undoDuplicateToast() {
+        guard duplicateToastCanUndo else { return }
         assembly.undoLastDuplicateCandidateChoice()
         duplicateToast = nil
+        duplicateToastCanUndo = false
+        refresh()
     }
 
     func confirmPendingSticky(keepOnce: Bool) {
@@ -464,19 +513,47 @@ struct StitchPreviewView: View {
                 .padding(.horizontal, 16)
                 .padding(.top, 12)
             }
-            ScrollView {
-                if let preview = model.preview {
-                    Image(nsImage: preview)
-                        .resizable()
-                        .interpolation(.medium)
-                        .aspectRatio(contentMode: .fit)
-                        .padding(16)
-                } else {
-                    Text("没有可预览的画面")
-                        .foregroundStyle(Palette.muted)
-                        .padding(24)
+            GeometryReader { geo in
+                let width = max(geo.size.width - 32, 1)
+                let fullH = max(model.previewFullHeight, 1)
+                let aspect = (model.preview?.size.height ?? 1) / max(model.preview?.size.width ?? 1, 1)
+                let imageH = max(width * aspect, 1)
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        if let preview = model.preview {
+                            ZStack(alignment: .topLeading) {
+                                Image(nsImage: preview)
+                                    .resizable()
+                                    .interpolation(.medium)
+                                    .frame(width: width, height: imageH)
+                                ForEach(model.duplicateMarks) { mark in
+                                    let scale = imageH / CGFloat(fullH)
+                                    let y = CGFloat(mark.y) * scale
+                                    let h = max(CGFloat(mark.height) * scale, 22)
+                                    VStack(spacing: 0) {
+                                        Color.clear.frame(height: max(y, 0))
+                                        duplicateMarker(mark, width: width, height: h)
+                                            .id(StitchPreviewModel.duplicatePreviewScrollID(mark.id))
+                                        Spacer(minLength: 0)
+                                    }
+                                    .frame(width: width, height: imageH, alignment: .top)
+                                }
+                            }
+                            .frame(width: width, height: imageH, alignment: .topLeading)
+                            .padding(16)
+                        } else {
+                            Text("没有可预览的画面")
+                                .foregroundStyle(Palette.muted)
+                                .padding(24)
+                        }
+                    }
+                    .onChange(of: model.selectedDuplicateID, initial: false) { _, id in
+                        guard let id else { return }
+                        proxy.scrollTo(StitchPreviewModel.duplicatePreviewScrollID(id), anchor: .center)
+                    }
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -635,8 +712,10 @@ struct StitchPreviewView: View {
                         .foregroundStyle(Palette.charcoal)
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 8)
-                    Button(StitchCopy.undoDuplicate) { model.undoDuplicateToast() }
-                        .buttonStyle(LightButtonStyle())
+                    if model.duplicateToastCanUndo {
+                        Button(StitchCopy.undoDuplicate) { model.undoDuplicateToast() }
+                            .buttonStyle(LightButtonStyle())
+                    }
                 }
                 .padding(10)
                 .background(
@@ -670,6 +749,27 @@ struct StitchPreviewView: View {
             }
         }
         .padding(14)
+    }
+
+    private func duplicateMarker(_ mark: DuplicateRegionMark, width: CGFloat, height: CGFloat) -> some View {
+        ZStack(alignment: .topLeading) {
+            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                .fill(duplicateAmber.opacity(0.08))
+            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                .strokeBorder(duplicateAmber, style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
+            Text(mark.label)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(duplicateAmber)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Capsule().fill(Color.white.opacity(0.92)))
+                .overlay(
+                    Capsule(style: .continuous)
+                        .strokeBorder(duplicateAmber, style: StrokeStyle(lineWidth: 1, dash: [3, 2]))
+                )
+                .padding(6)
+        }
+        .frame(width: width, height: height)
     }
 
     private var duplicateAmber: Color { Color(red: 0.77, green: 0.54, blue: 0.16) }

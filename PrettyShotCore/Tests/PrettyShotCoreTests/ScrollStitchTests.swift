@@ -586,8 +586,9 @@ final class ScrollStitchTests: XCTestCase {
         stitcher.beginStitch()
         let first = Self.slottedFrame(Array(0..<24))
         var secondSlots = Array(8..<32)
-        secondSlots[18] = 2
-        secondSlots[19] = 3
+        // The new strip starts at row 16. Its first two rows repeat the previous frame's last two.
+        secondSlots[16] = 22
+        secondSlots[17] = 23
         XCTAssertEqual(stitcher.ingest(first), .seeded)
         let outcome = stitcher.ingest(Self.slottedFrame(secondSlots))
         guard case .appended(let rows) = outcome else {
@@ -627,6 +628,292 @@ final class ScrollStitchTests: XCTestCase {
         XCTAssertEqual(fresh.duplicateCandidates.count, 1)
         XCTAssertEqual(fresh.duplicateUndoCount, 0)
         XCTAssertTrue(fresh.duplicateCandidates.allSatisfy(\.isUnresolved))
+    }
+
+    func testIdenticalIconsWithDifferentTextDoNotBecomeCandidates() throws {
+        var stitcher = ScrollStitcher()
+        XCTAssertEqual(stitcher.ingest(Self.listFrame(scroll: 0)), .seeded)
+        XCTAssertEqual(stitcher.ingest(Self.listFrame(scroll: 8)), .appended(8))
+        let assembly = stitcher.takeAssembly()
+        XCTAssertTrue(assembly.duplicateCandidates.isEmpty)
+        XCTAssertEqual(assembly.segments.count, 1)
+        XCTAssertFalse(assembly.needsReview)
+        XCTAssertFalse(assembly.opensStitchReview)
+        XCTAssertNil(assembly.reviewBottomBar)
+        XCTAssertEqual(assembly.previewPrimaryTitle, "下一步 · 美化 →")
+        XCTAssertEqual(assembly.flattenedIfResolved()?.height, 32)
+    }
+
+    func testRepeatedRowsAwayFromTheSeamAreNotCandidates() throws {
+        var stitcher = ScrollStitcher()
+        let first = Self.slottedFrame(Array(0..<24))
+        var secondSlots = Array(8..<32)
+        // Same two rows as the top of the previous frame, but not the rows across the seam.
+        secondSlots[18] = 2
+        secondSlots[19] = 3
+        XCTAssertEqual(stitcher.ingest(first), .seeded)
+        XCTAssertEqual(stitcher.ingest(Self.slottedFrame(secondSlots)), .appended(8))
+        let assembly = stitcher.takeAssembly()
+        XCTAssertTrue(assembly.duplicateCandidates.isEmpty)
+        XCTAssertFalse(assembly.needsReview)
+        XCTAssertEqual(assembly.flattenedIfResolved()?.height, 32)
+        XCTAssertEqual(assembly.previewPrimaryTitle, "下一步 · 美化 →")
+    }
+
+    func testDuplicateSeamNumberCountsUnalignedSeamsBeforeIt() throws {
+        let assembly = try Self.duplicateAfterUnalignedSeam()
+        XCTAssertEqual(assembly.unalignedSeamCount, 1)
+        XCTAssertEqual(assembly.duplicateCandidates.count, 1)
+        let candidate = try XCTUnwrap(assembly.duplicateCandidates.first)
+        XCTAssertEqual(candidate.seamNumber, 2)
+        XCTAssertEqual(candidate.rowCount, 2)
+        XCTAssertEqual(candidate.locationLine, "接缝 2 下方 · 2 行")
+        XCTAssertEqual(assembly.previewPrimaryTitle, "处理下一处 · 1")
+    }
+
+    func testKeepOnceRowsStayOutOfOverLimitExport() throws {
+        var assembly = try Self.seamAdjacentAssembly()
+        let candidate = try XCTUnwrap(assembly.duplicateCandidates.first)
+        let rawHeight = assembly.segments[0].image.height
+        XCTAssertEqual(rawHeight, 32)
+        assembly.resolveDuplicateCandidate(candidate.id, choice: .keepOnce)
+        let keptHeight = rawHeight - candidate.rowCount
+        XCTAssertEqual(assembly.stackedHeight(deduping: true), keptHeight)
+        XCTAssertEqual(assembly.stackedHeight(deduping: false), keptHeight)
+
+        let marker = CoreScrollFixtures.color(slot: 22)
+        XCTAssertEqual(Self.rowHits(assembly.segments[0].image, rgb: marker), 2)
+
+        for dedupe in [true, false] {
+            let chunks = assembly.exportWithinLimits(dedupeStickyBars: dedupe, maxHeight: 16, maxPixels: 24_000_000)
+            XCTAssertFalse(chunks.isEmpty)
+            XCTAssertEqual(chunks.reduce(0) { $0 + $1.height }, keptHeight)
+            let joined = try XCTUnwrap(RGBAImage.verticalJoin(chunks))
+            XCTAssertEqual(joined.height, keptHeight)
+            XCTAssertEqual(Self.rowHits(joined, rgb: marker), 1)
+            for chunk in chunks {
+                XCTAssertLessThanOrEqual(chunk.height, 16)
+            }
+        }
+    }
+
+    func testManualFinishRerunsDuplicateDetectionAndBlocksExport() throws {
+        var assembly = try Self.duplicateAfterUnalignedSeam()
+        let id = try XCTUnwrap(assembly.duplicateCandidates.first).id
+        assembly.resolveDuplicateCandidate(id, choice: .keepOnce)
+        XCTAssertEqual(assembly.pendingDuplicateConfirmCount, 0)
+        XCTAssertGreaterThan(assembly.duplicateUndoCount, 0)
+        assembly.align(seam: 0, overlap: 0)
+        assembly.completeManualAlignment()
+
+        XCTAssertEqual(assembly.duplicateUndoCount, 0)
+        XCTAssertEqual(assembly.duplicateCandidates.count, 1)
+        XCTAssertNil(assembly.duplicateCandidates[0].choice)
+        XCTAssertEqual(assembly.duplicateCandidates[0].locationLine, "接缝 2 下方 · 2 行")
+        XCTAssertEqual(assembly.pendingDuplicateConfirmCount, 1)
+        XCTAssertNil(assembly.flattenedIfResolved())
+        XCTAssertEqual(assembly.previewPrimaryTitle, "先确认 1 处重复段")
+        XCTAssertEqual(assembly.reviewBottomBar, Self.confirmBar(1))
+        XCTAssertTrue(assembly.exportWithinLimits(dedupeStickyBars: true).isEmpty)
+        if case .aligned(let overlap) = assembly.seams[0].kind {
+            XCTAssertEqual(overlap, 0)
+        } else {
+            XCTFail("完成 keeps the manual overlap")
+        }
+    }
+
+    func testRestoreAutoRerunsDuplicateDetectionAndBlocksExport() throws {
+        var assembly = try Self.duplicateAfterUnalignedSeam()
+        let id = try XCTUnwrap(assembly.duplicateCandidates.first).id
+        let suggested = assembly.seams[0].suggestedOverlap ?? 0
+        assembly.resolveDuplicateCandidate(id, choice: .keepBoth)
+        XCTAssertGreaterThan(assembly.duplicateUndoCount, 0)
+        assembly.restoreAutoAlignment(seam: 0)
+
+        XCTAssertEqual(assembly.duplicateUndoCount, 0)
+        XCTAssertEqual(assembly.duplicateCandidates.count, 1)
+        XCTAssertNil(assembly.duplicateCandidates[0].choice)
+        XCTAssertEqual(assembly.pendingDuplicateConfirmCount, 1)
+        XCTAssertNil(assembly.flattenedIfResolved())
+        XCTAssertEqual(assembly.previewPrimaryTitle, "先确认 1 处重复段")
+        XCTAssertNotNil(assembly.reviewBottomBar)
+        XCTAssertTrue(assembly.exportWithinLimits(dedupeStickyBars: false).isEmpty)
+        if case .aligned(let overlap) = assembly.seams[0].kind {
+            XCTAssertEqual(overlap, suggested)
+        } else {
+            XCTFail("还原自动 applies the suggestion")
+        }
+    }
+
+    /// AC-L19: choosing 「只保留一次」 must not copy the whole capture on each preview or export.
+    func testKeepOnceStopPeakStaysUnderTwoImages() throws {
+        let width = 1440
+        let viewport = 80
+        let shift = 40
+        let steps = 200
+        let target = viewport + steps * shift
+        var options = ScrollStitcher.Options()
+        options.maxHeight = target
+        options.maxPixels = width * target
+
+        let ledger = AllocationLedger()
+        PixelMetrics.threadLedger = ledger
+        defer { PixelMetrics.threadLedger = nil }
+
+        var stitcher = ScrollStitcher(options: options)
+        XCTAssertEqual(stitcher.ingest(CoreScrollFixtures.uniqueFrame(origin: 0, width: width, height: viewport)), .seeded)
+        for step in 1..<steps {
+            let outcome = stitcher.ingest(CoreScrollFixtures.uniqueFrame(origin: step * shift, width: width, height: viewport))
+            guard case .appended(let rows) = outcome else {
+                XCTFail("step \(step) expected append, got \(outcome)")
+                return
+            }
+            XCTAssertEqual(rows, shift, "step \(step)")
+        }
+        let origin = steps * shift
+        let previousOrigin = origin - shift
+        let duplicated = fastFrame(width: width, height: viewport) { y in
+            if y == viewport - shift { return CoreScrollFixtures.color(slot: previousOrigin + viewport - 2) }
+            if y == viewport - shift + 1 { return CoreScrollFixtures.color(slot: previousOrigin + viewport - 1) }
+            return CoreScrollFixtures.color(slot: origin + y)
+        }
+        XCTAssertEqual(stitcher.ingest(duplicated), .appended(shift))
+
+        ledger.rebasePeak()
+        var assembly = stitcher.takeAssembly()
+        let candidate = try XCTUnwrap(assembly.duplicateCandidates.first)
+        XCTAssertEqual(assembly.duplicateCandidates.count, 1)
+        assembly.resolveDuplicateCandidate(candidate.id, choice: .keepOnce)
+        let hitsBefore = assembly.presentedCacheHits
+        XCTAssertNotNil(assembly.renderPreview())
+        let stitched = try XCTUnwrap(assembly.flattenedIfResolved())
+        XCTAssertNotNil(assembly.renderPreview())
+        XCTAssertGreaterThan(assembly.presentedCacheHits, hitsBefore)
+        let cg = try XCTUnwrap(stitched.cgImage())
+        let imageBytes = stitched.width * stitched.height * 4
+        print("AC-L19 keep-once peak bytes before≈\(imageBytes * 3) (estimate, 3x full image, not measured) after=\(ledger.peakBytes) (measured) imageBytes=\(imageBytes) height=\(stitched.height)")
+        XCTAssertEqual(stitched.width, width)
+        XCTAssertEqual(stitched.height, target - candidate.rowCount)
+        XCTAssertEqual(cg.width, width)
+        XCTAssertEqual(cg.height, stitched.height)
+        XCTAssertLessThan(ledger.peakBytes, imageBytes * 2, "只保留一次 still copies a second full image")
+    }
+
+    func testUndoKeepOnceRestoresTheCandidateAndTheRows() throws {
+        var assembly = try Self.seamAdjacentAssembly()
+        let candidate = try XCTUnwrap(assembly.duplicateCandidates.first)
+        let raw = assembly.displayedSegmentHeight(0)
+        assembly.resolveDuplicateCandidate(candidate.id, choice: .keepOnce)
+        XCTAssertEqual(assembly.pendingDuplicateConfirmCount, 0)
+        XCTAssertEqual(assembly.displayedSegmentHeight(0), raw - candidate.rowCount)
+        XCTAssertTrue(assembly.duplicateRegionMarks().isEmpty)
+
+        assembly.undoLastDuplicateCandidateChoice()
+        XCTAssertNil(assembly.duplicateCandidates[0].choice)
+        XCTAssertEqual(assembly.pendingDuplicateConfirmCount, 1)
+        XCTAssertEqual(assembly.displayedSegmentHeight(0), raw)
+        let mark = try XCTUnwrap(assembly.duplicateRegionMarks().first)
+        XCTAssertEqual(mark.label, "重复段 1 · 待确认")
+        XCTAssertEqual(mark.displayIndex, 1)
+        XCTAssertEqual(mark.y, candidate.startRow)
+        XCTAssertEqual(mark.height, candidate.rowCount)
+    }
+
+    func testUndoKeepBothRestoresTheCandidateWithoutChangingRows() throws {
+        var assembly = try Self.seamAdjacentAssembly()
+        let candidate = try XCTUnwrap(assembly.duplicateCandidates.first)
+        let raw = assembly.displayedSegmentHeight(0)
+        assembly.resolveDuplicateCandidate(candidate.id, choice: .keepBoth)
+        XCTAssertEqual(assembly.pendingDuplicateConfirmCount, 0)
+        XCTAssertEqual(assembly.displayedSegmentHeight(0), raw)
+        XCTAssertTrue(assembly.duplicateRegionMarks().isEmpty)
+
+        assembly.undoLastDuplicateCandidateChoice()
+        XCTAssertNil(assembly.duplicateCandidates[0].choice)
+        XCTAssertEqual(assembly.pendingDuplicateConfirmCount, 1)
+        XCTAssertEqual(assembly.displayedSegmentHeight(0), raw)
+        XCTAssertEqual(assembly.duplicateRegionMarks().first?.label, "重复段 1 · 待确认")
+    }
+
+    func testDuplicateMarkersUseCandidateIndexAndDropWhenResolved() throws {
+        let width = 8
+        let height = 40
+        let image = RGBAImage(width: width, height: height, pixels: [UInt8](repeating: 200, count: width * height * 4))
+        var assembly = ScrollAssembly(
+            segments: [ScrollSegment(image: image, confidentSeamYs: [10, 20])],
+            duplicateCandidates: [
+                DuplicateSegmentCandidate(id: "a", seamNumber: 1, rowCount: 2, segmentIndex: 0, startRow: 10),
+                DuplicateSegmentCandidate(id: "b", seamNumber: 2, rowCount: 3, segmentIndex: 0, startRow: 20),
+            ]
+        )
+        let marks = assembly.duplicateRegionMarks()
+        XCTAssertEqual(marks.map(\.label), ["重复段 1 · 待确认", "重复段 2 · 待确认"])
+        XCTAssertEqual(marks.map(\.displayIndex), [1, 2])
+        XCTAssertEqual(marks.map(\.y), [10, 20])
+        XCTAssertEqual(marks.map(\.height), [2, 3])
+        XCTAssertEqual(ScrollAssembly.duplicatePreviewScrollID("b"), "dup-region-b")
+
+        assembly.resolveDuplicateCandidate("a", choice: .keepOnce)
+        let remaining = assembly.duplicateRegionMarks()
+        XCTAssertEqual(remaining.map(\.label), ["重复段 2 · 待确认"])
+        XCTAssertEqual(remaining.map(\.y), [18])
+        XCTAssertEqual(remaining.map(\.height), [3])
+        XCTAssertEqual(assembly.previewStackHeight(), 38)
+    }
+
+    private static func rowHits(_ image: RGBAImage, rgb: [UInt8]) -> Int {
+        var hits = 0
+        for y in 0..<image.height where CoreScrollFixtures.row(image, y) == rgb {
+            hits += 1
+        }
+        return hits
+    }
+
+    private static func seamAdjacentAssembly() throws -> ScrollAssembly {
+        var stitcher = ScrollStitcher()
+        let first = slottedFrame(Array(0..<24))
+        var secondSlots = Array(8..<32)
+        secondSlots[16] = 22
+        secondSlots[17] = 23
+        XCTAssertEqual(stitcher.ingest(first), .seeded)
+        XCTAssertEqual(stitcher.ingest(slottedFrame(secondSlots)), .appended(8))
+        let assembly = stitcher.takeAssembly()
+        XCTAssertEqual(assembly.duplicateCandidates.count, 1)
+        return assembly
+    }
+
+    private static func duplicateAfterUnalignedSeam() throws -> ScrollAssembly {
+        var stitcher = ScrollStitcher()
+        XCTAssertEqual(stitcher.ingest(slottedFrame(Array(0..<24))), .seeded)
+        XCTAssertEqual(stitcher.ingest(slottedFrame(Array(80..<104))), .unmatched)
+        var third = Array(88..<112)
+        third[16] = 102
+        third[17] = 103
+        let outcome = stitcher.ingest(slottedFrame(third))
+        guard case .appended(let rows) = outcome else {
+            XCTFail("expected the second segment to join, got \(outcome)")
+            return ScrollAssembly()
+        }
+        XCTAssertEqual(rows, 8)
+        return stitcher.takeAssembly()
+    }
+
+    /// Same icon on every row, different text. Shared chrome must not become a duplicate candidate.
+    private static func listFrame(scroll: Int, height: Int = 24) -> RGBAImage {
+        let width = CoreScrollFixtures.width
+        let icon = CoreScrollFixtures.color(slot: 1)
+        var pixels = [UInt8](repeating: 255, count: width * height * 4)
+        for y in 0..<height {
+            let text = CoreScrollFixtures.color(slot: 40 + y + scroll)
+            for x in 0..<width {
+                let rgb = x < 8 ? icon : text
+                let i = (y * width + x) * 4
+                pixels[i] = rgb[0]
+                pixels[i + 1] = rgb[1]
+                pixels[i + 2] = rgb[2]
+            }
+        }
+        return RGBAImage(width: width, height: height, pixels: pixels)
     }
 
     private static func slottedFrame(_ slots: [Int]) -> RGBAImage {

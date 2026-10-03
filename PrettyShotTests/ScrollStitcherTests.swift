@@ -746,6 +746,126 @@ final class ScrollStitcherTests: XCTestCase {
         }
     }
 
+    @MainActor
+    func testManualFinishOnThePreviewRerunsDetectionAndBlocksExport() throws {
+        let model = StitchPreviewModel(assembly: try Self.duplicateAfterUnalignedSeam(), notice: nil)
+        let id = try XCTUnwrap(model.assembly.duplicateCandidates.first).id
+        model.resolveDuplicateCandidate(id, choice: .keepOnce)
+        XCTAssertEqual(model.assembly.pendingDuplicateConfirmCount, 0)
+        model.select(boundary: 0)
+        model.overlap = 0
+        model.finishManualAlignment()
+        XCTAssertEqual(model.assembly.duplicateUndoCount, 0)
+        XCTAssertEqual(model.assembly.duplicateCandidates.count, 1)
+        XCTAssertNil(model.assembly.duplicateCandidates[0].choice)
+        XCTAssertEqual(model.assembly.duplicateCandidates[0].locationLine, "接缝 2 下方 · 2 行")
+        XCTAssertEqual(model.assembly.previewPrimaryTitle, "先确认 1 处重复段")
+        XCTAssertFalse(model.canCommit)
+        XCTAssertNil(model.assembly.flattenedIfResolved())
+        XCTAssertTrue(model.assembly.exportWithinLimits(dedupeStickyBars: true).isEmpty)
+        XCTAssertEqual(
+            model.duplicateToast,
+            "接缝 1 已对齐（手动 +0 px） · 重复段已重新识别，1 处待确认"
+        )
+        XCTAssertFalse(model.duplicateToastCanUndo)
+        XCTAssertEqual(model.duplicateMarks.map(\.label), ["重复段 1 · 待确认"])
+    }
+
+    @MainActor
+    func testRestoreAutoOnThePreviewRerunsDetectionAndBlocksExport() throws {
+        let model = StitchPreviewModel(assembly: try Self.duplicateAfterUnalignedSeam(), notice: nil)
+        let id = try XCTUnwrap(model.assembly.duplicateCandidates.first).id
+        let suggested = model.assembly.seams[0].suggestedOverlap ?? 0
+        model.resolveDuplicateCandidate(id, choice: .keepOnce)
+        model.select(boundary: 0)
+        model.restoreAutoAlignment()
+        XCTAssertEqual(model.assembly.duplicateUndoCount, 0)
+        XCTAssertEqual(model.assembly.duplicateCandidates.count, 1)
+        XCTAssertNil(model.assembly.duplicateCandidates[0].choice)
+        XCTAssertEqual(model.assembly.pendingDuplicateConfirmCount, 1)
+        XCTAssertFalse(model.canCommit)
+        XCTAssertNil(model.assembly.flattenedIfResolved())
+        XCTAssertEqual(model.assembly.previewPrimaryTitle, "先确认 1 处重复段")
+        XCTAssertEqual(
+            model.duplicateToast,
+            "接缝 1 已还原自动 · 重复段已重新识别，1 处待确认"
+        )
+        XCTAssertFalse(model.duplicateToastCanUndo)
+        XCTAssertEqual(model.assembly.duplicateUndoCount, 0)
+        if case .aligned(let overlap) = model.assembly.seams[0].kind {
+            XCTAssertEqual(overlap, suggested)
+        } else {
+            XCTFail("还原自动 applies the suggestion")
+        }
+    }
+
+    @MainActor
+    func testKeepOnceSurvivesHistoryOverLimitExport() throws {
+        var assembly = try Self.seamAdjacentAssembly()
+        let candidate = try XCTUnwrap(assembly.duplicateCandidates.first)
+        assembly.resolveDuplicateCandidate(candidate.id, choice: .keepOnce)
+        let keptHeight = assembly.stackedHeight(deduping: true)
+        XCTAssertEqual(keptHeight, 30)
+        let marker = ScrollFixtures.color(slot: 22)
+        let image = try XCTUnwrap(assembly.flattenedIfResolved()?.cgImage())
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("PrettyShotTests-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = HistoryStore(directory: directory, limit: 4)
+        let item = try store.add(image: image, scale: 2, mode: .scrolling)
+        try store.saveStitch(assembly, for: item)
+        let reloaded = HistoryStore(directory: directory, limit: 4)
+        let loaded = try XCTUnwrap(reloaded.loadStitch(for: reloaded.items[0]))
+        XCTAssertEqual(loaded.duplicateCandidates.first?.choice, .keepOnce)
+        let chunks = loaded.exportWithinLimits(dedupeStickyBars: false, maxHeight: 16, maxPixels: 24_000_000)
+        XCTAssertEqual(chunks.reduce(0) { $0 + $1.height }, keptHeight)
+        let joined = try XCTUnwrap(RGBAImage.verticalJoin(chunks))
+        var hits = 0
+        for y in 0..<joined.height where ScrollFixtures.row(joined, y) == marker {
+            hits += 1
+        }
+        XCTAssertEqual(hits, 1)
+    }
+
+    @MainActor
+    func testChoiceToastsUndoBackToPendingAndRestoreRows() throws {
+        let model = StitchPreviewModel(assembly: try Self.seamAdjacentAssembly(), notice: nil)
+        let id = try XCTUnwrap(model.assembly.duplicateCandidates.first).id
+        let raw = model.assembly.displayedSegmentHeight(0)
+        model.refresh()
+        XCTAssertEqual(model.duplicateMarks.map(\.label), ["重复段 1 · 待确认"])
+        XCTAssertEqual(model.duplicateMarks.first?.height, 2)
+        XCTAssertEqual(StitchPreviewModel.duplicatePreviewScrollID(id), "dup-region-\(id)")
+
+        model.resolveDuplicateCandidate(id, choice: .keepOnce)
+        XCTAssertEqual(
+            model.duplicateToast,
+            StitchCopy.duplicateChoiceToast(index: 1, choice: .keepOnce, remaining: 0)
+        )
+        XCTAssertTrue(model.duplicateToastCanUndo)
+        XCTAssertEqual(model.assembly.displayedSegmentHeight(0), raw - 2)
+        XCTAssertTrue(model.duplicateMarks.isEmpty)
+        model.undoDuplicateToast()
+        XCTAssertNil(model.duplicateToast)
+        XCTAssertNil(model.assembly.duplicateCandidates[0].choice)
+        XCTAssertEqual(model.assembly.pendingDuplicateConfirmCount, 1)
+        XCTAssertEqual(model.assembly.displayedSegmentHeight(0), raw)
+        XCTAssertEqual(model.duplicateMarks.count, 1)
+
+        model.resolveDuplicateCandidate(id, choice: .keepBoth)
+        XCTAssertEqual(
+            model.duplicateToast,
+            StitchCopy.duplicateChoiceToast(index: 1, choice: .keepBoth, remaining: 0)
+        )
+        XCTAssertEqual(model.assembly.displayedSegmentHeight(0), raw)
+        XCTAssertTrue(model.duplicateMarks.isEmpty)
+        model.undoDuplicateToast()
+        XCTAssertNil(model.assembly.duplicateCandidates[0].choice)
+        XCTAssertEqual(model.assembly.pendingDuplicateConfirmCount, 1)
+        XCTAssertEqual(model.assembly.displayedSegmentHeight(0), raw)
+        XCTAssertEqual(model.duplicateMarks.first?.label, "重复段 1 · 待确认")
+    }
+
     func testCleanScrollStillFinishesWithoutDuplicateConfirmation() throws {
         var stitcher = ScrollStitcher()
         stitcher.beginStitch()
@@ -907,6 +1027,52 @@ final class ScrollStitcherTests: XCTestCase {
         XCTAssertEqual(first.width, ScrollFixtures.width)
         XCTAssertLessThanOrEqual(first.height, 72 + 36)
         XCTAssertNotEqual(first.pixels, second.pixels)
+    }
+
+    private static func seamAdjacentAssembly() throws -> ScrollAssembly {
+        var stitcher = ScrollStitcher()
+        XCTAssertEqual(stitcher.ingest(slotted(Array(0..<24))), .seeded)
+        XCTAssertEqual(stitcher.ingest(slotted(seamDuplicate(of: Array(8..<32), previousTail: [22, 23]))), .appended(8))
+        let assembly = stitcher.takeAssembly()
+        XCTAssertEqual(assembly.duplicateCandidates.count, 1)
+        return assembly
+    }
+
+    private static func duplicateAfterUnalignedSeam() throws -> ScrollAssembly {
+        var stitcher = ScrollStitcher()
+        XCTAssertEqual(stitcher.ingest(slotted(Array(0..<24))), .seeded)
+        XCTAssertEqual(stitcher.ingest(slotted(Array(80..<104))), .unmatched)
+        let outcome = stitcher.ingest(slotted(seamDuplicate(of: Array(88..<112), previousTail: [102, 103])))
+        guard case .appended(let rows) = outcome else {
+            XCTFail("expected the second segment to join, got \(outcome)")
+            return ScrollAssembly()
+        }
+        XCTAssertEqual(rows, 8)
+        return stitcher.takeAssembly()
+    }
+
+    private static func seamDuplicate(of slots: [Int], previousTail: [Int]) -> [Int] {
+        var copy = slots
+        let start = copy.count - 8
+        for (offset, slot) in previousTail.enumerated() where start + offset < copy.count {
+            copy[start + offset] = slot
+        }
+        return copy
+    }
+
+    private static func slotted(_ slots: [Int]) -> RGBAImage {
+        let width = ScrollFixtures.width
+        var pixels = [UInt8](repeating: 255, count: width * slots.count * 4)
+        for (y, slot) in slots.enumerated() {
+            let rgb = ScrollFixtures.color(slot: slot)
+            for x in 0..<width {
+                let i = (y * width + x) * 4
+                pixels[i] = rgb[0]
+                pixels[i + 1] = rgb[1]
+                pixels[i + 2] = rgb[2]
+            }
+        }
+        return RGBAImage(width: width, height: slots.count, pixels: pixels)
     }
 }
 
