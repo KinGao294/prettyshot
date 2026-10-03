@@ -68,7 +68,23 @@ public enum Redactor {
                 output = effect.cropped(to: ciRect).composited(over: output)
             }
         }
-        return context.createCGImage(output, from: extent) ?? image
+        return autoreleasepool { () -> CGImage in
+            guard let rendered = context.createCGImage(output, from: extent) else { return image }
+            let width = rendered.width
+            let height = rendered.height
+            let bytesPerRow = (width * 4 + 15) & ~15
+            guard width > 0, height > 0,
+                  let space = CGColorSpace(name: CGColorSpace.sRGB),
+                  let copy = CGContext(
+                    data: nil, width: width, height: height,
+                    bitsPerComponent: 8, bytesPerRow: bytesPerRow,
+                    space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+                  ) else { return rendered }
+            copy.interpolationQuality = .none
+            copy.draw(rendered, in: CGRect(x: 0, y: 0, width: width, height: height))
+            context.clearCaches()
+            return copy.makeImage() ?? rendered
+        }
     }
 
     /// Downscaled copy of `image` for cheap live previews.
