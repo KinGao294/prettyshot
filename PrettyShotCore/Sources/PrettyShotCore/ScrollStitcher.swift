@@ -459,10 +459,12 @@ public struct ScrollAssembly: Equatable {
         redetectDuplicateCandidates()
     }
 
-    /// Overlap of the boundary under this segment. The last segment has none, so its displacement is 0.
+    /// Overlap of the seam above this segment. `align(seam:)` crops the top of the next segment,
+    /// so a candidate moves only when that upper seam moves. Segment 0 has no seam above it.
     private func displacement(forSegment index: Int) -> Int {
-        guard seams.indices.contains(index) else { return 0 }
-        return seams[index].editorOverlap
+        let above = index - 1
+        guard above >= 0, seams.indices.contains(above) else { return 0 }
+        return seams[above].editorOverlap
     }
 
     /// Scans confident seams again. Same seam, overlap, and row range keep the previous choice.
@@ -499,7 +501,10 @@ public struct ScrollAssembly: Equatable {
                             candidate.movedSeamNumber = old.movedSeamNumber
                         }
                     } else if old.choice != nil {
-                        let moved = segmentIndex < seams.count ? visibleSeamNumber(boundary: segmentIndex) : nil
+                        let boundary = segmentIndex - 1
+                        let moved = boundary >= 0 && seams.indices.contains(boundary)
+                            ? visibleSeamNumber(boundary: boundary)
+                            : nil
                         candidate.seamMoved = true
                         candidate.movedSeamNumber = moved
                         if let moved {
@@ -1328,6 +1333,7 @@ public struct ScrollStitcher {
     /// Seals the open segment and returns every piece. Call once, when capture ends.
     public mutating func takeAssembly() -> ScrollAssembly {
         sealOpenSegment()
+        rememberSealedDisplacement()
         return ScrollAssembly(
             segments: segments,
             seams: seams,
@@ -1457,7 +1463,8 @@ public struct ScrollStitcher {
             seamNumber: seamNumber,
             rowCount: duplicate.rowCount,
             segmentIndex: segmentIndex,
-            startRow: startRow
+            startRow: startRow,
+            offset: displacement(forSegment: segmentIndex)
         ))
     }
 
@@ -1517,14 +1524,24 @@ public struct ScrollStitcher {
         pinnedFooter = nil
     }
 
-    /// The candidate was recorded while its segment was still open, at overlap 0.
-    /// Once that segment is sealed, store the boundary overlap so the first 「完成」 at the suggestion is not a move.
+    /// The candidate was recorded while its segment was still open.
+    /// Once that segment is sealed, store the overlap of the seam above it — the seam that crops
+    /// this segment's top. Segment 0 has no seam above it, so its offset stays 0.
+    /// The first 「完成」 at that overlap is not a move.
     private mutating func rememberSealedDisplacement() {
-        guard let sealed = segments.indices.last, seams.indices.contains(sealed) else { return }
-        let overlap = seams[sealed].editorOverlap
+        guard let sealed = segments.indices.last else { return }
+        let above = sealed - 1
+        let overlap = (above >= 0 && seams.indices.contains(above)) ? seams[above].editorOverlap : 0
         for index in duplicateCandidates.indices where duplicateCandidates[index].segmentIndex == sealed {
             duplicateCandidates[index].offset = overlap
         }
+    }
+
+    /// Overlap of the seam above this segment. Segment 0 has none.
+    private func displacement(forSegment index: Int) -> Int {
+        let above = index - 1
+        guard above >= 0, seams.indices.contains(above) else { return 0 }
+        return seams[above].editorOverlap
     }
 
     private mutating func splitSeedIfNeeded(headerH: Int, footerH: Int) {
