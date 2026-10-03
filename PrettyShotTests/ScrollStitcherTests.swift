@@ -462,6 +462,83 @@ final class ScrollStitcherTests: XCTestCase {
         XCTAssertFalse(model.assembly.exportWithinLimits(dedupeStickyBars: true).isEmpty)
     }
 
+    @MainActor
+    func testReviewBottomBarPendingConfirmFollowsDuplicateChoices() {
+        let sticky = PendingStickyConfirmation(headerRows: 6, footerRows: 0, seamCount: 2, keepOnce: nil)
+        let model = StitchPreviewModel(
+            assembly: ScrollAssembly(
+                seams: [ScrollSeam(kind: .needsAlignment, suggestedOverlap: 9)],
+                pendingSticky: sticky,
+                duplicateCandidates: (1...3).map { DuplicateSegmentCandidate(id: "dup-\($0)") }
+            ),
+            notice: nil
+        )
+
+        XCTAssertEqual(model.assembly.pendingDuplicateConfirmCount, 3)
+        XCTAssertEqual(model.assembly.unalignedSeamCount, 1)
+        XCTAssertEqual(model.assembly.pendingSticky?.prompt, sticky.prompt)
+        XCTAssertEqual(
+            model.assembly.reviewBottomBar,
+            "⚠ 还有 5 处没处理（待对齐 1 · 待确认 3 · 固定栏待确认 1）。为了不拼错，处理完才能继续——不会静默拼接。"
+        )
+        XCTAssertFalse(model.canCommit)
+
+        model.resolveDuplicateCandidate("dup-1", choice: .keepOnce)
+        XCTAssertEqual(model.assembly.pendingDuplicateConfirmCount, 2)
+        XCTAssertEqual(model.assembly.unalignedSeamCount, 1)
+        XCTAssertTrue(model.assembly.pendingSticky?.isUnresolved == true)
+        XCTAssertTrue(model.assembly.reviewBottomBar?.contains("待确认 2") == true)
+
+        model.resolveDuplicateCandidate("dup-2", choice: .keepBoth)
+        XCTAssertEqual(model.assembly.pendingDuplicateConfirmCount, 1)
+        XCTAssertTrue(model.assembly.reviewBottomBar?.contains("待确认 1") == true)
+
+        model.resolveDuplicateCandidate("dup-3", choice: .keepOnce)
+        XCTAssertEqual(model.assembly.pendingDuplicateConfirmCount, 0)
+        XCTAssertEqual(model.assembly.unalignedSeamCount, 1)
+        XCTAssertEqual(
+            model.assembly.reviewBottomBar,
+            "⚠ 还有 2 处没处理（待对齐 1 · 固定栏待确认 1）。为了不拼错，处理完才能继续——不会静默拼接。"
+        )
+        XCTAssertFalse(model.assembly.reviewBottomBar?.contains("待确认 0") ?? false)
+        XCTAssertFalse(model.canCommit)
+
+        model.undoDuplicateCandidateChoice()
+        XCTAssertEqual(model.assembly.pendingDuplicateConfirmCount, 1)
+        XCTAssertEqual(model.assembly.unalignedSeamCount, 1)
+        XCTAssertTrue(model.assembly.reviewRemainder.stickyPending)
+        XCTAssertEqual(
+            model.assembly.reviewBottomBar,
+            "⚠ 还有 3 处没处理（待对齐 1 · 待确认 1 · 固定栏待确认 1）。为了不拼错，处理完才能继续——不会静默拼接。"
+        )
+
+        let onlyCandidates = StitchPreviewModel(
+            assembly: ScrollAssembly(
+                duplicateCandidates: (1...3).map { DuplicateSegmentCandidate(id: "dup-\($0)") }
+            ),
+            notice: nil
+        )
+        XCTAssertEqual(
+            onlyCandidates.assembly.reviewBottomBar,
+            "⚠ 还有 3 处没处理（待确认 3）。为了不拼错，处理完才能继续——不会静默拼接。"
+        )
+        onlyCandidates.resolveDuplicateCandidate("dup-1", choice: .keepOnce)
+        XCTAssertEqual(onlyCandidates.assembly.pendingDuplicateConfirmCount, 2)
+        onlyCandidates.resolveDuplicateCandidate("dup-2", choice: .keepBoth)
+        XCTAssertEqual(onlyCandidates.assembly.pendingDuplicateConfirmCount, 1)
+        onlyCandidates.resolveDuplicateCandidate("dup-3", choice: .keepOnce)
+        XCTAssertEqual(onlyCandidates.assembly.pendingDuplicateConfirmCount, 0)
+        XCTAssertNil(onlyCandidates.assembly.reviewBottomBar)
+        XCTAssertTrue(onlyCandidates.canCommit)
+        onlyCandidates.undoDuplicateCandidateChoice()
+        XCTAssertEqual(onlyCandidates.assembly.pendingDuplicateConfirmCount, 1)
+        XCTAssertEqual(
+            onlyCandidates.assembly.reviewBottomBar,
+            "⚠ 还有 1 处没处理（待确认 1）。为了不拼错，处理完才能继续——不会静默拼接。"
+        )
+        XCTAssertFalse(onlyCandidates.canCommit)
+    }
+
     func testFrameCopyUsesGroupedNumbersAndOmitsEmptyRemainder() {
         XCTAssertEqual(StitchCopy.grouped(17_436), "17,436")
         XCTAssertEqual(StitchCopy.grouped(16_384), "16,384")

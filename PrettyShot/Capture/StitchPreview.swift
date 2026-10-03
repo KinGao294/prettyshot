@@ -202,6 +202,16 @@ final class StitchPreviewModel: ObservableObject {
         }
     }
 
+    /// 「保留一次」 or 「都保留」. The bottom bar recounts unresolved duplicate segments immediately.
+    func resolveDuplicateCandidate(_ id: String, choice: DuplicateSegmentChoice) {
+        assembly.resolveDuplicateCandidate(id, choice: choice)
+    }
+
+    /// Puts the last duplicate-segment choice back into 「待确认」.
+    func undoDuplicateCandidateChoice() {
+        assembly.undoLastDuplicateCandidateChoice()
+    }
+
     func confirmPendingSticky(keepOnce: Bool) {
         if keepOnce {
             assembly.confirmStickyBars(keepOnce: true)
