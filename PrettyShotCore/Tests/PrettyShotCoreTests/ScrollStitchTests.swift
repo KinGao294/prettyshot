@@ -703,24 +703,26 @@ final class ScrollStitchTests: XCTestCase {
         assembly.resolveDuplicateCandidate(id, choice: .keepOnce)
         XCTAssertEqual(assembly.pendingDuplicateConfirmCount, 0)
         XCTAssertGreaterThan(assembly.duplicateUndoCount, 0)
-        assembly.align(seam: 0, overlap: 0)
+        assembly.align(seam: 0, overlap: 4)
         let summary = assembly.completeManualAlignment()
 
-        // The duplicate is on the segment after this boundary, so finishing seam 0 keeps the choice.
+        // Seam 0 crops the top of the next segment, so moving it clears that segment's choice.
         XCTAssertEqual(assembly.duplicateUndoCount, 0)
         XCTAssertEqual(assembly.duplicateCandidates.count, 1)
-        XCTAssertEqual(assembly.duplicateCandidates[0].choice, .keepOnce)
-        XCTAssertFalse(assembly.duplicateCandidates[0].seamMoved)
-        XCTAssertEqual(assembly.duplicateCandidates[0].locationLine, "接缝 2 下方 · 2 行")
-        XCTAssertEqual(assembly.pendingDuplicateConfirmCount, 0)
-        XCTAssertEqual(summary.keptChoiceCount, 1)
-        XCTAssertEqual(summary.clearedChoiceCount, 0)
-        XCTAssertNotNil(assembly.flattenedIfResolved())
-        XCTAssertEqual(assembly.previewPrimaryTitle, "下一步 · 美化 →")
-        XCTAssertNil(assembly.reviewBottomBar)
-        XCTAssertFalse(assembly.exportWithinLimits(dedupeStickyBars: true).isEmpty)
+        XCTAssertNil(assembly.duplicateCandidates[0].choice)
+        XCTAssertTrue(assembly.duplicateCandidates[0].seamMoved)
+        XCTAssertEqual(assembly.duplicateCandidates[0].movedSeamNumber, 1)
+        XCTAssertEqual(assembly.duplicateCandidates[0].locationLine, "接缝 2 下方 · 2 行 · 接缝动过，需要重选")
+        XCTAssertEqual(assembly.pendingDuplicateConfirmCount, 1)
+        XCTAssertEqual(summary.keptChoiceCount, 0)
+        XCTAssertEqual(summary.clearedChoiceCount, 1)
+        XCTAssertEqual(summary.clearedSeamNumber, 1)
+        XCTAssertNil(assembly.flattenedIfResolved())
+        XCTAssertEqual(assembly.previewPrimaryTitle, "先确认 1 处重复段")
+        XCTAssertEqual(assembly.reviewBottomBar, Self.confirmBar(1))
+        XCTAssertTrue(assembly.exportWithinLimits(dedupeStickyBars: true).isEmpty)
         if case .aligned(let overlap) = assembly.seams[0].kind {
-            XCTAssertEqual(overlap, 0)
+            XCTAssertEqual(overlap, 4)
         } else {
             XCTFail("完成 keeps the manual overlap")
         }
@@ -729,23 +731,25 @@ final class ScrollStitchTests: XCTestCase {
     func testRestoreAutoRerunsDuplicateDetectionAndBlocksExport() throws {
         var assembly = try Self.duplicateAfterUnalignedSeam()
         let id = try XCTUnwrap(assembly.duplicateCandidates.first).id
-        let suggested = assembly.seams[0].suggestedOverlap ?? 0
         assembly.resolveDuplicateCandidate(id, choice: .keepBoth)
         XCTAssertGreaterThan(assembly.duplicateUndoCount, 0)
+        assembly.seams[0].suggestedOverlap = 5
         assembly.restoreAutoAlignment(seam: 0)
 
-        // Restoring seam 0 does not change the next segment's overlap, so the choice stays.
+        // Restoring seam 0 changes the overlap that crops the next segment, so that choice is cleared.
         XCTAssertEqual(assembly.duplicateUndoCount, 0)
         XCTAssertEqual(assembly.duplicateCandidates.count, 1)
-        XCTAssertEqual(assembly.duplicateCandidates[0].choice, .keepBoth)
-        XCTAssertFalse(assembly.duplicateCandidates[0].seamMoved)
-        XCTAssertEqual(assembly.pendingDuplicateConfirmCount, 0)
-        XCTAssertNotNil(assembly.flattenedIfResolved())
-        XCTAssertEqual(assembly.previewPrimaryTitle, "下一步 · 美化 →")
-        XCTAssertNil(assembly.reviewBottomBar)
-        XCTAssertFalse(assembly.exportWithinLimits(dedupeStickyBars: false).isEmpty)
+        XCTAssertNil(assembly.duplicateCandidates[0].choice)
+        XCTAssertTrue(assembly.duplicateCandidates[0].seamMoved)
+        XCTAssertEqual(assembly.duplicateCandidates[0].movedSeamNumber, 1)
+        XCTAssertEqual(assembly.duplicateCandidates[0].locationLine, "接缝 2 下方 · 2 行 · 接缝动过，需要重选")
+        XCTAssertEqual(assembly.pendingDuplicateConfirmCount, 1)
+        XCTAssertNil(assembly.flattenedIfResolved())
+        XCTAssertEqual(assembly.previewPrimaryTitle, "先确认 1 处重复段")
+        XCTAssertNotNil(assembly.reviewBottomBar)
+        XCTAssertTrue(assembly.exportWithinLimits(dedupeStickyBars: false).isEmpty)
         if case .aligned(let overlap) = assembly.seams[0].kind {
-            XCTAssertEqual(overlap, suggested)
+            XCTAssertEqual(overlap, 5)
         } else {
             XCTFail("还原自动 applies the suggestion")
         }
@@ -1047,22 +1051,22 @@ final class ScrollStitchTests: XCTestCase {
         XCTAssertEqual(assembly.duplicateUndoCount, 0)
         XCTAssertEqual(assembly.visibleSeamNumber(boundary: 0), 2)
 
-        let cleared = try XCTUnwrap(assembly.duplicateCandidates.first { $0.segmentIndex == 0 })
+        let kept = try XCTUnwrap(assembly.duplicateCandidates.first { $0.segmentIndex == 0 })
+        XCTAssertEqual(kept.choice, .keepOnce)
+        XCTAssertFalse(kept.seamMoved)
+        XCTAssertEqual(kept.handledLine, "✓ 已处理 · 只保留一次")
+        XCTAssertEqual(kept.locationLine, "接缝 1 下方 · 2 行")
+        XCTAssertFalse(assembly.duplicateRegionMarks().contains { $0.id == kept.id })
+
+        let cleared = try XCTUnwrap(assembly.duplicateCandidates.first { $0.seamNumber == 3 })
         XCTAssertNil(cleared.choice)
         XCTAssertTrue(cleared.seamMoved)
         XCTAssertEqual(cleared.movedSeamNumber, 2)
-        XCTAssertEqual(cleared.locationLine, "接缝 1 下方 · 2 行 · 接缝动过，需要重选")
+        XCTAssertEqual(cleared.locationLine, "接缝 3 下方 · 2 行 · 接缝动过，需要重选")
         XCTAssertEqual(
             StitchCopy.duplicateSeamMovedNote(seam: cleared.movedSeamNumber ?? 0),
             "接缝 2 动过，这里之前的选择已清掉，需要重选。"
         )
-
-        let kept = try XCTUnwrap(assembly.duplicateCandidates.first { $0.seamNumber == 3 })
-        XCTAssertEqual(kept.choice, .keepBoth)
-        XCTAssertFalse(kept.seamMoved)
-        XCTAssertEqual(kept.handledLine, "✓ 已处理 · 都保留")
-        XCTAssertEqual(kept.locationLine, "接缝 3 下方 · 2 行")
-        XCTAssertFalse(assembly.duplicateRegionMarks().contains { $0.id == kept.id })
 
         let untouched = try XCTUnwrap(assembly.duplicateCandidates.first { $0.seamNumber == 4 })
         XCTAssertNil(untouched.choice)
@@ -1090,7 +1094,7 @@ final class ScrollStitchTests: XCTestCase {
         XCTAssertEqual(rechosen.choice, .keepOnce)
         XCTAssertFalse(rechosen.seamMoved)
         XCTAssertNil(rechosen.movedSeamNumber)
-        XCTAssertEqual(rechosen.locationLine, "接缝 1 下方 · 2 行")
+        XCTAssertEqual(rechosen.locationLine, "接缝 3 下方 · 2 行")
         XCTAssertFalse(assembly.duplicateRegionMarks().contains { $0.id == cleared.id })
         XCTAssertEqual(assembly.pendingDuplicateConfirmCount, 1)
 
@@ -1099,27 +1103,53 @@ final class ScrollStitchTests: XCTestCase {
         XCTAssertNil(undone.choice)
         XCTAssertTrue(undone.seamMoved)
         XCTAssertEqual(undone.movedSeamNumber, 2)
-        XCTAssertEqual(undone.locationLine, "接缝 1 下方 · 2 行 · 接缝动过，需要重选")
+        XCTAssertEqual(undone.locationLine, "接缝 3 下方 · 2 行 · 接缝动过，需要重选")
         XCTAssertTrue(assembly.duplicateRegionMarks().contains { $0.id == cleared.id })
+    }
+
+    /// Dragging visible seam 2 crops the segment under it. That candidate returns to 待确认.
+    /// The candidate under seam 1 sits above the drag, so its choice stays.
+    func testDraggingSeamTwoResetsTheSegmentBelowAndKeepsTheCandidateUnderSeamOne() throws {
+        var assembly = Self.movedSeamAssembly()
+        XCTAssertEqual(assembly.visibleSeamNumber(boundary: 0), 2)
+        assembly.align(seam: 0, overlap: 6)
+        _ = assembly.completeManualAlignment()
+
+        let underSeamOne = try XCTUnwrap(assembly.duplicateCandidates.first { $0.segmentIndex == 0 })
+        XCTAssertEqual(underSeamOne.seamNumber, 1)
+        XCTAssertEqual(underSeamOne.choice, .keepOnce)
+        XCTAssertEqual(underSeamOne.handledLine, "✓ 已处理 · 只保留一次")
+        XCTAssertFalse(underSeamOne.seamMoved)
+        XCTAssertFalse(underSeamOne.locationLine.contains("接缝动过"))
+
+        let belowSeamTwo = try XCTUnwrap(assembly.duplicateCandidates.first { $0.seamNumber == 3 })
+        XCTAssertEqual(belowSeamTwo.segmentIndex, 1)
+        XCTAssertNil(belowSeamTwo.choice)
+        XCTAssertTrue(belowSeamTwo.seamMoved)
+        XCTAssertEqual(belowSeamTwo.movedSeamNumber, 2)
+        XCTAssertEqual(belowSeamTwo.locationLine, "接缝 3 下方 · 2 行 · 接缝动过，需要重选")
     }
 
     func testRestoreAutoClearsAChoiceWhenTheSuggestionMovesTheSeam() throws {
         var assembly = Self.movedSeamAssembly()
-        assembly.duplicateCandidates[0].offset = 6
-        assembly.seams[0].suggestedOverlap = 0
+        assembly.seams[0].suggestedOverlap = 6
         let summary = assembly.restoreAutoAlignment(seam: 0)
 
         XCTAssertEqual(summary.clearedSeamNumber, 2)
         XCTAssertEqual(summary.clearedChoiceCount, 1)
         XCTAssertEqual(summary.keptChoiceCount, 1)
-        let cleared = try XCTUnwrap(assembly.duplicateCandidates.first { $0.segmentIndex == 0 })
+        let kept = try XCTUnwrap(assembly.duplicateCandidates.first { $0.segmentIndex == 0 })
+        XCTAssertEqual(kept.choice, .keepOnce)
+        XCTAssertFalse(kept.seamMoved)
+        XCTAssertEqual(kept.handledLine, "✓ 已处理 · 只保留一次")
+        let cleared = try XCTUnwrap(assembly.duplicateCandidates.first { $0.seamNumber == 3 })
         XCTAssertNil(cleared.choice)
         XCTAssertTrue(cleared.seamMoved)
         XCTAssertEqual(cleared.movedSeamNumber, 2)
-        XCTAssertEqual(assembly.duplicateCandidates.first { $0.seamNumber == 3 }?.choice, .keepBoth)
+        XCTAssertTrue(cleared.locationLine.hasSuffix("· 接缝动过，需要重选"))
         XCTAssertEqual(assembly.duplicateUndoCount, 0)
         if case .aligned(let overlap) = assembly.seams[0].kind {
-            XCTAssertEqual(overlap, 0)
+            XCTAssertEqual(overlap, 6)
         } else {
             XCTFail("还原自动 applies the suggestion")
         }
