@@ -1,5 +1,6 @@
 import AppKit
 import CoreMedia
+import PrettyShotCore
 import ScreenCaptureKit
 import SwiftUI
 

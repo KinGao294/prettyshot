@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import PrettyShotCore
 import ScreenCaptureKit
 import SwiftUI
 
