@@ -191,6 +191,12 @@ public enum DuplicateSegmentChoice: Equatable {
     case keepBoth
 }
 
+/// One recorded duplicate-segment choice, so undo can put that candidate back.
+struct DuplicateChoiceRecord: Equatable {
+    var id: String
+    var previous: DuplicateSegmentChoice?
+}
+
 /// A stretch that may repeat an earlier segment. It stays in 「待确认」 until the user chooses.
 public struct DuplicateSegmentCandidate: Equatable, Identifiable {
     public var id: String
@@ -225,7 +231,7 @@ public struct ScrollAssembly: Equatable {
     /// Repeated stretches waiting for 「保留一次」 or 「都保留」. Not seams, and not the sticky bar.
     public var duplicateCandidates: [DuplicateSegmentCandidate] = []
     /// Newest resolution last. Undo writes that candidate's previous choice back.
-    var duplicateChoiceUndo: [(id: String, previous: DuplicateSegmentChoice?)] = []
+    var duplicateChoiceUndo: [DuplicateChoiceRecord] = []
     /// Reused `presented` images so dragging a seam does not copy the whole stack again.
     var presentationCache = PresentationCache()
 
@@ -288,7 +294,7 @@ public struct ScrollAssembly: Equatable {
         guard let index = duplicateCandidates.firstIndex(where: { $0.id == id }) else { return }
         let previous = duplicateCandidates[index].choice
         guard previous != choice else { return }
-        duplicateChoiceUndo.append((id: id, previous: previous))
+        duplicateChoiceUndo.append(DuplicateChoiceRecord(id: id, previous: previous))
         duplicateCandidates[index].choice = choice
     }
 
