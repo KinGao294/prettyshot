@@ -80,7 +80,29 @@ jobs:
           esac
 
       - name: Test shared module (macOS)
-        run: swift test --package-path PrettyShotCore
+        id: core
+        continue-on-error: true
+        run: |
+          set +e
+          set -o pipefail
+          # 29138e4 has no seam note. These computed members exist only so the
+          # 4bd73ea tests compile. They do not change matching. note stays nil.
+          cat >> PrettyShotCore/Tests/PrettyShotCoreTests/ScrollStitchTests.swift <<'EOF'
+
+          extension StitchCopy {
+              static var blankSeam: String { "这一段几乎是空白，看不出该接在哪" }
+              static var reverseSeam: String { "这里像是往回滚了，确认一下接在哪" }
+          }
+
+          extension ScrollSeam {
+              var note: String? { nil }
+          }
+          EOF
+          export NSUnbufferedIO=YES
+          swift test --package-path PrettyShotCore 2>&1 | tee /tmp/swift-test.log
+          status=$?
+          python3 .github/scripts/annotate-xctest.py /tmp/swift-test.log
+          exit $status
 
       - name: Build shared module (iOS Simulator)
         working-directory: PrettyShotCore
@@ -93,12 +115,38 @@ jobs:
             build
 
       - name: Test Mac app (XCTest)
+        id: mac
+        if: always()
+        continue-on-error: true
         run: |
+          set +e
+          set -o pipefail
+          cat >> PrettyShotTests/ScrollStitcherTests.swift <<'EOF'
+
+          extension StitchCopy {
+              static var blankSeam: String { "这一段几乎是空白，看不出该接在哪" }
+              static var reverseSeam: String { "这里像是往回滚了，确认一下接在哪" }
+          }
+
+          extension ScrollSeam {
+              var note: String? { nil }
+          }
+          EOF
+          export NSUnbufferedIO=YES
           xcodebuild -project PrettyShot.xcodeproj -scheme PrettyShot \
             -destination 'platform=macOS' \
             -derivedDataPath build/macos-tests \
             CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="-" DEVELOPMENT_TEAM="" \
-            test
+            test 2>&1 | tee /tmp/xcode-test.log
+          status=$?
+          python3 .github/scripts/annotate-xctest.py /tmp/xcode-test.log
+          exit $status
+
+      - name: Evidence result
+        if: always()
+        run: |
+          echo "core=${{ steps.core.outcome }} mac=${{ steps.mac.outcome }}"
+          test "${{ steps.core.outcome }}" = "success" && test "${{ steps.mac.outcome }}" = "success"
 
       - name: Package DMG
         run: |

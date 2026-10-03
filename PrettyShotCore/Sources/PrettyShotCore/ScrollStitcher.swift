@@ -812,6 +812,9 @@ public struct ScrollStitcher {
     private var lockedFooter: Int?
     private var pendingSticky: PendingStickyConfirmation?
     private var stickyRepeats: [StickyRepeat] = []
+    /// Last confident vertical shift. Breaks a later alias (period-like cards) in the same direction.
+    /// Cleared when a segment closes, when the assembly is finalized, and in `beginStitch()`.
+    private var lastShift: Int?
     /// One shared copy of the sticky bars for the open run. Each seam records these images
     /// instead of cropping a fresh header and footer on every frame.
     private var pinnedHeader: RGBAImage?
@@ -819,6 +822,12 @@ public struct ScrollStitcher {
 
     public init(options: Options = Options()) {
         self.options = options
+    }
+
+    /// 「开始拼接」. Drops the shift remembered for repeating-card aliases so the next
+    /// pass cannot inherit a direction from the previous one.
+    public mutating func beginStitch() {
+        lastShift = nil
     }
 
     public var hasFrame: Bool { open || !segments.isEmpty }
@@ -891,9 +900,24 @@ public struct ScrollStitcher {
             }
         }
 
-        let found = RowSamples.bestShift(prevRows, nextRows, header: headerH, footer: footerH, options: options)
-        if let match = found, match.confident {
-            let outcome = apply(next: frame, shift: match.shift, headerH: headerH, footerH: footerH)
+        // A fixed bar taller than the sticky cap, or a blank margin, must not hide the rows that moved.
+        let match = RowSamples.matchEdges(
+            prevRows,
+            nextRows,
+            fallbackHeader: headerH,
+            fallbackFooter: footerH,
+            options: options
+        )
+        let found = RowSamples.bestShift(
+            prevRows,
+            nextRows,
+            header: match.header,
+            footer: match.footer,
+            lastShift: lastShift,
+            options: options
+        )
+        if let matchFound = found, matchFound.confident {
+            let outcome = apply(next: frame, shift: matchFound.shift, headerH: match.header, footerH: match.footer)
             switch outcome {
             case .appended, .prepended, .reachedLimit:
                 if lockedHeader == nil {
@@ -903,15 +927,20 @@ public struct ScrollStitcher {
                 if pendingSticky != nil, headerH > 0 || footerH > 0 {
                     pendingSticky?.seamCount += 1
                 }
+                lastShift = matchFound.shift
                 previous = frame
             case .unchanged:
                 break
             case .unmatched:
-                return breakUnmatched(frame, suggested: max(0, frame.height - abs(match.shift)))
+                return breakUnmatched(frame, suggested: max(0, frame.height - abs(matchFound.shift)))
             case .seeded, .ignored:
                 break
             }
             return outcome
+        }
+        // Hover, caret, or a one-frame flash: most of the picture is still the last frame.
+        if found == nil, RowSamples.isFlicker(prevRows, nextRows, options: options) {
+            return .ignored
         }
         let suggested = found.map { max(0, frame.height - abs($0.shift)) }
         return breakUnmatched(frame, suggested: suggested)
@@ -1054,6 +1083,8 @@ public struct ScrollStitcher {
     }
 
     private mutating func sealOpenSegment() {
+        // The next segment, and the next capture after finalize, start without a direction.
+        lastShift = nil
         guard open, canvas.height > 0 else {
             stickyRepeats = []
             return
@@ -1158,21 +1189,28 @@ private enum RowSamples {
         var confident: Bool
     }
 
-    static func bestShift(_ prev: [RowSample], _ next: [RowSample], header: Int, footer: Int, options: ScrollStitcher.Options) -> ShiftChoice? {
+    static func bestShift(
+        _ prev: [RowSample],
+        _ next: [RowSample],
+        header: Int,
+        footer: Int,
+        lastShift: Int? = nil,
+        options: ScrollStitcher.Options
+    ) -> ShiftChoice? {
         let height = min(prev.count, next.count)
         let contentEnd = height - footer
         guard header >= 0, footer >= 0, contentEnd - header > options.minOverlapRows else { return nil }
 
-        var scored: [Int: Int] = [:]
+        var scored: [Int: (score: Int, votes: Int)] = [:]
 
         func consider(_ shift: Int) {
             guard shift != 0 else { return }
             guard let score = verify(prev, next, header: header, footer: footer, shift: shift, options: options) else { return }
             guard score <= options.alignDistance else { return }
             if let existing = scored[shift] {
-                scored[shift] = min(existing, score)
+                scored[shift] = (min(existing.score, score), existing.votes + 1)
             } else {
-                scored[shift] = score
+                scored[shift] = (score, 1)
             }
         }
 
@@ -1187,21 +1225,109 @@ private enum RowSamples {
             }
         }
 
-        let ranked = scored.sorted { lhs, rhs in
-            if lhs.value != rhs.value { return lhs.value < rhs.value }
-            let left = abs(lhs.key)
-            let right = abs(rhs.key)
-            if left != right { return left < right }
-            return lhs.key > rhs.key
-        }
+        let ranked = clustered(scored)
         guard let best = ranked.first else { return nil }
-        // A tied or near-tied second shift — including several perfect scores of 0 — is not safe.
-        // Dictionary order is not a tie-break; repeated list rows must stay unconfirmed.
-        let ambiguous = ranked.dropFirst().contains { $0.value <= best.value + 4 }
-        return ShiftChoice(shift: best.key, confident: !ambiguous)
+        // Distant aliases with similar score *and* similar support are not safe — a repeating
+        // list can match at several periods. Nearby 1–2 px candidates are the same scroll.
+        let rivals = ranked.dropFirst().filter { rival in
+            abs(rival.shift - best.shift) > 2
+                && rival.score <= best.score + 4
+                && rival.votes * 2 >= best.votes
+        }
+        if rivals.isEmpty {
+            return ShiftChoice(shift: best.shift, confident: true)
+        }
+        if let prior = lastShift,
+           let preferred = resolveAlias(best: best, rivals: Array(rivals), prior: prior) {
+            return ShiftChoice(shift: preferred, confident: true)
+        }
+        return ShiftChoice(shift: best.shift, confident: false)
+    }
+
+    /// Header and footer used to score a shift. A stationary edge that is too tall for the
+    /// sticky cap still has to be left out of the search, or the moving strip never gets a vote.
+    static func matchEdges(
+        _ a: [RowSample],
+        _ b: [RowSample],
+        fallbackHeader: Int,
+        fallbackFooter: Int,
+        options: ScrollStitcher.Options
+    ) -> (header: Int, footer: Int) {
+        var header = stationaryRun(a, b, options: options, fromTop: true)
+        var footer = stationaryRun(a, b, options: options, fromTop: false)
+        let count = min(a.count, b.count)
+        if header + footer >= count {
+            header = 0
+            footer = 0
+        }
+        let candidateHeader = max(fallbackHeader, header)
+        let candidateFooter = max(fallbackFooter, footer)
+        if count - candidateHeader - candidateFooter > options.minOverlapRows {
+            return (candidateHeader, candidateFooter)
+        }
+        return (fallbackHeader, fallbackFooter)
+    }
+
+    static func isFlicker(_ a: [RowSample], _ b: [RowSample], options: ScrollStitcher.Options) -> Bool {
+        let count = min(a.count, b.count)
+        guard count > 0 else { return false }
+        var header = stationaryRun(a, b, options: options, fromTop: true)
+        var footer = stationaryRun(a, b, options: options, fromTop: false)
+        if header + footer > count {
+            header = count
+            footer = 0
+        }
+        // A thin changed strip on a still frame is a flash. Fixed bars are the opposite:
+        // the still edge is large and the part that moved is the page.
+        let moving = count - header - footer
+        if moving * 4 < count {
+            header = 0
+            footer = 0
+        }
+        var same = 0
+        var eligible = 0
+        for y in 0..<count {
+            if y < header || (footer > 0 && y >= count - footer) { continue }
+            // Blank and low-variance rows match at every scroll. They are not "unchanged content".
+            guard a[y].distinctive || b[y].distinctive else { continue }
+            eligible += 1
+            if distance(a[y], b[y]) <= options.matchDistance { same += 1 }
+        }
+        guard eligible >= 4 else { return false }
+        return same * 4 >= eligible * 3
     }
 
     // MARK: - Private
+
+    /// Stationary distinctive edge, with no cap. Blank rows do not start it.
+    private static func stationaryRun(
+        _ a: [RowSample],
+        _ b: [RowSample],
+        options: ScrollStitcher.Options,
+        fromTop: Bool
+    ) -> Int {
+        let count = min(a.count, b.count)
+        var confirmed = 0
+        var pendingGaps = 0
+        var sawDetail = false
+        for step in 0..<count {
+            let y = fromTop ? step : (count - 1 - step)
+            let same = distance(a[y], b[y]) <= options.matchDistance
+            let detailed = a[y].distinctive || b[y].distinctive
+            if same && detailed {
+                pendingGaps = 0
+                sawDetail = true
+                confirmed = step + 1
+            } else if same && sawDetail {
+                pendingGaps = 0
+                confirmed = step + 1
+            } else {
+                pendingGaps += 1
+                if pendingGaps > 2 { break }
+            }
+        }
+        return sawDetail ? confirmed : 0
+    }
 
     private static func stickyRun(_ a: [RowSample], _ b: [RowSample], options: ScrollStitcher.Options, fromTop: Bool) -> StickyBand {
         let count = min(a.count, b.count)
@@ -1263,7 +1389,7 @@ private enum RowSamples {
         let start = header
         let end = height - footer - magnitude
         guard end - start >= options.minOverlapRows else { return nil }
-        let step = max(1, (end - start) / 24)
+        let step = max(1, (end - start) / 48)
         var sum = 0
         var n = 0
         var y = start
@@ -1271,7 +1397,8 @@ private enum RowSamples {
             let nextY = shift > 0 ? y : y + magnitude
             let prevY = shift > 0 ? y + magnitude : y
             guard nextY < height, prevY < height else { break }
-            if prev[prevY].distinctive || next[nextY].distinctive {
+            // One blank side is the edge of a sparse page, not a failed alignment.
+            if prev[prevY].distinctive && next[nextY].distinctive {
                 sum += distance(prev[prevY], next[nextY])
                 n += 1
             }
@@ -1281,7 +1408,8 @@ private enum RowSamples {
         return sum / n
     }
 
-    /// Best-matching row of `needle` inside `rows[from..<to]`, if it is close enough to be the same content.
+    /// Best-matching row of `needle` inside `rows[from..<to]`, if that row is unique in the frame.
+    /// Repeating chrome or a periodic list matches at several y values and cannot vote.
     private static func closest(
         to needle: RowSample,
         in rows: [RowSample],
@@ -1290,17 +1418,78 @@ private enum RowSamples {
         options: ScrollStitcher.Options
     ) -> Int? {
         guard from < to, needle.distinctive else { return nil }
+        var hits: [Int] = []
         var bestY: Int?
         var best = Int.max
-        for y in from..<to {
+        for y in 0..<rows.count {
             let score = distance(needle, rows[y])
-            if score < best {
+            if score <= options.matchDistance {
+                hits.append(y)
+            }
+            if y >= from, y < to, score < best {
                 best = score
                 bestY = y
             }
         }
         guard let bestY, best <= options.matchDistance else { return nil }
+        // Another equally good match far away — even outside the search window — means
+        // this row is periodic. Near-colour neighbours (1–2 px) are not a second alignment.
+        if hits.contains(where: { abs($0 - bestY) > 2 && distance(needle, rows[$0]) <= best + 2 }) {
+            return nil
+        }
         return bestY
+    }
+
+    private struct ShiftCluster {
+        var shift: Int
+        var score: Int
+        var votes: Int
+    }
+
+    /// Merges shifts within 2 px (same scroll, 1 px of capture / rounding noise).
+    private static func clustered(_ scored: [Int: (score: Int, votes: Int)]) -> [ShiftCluster] {
+        let keys = scored.keys.sorted()
+        var clusters: [ShiftCluster] = []
+        var index = 0
+        while index < keys.count {
+            var group = [keys[index]]
+            var next = index + 1
+            while next < keys.count, keys[next] - keys[next - 1] <= 2 {
+                group.append(keys[next])
+                next += 1
+            }
+            var score = Int.max
+            var votes = 0
+            var bestShift = group[0]
+            var bestVotes = -1
+            for shift in group {
+                guard let item = scored[shift] else { continue }
+                votes += item.votes
+                if item.score < score || (item.score == score && item.votes > bestVotes) {
+                    score = item.score
+                    bestShift = shift
+                    bestVotes = item.votes
+                }
+            }
+            clusters.append(ShiftCluster(shift: bestShift, score: score, votes: votes))
+            index = next
+        }
+        return clusters.sorted { lhs, rhs in
+            if lhs.score != rhs.score { return lhs.score < rhs.score }
+            if lhs.votes != rhs.votes { return lhs.votes > rhs.votes }
+            if abs(lhs.shift) != abs(rhs.shift) { return abs(lhs.shift) < abs(rhs.shift) }
+            return lhs.shift > rhs.shift
+        }
+    }
+
+    private static func resolveAlias(best: ShiftCluster, rivals: [ShiftCluster], prior: Int) -> Int? {
+        let candidates = [best] + rivals
+        guard let preferred = candidates.min(by: { abs($0.shift - prior) < abs($1.shift - prior) }) else {
+            return nil
+        }
+        let sameDirection = preferred.shift.signum() == prior.signum() || prior == 0
+        let closeEnough = abs(preferred.shift - prior) <= max(12, abs(prior) * 3)
+        return sameDirection && closeEnough ? preferred.shift : nil
     }
 
     private static func anchorRows(_ rows: [RowSample], from: Int, to: Int, bias: Bias) -> [Int] {
@@ -1314,8 +1503,8 @@ private enum RowSamples {
         case .bottom:
             pool = Array(indices.suffix(max(indices.count / 2, 1)))
         }
-        if pool.count <= 5 { return pool }
-        return (0..<5).map { pool[$0 * (pool.count - 1) / 4] }
+        if pool.count <= 8 { return pool }
+        return (0..<8).map { pool[$0 * (pool.count - 1) / 7] }
     }
 
     private static func sampleColumns(width: Int, count: Int) -> [Int] {
