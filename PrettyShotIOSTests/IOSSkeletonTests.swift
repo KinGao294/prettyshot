@@ -327,12 +327,14 @@ final class ExtensionMemoryBudgetTests: XCTestCase {
             + canvas.width * canvas.height * 4
             + shadowBytes
             + fifthBuffer
+        // Five buffers under-count a 1320×2868 export by about 9.8MB once the
+        // resident source is added back. The margin stays visible for (36).
         XCTAssertEqual(
             ExtensionMemoryBudget.exportPeakBytes(
                 sourcePixels: width * height,
                 canvasPixels: canvas.width * canvas.height
             ),
-            measured
+            measured + 12 * 1024 * 1024
         )
         XCTAssertGreaterThan(measured, ExtensionMemoryBudget.rgbaBytes(pixels: width * height, copies: 2))
         XCTAssertEqual(ExtensionMemoryBudget.plan(pixelWidth: 1290, pixelHeight: 20_000, canTransferToApp: true), .handoffToApp)
@@ -432,10 +434,11 @@ final class ExtensionMemoryBudgetTests: XCTestCase {
     }
 
     /// Default padding stays inside the extension. Padding 64 on the same pixels must hand off.
-    /// 2000×2000 is just under the 5-buffer gate at padding 28 and over it at padding 64 (scale 1, plus 40MB).
+    /// 1830×1830 is just under the gate at padding 28 once the 12MB render margin is counted,
+    /// and over it at padding 64 (scale 1, plus 40MB headroom).
     func testLargePaddingHandsOffWhileDefaultStaysInTheExtension() throws {
-        let width = 2000
-        let height = 2000
+        let width = 1830
+        let height = 1830
         XCTAssertEqual(
             ExtensionMemoryBudget.plan(pixelWidth: width, pixelHeight: height, canTransferToApp: true),
             .fullResolutionInline
@@ -491,9 +494,12 @@ final class ExtensionMemoryBudgetTests: XCTestCase {
         let encoded = try XCTUnwrap(ShotEncoder.pngData(canvas))
         let during = sampler.stop()
         let delta = during - before
-        print("PRETTYSHOT_RENDER_DELTA 1320x2868 before=\(before) during=\(during) delta=\(delta) exportPeak=\(exportPeak) encodedBytes=\(encoded.count)")
+        let residentSource = Int64(sourcePixels * ExtensionMemoryBudget.bytesPerPixel)
+        let sameBasis = delta + residentSource
+        print("PRETTYSHOT_RENDER_DELTA 1320x2868 before=\(before) during=\(during) delta=\(delta) residentSource=\(residentSource) sameBasis=\(sameBasis) exportPeak=\(exportPeak) margin=\(Int64(exportPeak) - sameBasis) encodedBytes=\(encoded.count)")
         XCTAssertGreaterThan(delta, 0)
         XCTAssertLessThanOrEqual(delta, Int64(exportPeak))
+        XCTAssertLessThanOrEqual(sameBasis, Int64(exportPeak))
         XCTAssertGreaterThan(encoded.count, 100_000)
         XCTAssertEqual(source.width, width)
         XCTAssertEqual(redacted.width, width)
@@ -527,6 +533,8 @@ final class ExtensionMemoryBudgetTests: XCTestCase {
             sourcePixels: fitWidth * fitHeight,
             canvasPixels: ExtensionMemoryBudget.canvasPixelCount(width: fitWidth, height: fitHeight, scale: 3)
         )
+        let fitSameBasis = fitDelta + Int64(fitSourceBytes)
+        print("PRETTYSHOT_RENDER_DELTA 1179x2556 before=\(fitBefore) during=\(fitDuring) delta=\(fitDelta) residentSource=\(fitSourceBytes) sameBasis=\(fitSameBasis) exportPeak=\(fitPeak) margin=\(Int64(fitPeak) - fitSameBasis)")
         XCTAssertGreaterThan(fitDelta, 0)
         XCTAssertLessThanOrEqual(fitDelta, Int64(fitPeak))
         XCTAssertLessThanOrEqual(
@@ -1159,6 +1167,86 @@ final class ShareAcceptanceTests: XCTestCase {
         XCTAssertFalse(urls.contains { $0.lastPathComponent.contains("pdf") || $0.pathExtension == "pdf" })
     }
 
+    /// One image plus one PDF is a single image share. M must not count the PDF.
+    func testImagePlusPdfCountsAsOneShare() throws {
+        let tmp = try makeTemp()
+        addTeardownBlock { try? FileManager.default.removeItem(at: tmp) }
+        let store = InlineHandoffStore(root: tmp.appendingPathComponent("inbox", isDirectory: true))
+        let image = try writePNG(bytes: [4, 5, 6, 7], directory: tmp, name: "shot.png")
+        let pdf = tmp.appendingPathComponent("page.pdf")
+        try Data("%PDF-1.4".utf8).write(to: pdf)
+        guard case .waitingForApp = HandoffTransfer.persist(copying: [image], kind: .singleImage, store: store) else {
+            XCTFail("expected the image to stage")
+            return
+        }
+        Thread.sleep(forTimeInterval: 0.05)
+        guard case .waitingForApp = HandoffTransfer.persist(copying: [pdf], kind: .pdf, store: store) else {
+            XCTFail("expected the pdf to stage")
+            return
+        }
+        let pending = try store.pendingTickets()
+        XCTAssertEqual(IOSCopy.handoffBannerDetail(for: pending), "已暂存 1 张")
+        XCTAssertFalse(IOSCopy.handoffBannerDetail(for: pending).contains("次分享"))
+        XCTAssertFalse(IOSCopy.handoffBannerDetail(for: pending).contains("2 次"))
+    }
+
+    /// A PDF share before the images must not take an ordinal slot.
+    /// 3 image files with local #2 missing stay cards 1、3、4 and the banner says 第 2 张. N stays 3.
+    func testPdfBeforeImagesDoesNotShiftMissingOrdinals() throws {
+        let tmp = try makeTemp()
+        addTeardownBlock { try? FileManager.default.removeItem(at: tmp) }
+        let store = InlineHandoffStore(root: tmp.appendingPathComponent("inbox", isDirectory: true))
+        let pdf = tmp.appendingPathComponent("page.pdf")
+        try Data("%PDF-1.4".utf8).write(to: pdf)
+        let source = try patternedPNG(width: 4, height: 3, directory: tmp)
+        guard case .waitingForApp = HandoffTransfer.persist(copying: [pdf], kind: .pdf, store: store) else {
+            XCTFail("expected the pdf to stage")
+            return
+        }
+        Thread.sleep(forTimeInterval: 0.05)
+        guard case .waitingForApp = HandoffTransfer.persist(
+            copying: Array(repeating: source.url, count: 3),
+            kind: .stitch,
+            store: store,
+            missingShots: [MissingShot(ordinal: 2)]
+        ) else {
+            XCTFail("expected the images to stage")
+            return
+        }
+        let pending = try store.pendingTickets()
+        let missing = pending.flatMap { $0.missingShots.map(\.ordinal) }
+        XCTAssertEqual(missing, [2])
+        XCTAssertEqual(IOSCopy.missingBanner(missing), "少了 1 张 · 第 2 张没读出来")
+        XCTAssertEqual(PendingShareResume.globalFileOrdinals(pending), [1, 3, 4])
+        XCTAssertEqual(PendingShareResume.stagedFileCount(pending), 3)
+        XCTAssertEqual(IOSCopy.handoffBannerDetail(for: pending), "已暂存 3 张")
+    }
+
+    /// 「继续拼接」 reads images and must leave the PDF ticket on disk.
+    func testContinuingDoesNotDeleteAPdfTicket() throws {
+        let tmp = try makeTemp()
+        addTeardownBlock { try? FileManager.default.removeItem(at: tmp) }
+        let store = InlineHandoffStore(root: tmp.appendingPathComponent("inbox", isDirectory: true))
+        let image = try writePNG(bytes: [8, 8, 8, 8], directory: tmp, name: "shot.png")
+        let pdf = tmp.appendingPathComponent("only.pdf")
+        try Data("%PDF-1.4".utf8).write(to: pdf)
+        guard case .waitingForApp = HandoffTransfer.persist(copying: [image], kind: .singleImage, store: store) else {
+            XCTFail("expected the image to stage")
+            return
+        }
+        Thread.sleep(forTimeInterval: 0.05)
+        guard case .waitingForApp = HandoffTransfer.persist(copying: [pdf], kind: .pdf, store: store) else {
+            XCTFail("expected the pdf to stage")
+            return
+        }
+        let pending = try store.pendingTickets()
+        let data = try ReceiptConfirmation.imageData(of: pending, store: store)
+        XCTAssertEqual(data, [Data([8, 8, 8, 8])])
+        let left = try store.pendingTickets()
+        XCTAssertEqual(left.map(\.kind), [.pdf])
+        XCTAssertEqual(try store.files(for: left[0].id).count, 1)
+    }
+
     func testLaterTicketDeleteDoesNotDropImagesAlreadyRead() throws {
         let tmp = try makeTemp()
         addTeardownBlock { try? FileManager.default.removeItem(at: tmp) }
@@ -1462,19 +1550,25 @@ final class FollowUp34CopyTests: XCTestCase {
         assertEditWarningShown(frame11Body(remembered: remembered, session: session))
     }
 
-    /// Last time the user picked Night Ink at padding 40. This session opens on that style and changes nothing.
-    func testFrame11RememberedStyleWithoutChangesOmitsTheEditWarning() {
-        let remembered = rememberedLastStyle()
-        XCTAssertNotEqual(remembered, BackgroundStyle.default)
-        let session = sessionReusing(remembered)
-        XCTAssertEqual(session.style, remembered)
-        XCTAssertTrue(session.removeStatusBar)
-        XCTAssertTrue(session.arrows.isEmpty)
-        XCTAssertTrue(session.redactions.isEmpty)
-        let body = frame11Body(remembered: remembered, session: session)
-        let note = "App 会打开原图，样式和标注要重新调一下。"
+    /// Opened the extension and changed nothing. The comparison is the style at open.
+    /// The extension does not remember a style from a previous session.
+    func testFrame11OpeningTheExtensionWithoutEditsOmitsTheEditWarning() throws {
+        let model = EditorModel()
+        let styleAtOpen = model.style
+        model.load(try XCTUnwrap(ShotEncoder.pngData(try solid(width: 8, height: 8))))
+        XCTAssertEqual(model.style, styleAtOpen)
+        XCTAssertFalse(model.changedStyleThisSession)
+        XCTAssertFalse(model.changedCropThisSession)
+        XCTAssertFalse(model.addedArrowThisSession)
+        XCTAssertFalse(model.addedRedactionThisSession)
+        let body = LargeHandoff.body(
+            changedStyle: model.changedStyleThisSession,
+            changedCrop: model.changedCropThisSession,
+            addedArrow: model.addedArrowThisSession,
+            addedRedaction: model.addedRedactionThisSession
+        )
         XCTAssertEqual(body, IOSCopy.largeBody)
-        XCTAssertFalse(body.contains(note))
+        XCTAssertFalse(body.contains(LargeHandoff.editedNote))
     }
 
     func testFrame11DropsTheManualOpenFooter() {
@@ -1489,6 +1583,52 @@ final class FollowUp34CopyTests: XCTestCase {
         XCTAssertEqual(kept.arrowCount, 1)
         XCTAssertEqual(kept.redactionCount, 2)
         XCTAssertFalse(kept.removeStatusBar)
+    }
+
+    func testFrame11CancelKeepsFractionalPadding() {
+        let kept = Frame11Cancel.preserved(padding: 37.4, arrowCount: 1, redactionCount: 2, removeStatusBar: false)
+        XCTAssertEqual(kept.padding, 37.4, accuracy: 0.001)
+        XCTAssertEqual(kept.arrowCount, 1)
+        XCTAssertEqual(kept.redactionCount, 2)
+        XCTAssertFalse(kept.removeStatusBar)
+    }
+
+    func testReaddToastIsSingleLineOnTheScreenTheUserLandsOn() {
+        XCTAssertEqual(IOSCopy.addedBack(ordinal: 3, total: 4), "已加回第 3 张 · 4 张齐了")
+        XCTAssertEqual(IOSCopy.addedBackStillMissing(ordinal: 2, stillMissing: 1), "已加回第 2 张 · 还少 1 张")
+        XCTAssertNil(ReaddToast.subtitle)
+        XCTAssertEqual(ReaddToast.topOffset, 70, accuracy: 0.001)
+        XCTAssertGreaterThanOrEqual(ReaddToast.dismissAfter, 1.6)
+        XCTAssertLessThanOrEqual(ReaddToast.dismissAfter, 1.8)
+        XCTAssertTrue(ReaddToast.showsMintCheck)
+        XCTAssertTrue(ReaddToast.usesDarkBlur)
+        XCTAssertTrue(ReaddToast.playsSuccessHaptic)
+
+        let fromEditor = ReaddToast.surfaceAfterReadd(from: .editor)
+        XCTAssertEqual(fromEditor, .stitch)
+        XCTAssertTrue(ReaddToast.draws(on: fromEditor))
+
+        let fromOrder = ReaddToast.surfaceAfterReadd(from: .order)
+        XCTAssertEqual(fromOrder, .order)
+        XCTAssertTrue(ReaddToast.draws(on: fromOrder))
+
+        let partial = MissingShotSession(ordinals: [2, 6], expectedTotal: 7).addingBack(ordinal: 2)
+        XCTAssertEqual(partial.session.ordinals, [6])
+        XCTAssertEqual(IOSCopy.missingBanner(partial.session.ordinals), "少了 1 张 · 第 6 张没读出来")
+    }
+
+    func testReaddToastDismissesAndDoesNotReturn() throws {
+        let model = EditorModel()
+        model.showReaddToast(IOSCopy.addedBack(ordinal: 3, total: 4))
+        XCTAssertEqual(model.toastTitle, "已加回第 3 张 · 4 张齐了")
+        XCTAssertNil(model.toastDetail)
+        XCTAssertTrue(model.lastFeedbackIsSuccess)
+        model.expireToast(after: 1.7)
+        XCTAssertNil(model.toastTitle)
+        XCTAssertNil(model.toastDetail)
+        model.load(try XCTUnwrap(ShotEncoder.pngData(try solid(width: 8, height: 8))))
+        XCTAssertNil(model.toastTitle)
+        XCTAssertNil(model.toastDetail)
     }
 
     /// A non-default style left over from the previous extension session.

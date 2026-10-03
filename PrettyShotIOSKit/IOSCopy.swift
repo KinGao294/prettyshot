@@ -334,3 +334,48 @@ enum LargeHandoff {
         (padding, arrowCount, redactionCount, removeStatusBar)
     }
 }
+
+/// Where a re-add leaves the user, and how that screen draws 「已加回」.
+enum ReaddSurface: Equatable {
+    case editor
+    case order
+    case stitch
+}
+
+enum ReaddToast {
+    /// EditorScreen's capsule sits 70pt down. The other screens do not draw it.
+    static let topOffset: CGFloat = 70
+    /// Nothing schedules a dismiss today.
+    static let dismissAfter: TimeInterval = 0
+    static let showsMintCheck = false
+    static let usesDarkBlur = false
+    static let playsSuccessHaptic = false
+    /// The re-add call site passes the in-app save line as the subtitle.
+    static var subtitle: String? { IOSCopy.inAppSavedDetail }
+
+    static func surfaceAfterReadd(from surface: ReaddSurface) -> ReaddSurface {
+        switch surface {
+        case .editor, .stitch:
+            return .stitch
+        case .order:
+            return .order
+        }
+    }
+
+    /// Only the editor overlay reads `toastTitle`.
+    static func draws(on surface: ReaddSurface) -> Bool {
+        surface == .editor
+    }
+}
+
+/// Frame 11 cancel. The sheet writes padding back through `Int`, so 37.4 becomes 37.
+enum Frame11Cancel {
+    static func preserved(
+        padding: Double,
+        arrowCount: Int,
+        redactionCount: Int,
+        removeStatusBar: Bool
+    ) -> (padding: Double, arrowCount: Int, redactionCount: Int, removeStatusBar: Bool) {
+        (Double(Int(padding.rounded())), arrowCount, redactionCount, removeStatusBar)
+    }
+}

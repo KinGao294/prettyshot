@@ -32,6 +32,8 @@ final class EditorModel: ObservableObject {
     @Published var preview: UIImage?
     @Published var toastTitle: String?
     @Published var toastDetail: String?
+    /// Set when a re-add toast plays the success haptic. Nothing does that today.
+    var lastFeedbackIsSuccess = false
     @Published var pixelWidth = 0
     @Published var pixelHeight = 0
     @Published private(set) var canUndo = false
@@ -212,6 +214,13 @@ final class EditorModel: ObservableObject {
         toastTitle = title
         toastDetail = detail
     }
+
+    /// Re-add currently reuses the save subtitle and never clears itself.
+    func showReaddToast(_ title: String) {
+        showToast(title, detail: IOSCopy.inAppSavedDetail)
+    }
+
+    func expireToast(after elapsed: TimeInterval) {}
 
     private func applySize(_ size: (width: Int, height: Int)?) {
         if let size {

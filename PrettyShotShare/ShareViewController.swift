@@ -194,13 +194,13 @@ final class ShareViewController: UIViewController {
     }
 
     private func keepEditsAndDismissLarge() {
-        let kept = LargeHandoff.editsSurviveCancel(
-            padding: Int(editor.style.padding.rounded()),
+        let kept = Frame11Cancel.preserved(
+            padding: editor.style.padding,
             arrowCount: editor.arrows.count,
             redactionCount: editor.redactions.count,
             removeStatusBar: editor.removeStatusBar
         )
-        editor.style.padding = Double(kept.padding)
+        editor.style.padding = kept.padding
         editor.removeStatusBar = kept.removeStatusBar
         editor.arrows = Array(editor.arrows.prefix(kept.arrowCount))
         editor.redactions = Array(editor.redactions.prefix(kept.redactionCount))
