@@ -720,6 +720,63 @@ final class ScrollStitcherTests: XCTestCase {
         XCTAssertLessThanOrEqual(first.height, 72 + 36)
         XCTAssertNotEqual(first.pixels, second.pixels)
     }
+
+    /// Repeating card chrome used to invent a second shift once the scroll passed one card.
+    func testRepeatingCardChromeWithCompetingCandidatesStitchesTrueShift() throws {
+        let shift = 28
+        let first = ScrollFixtures.competingCards(scroll: 0)
+        let second = ScrollFixtures.competingCards(scroll: shift)
+        var stitcher = ScrollStitcher()
+        XCTAssertEqual(stitcher.ingest(first), .seeded)
+        let outcome = stitcher.ingest(second)
+        XCTAssertEqual(outcome, .appended(shift))
+        // A wrong or unconfident shift must not walk off the image and abort the suite.
+        guard outcome == .appended(shift) else { return }
+        let assembly = stitcher.takeAssembly()
+        XCTAssertFalse(assembly.needsReview)
+        let image = try XCTUnwrap(assembly.flattenedIfResolved())
+        XCTAssertEqual(image.height, first.height + shift)
+        guard image.height == first.height + shift else { return }
+        for y in 0..<first.height {
+            XCTAssertEqual(ScrollFixtures.row(image, y), ScrollFixtures.row(first, y), "kept row \(y)")
+        }
+        let stripStart = second.height - shift
+        for offset in 0..<shift {
+            XCTAssertEqual(
+                ScrollFixtures.row(image, first.height + offset),
+                ScrollFixtures.row(second, stripStart + offset),
+                "new row \(offset)"
+            )
+        }
+    }
+
+    /// Neighbors 10 px and 11 px used to be two joins. They are one scroll.
+    func testNeighboringRowsWithReplacedFirstRowClusterIntoOneJoin() throws {
+        let first = ScrollFixtures.neighboringRows(scroll: 0)
+        let second = ScrollFixtures.neighboringRows(scroll: 10, replaceFirstRowWithPage: 11)
+        let shift = 10
+        var stitcher = ScrollStitcher()
+        XCTAssertEqual(stitcher.ingest(first), .seeded)
+        let outcome = stitcher.ingest(second)
+        XCTAssertEqual(outcome, .appended(shift))
+        guard outcome == .appended(shift) else { return }
+        let assembly = stitcher.takeAssembly()
+        XCTAssertFalse(assembly.needsReview)
+        let image = try XCTUnwrap(assembly.flattenedIfResolved())
+        XCTAssertEqual(image.height, first.height + shift)
+        guard image.height == first.height + shift else { return }
+        for y in 0..<first.height {
+            XCTAssertEqual(ScrollFixtures.row(image, y), ScrollFixtures.row(first, y), "kept row \(y)")
+        }
+        let stripStart = second.height - shift
+        for offset in 0..<shift {
+            XCTAssertEqual(
+                ScrollFixtures.row(image, first.height + offset),
+                ScrollFixtures.row(second, stripStart + offset),
+                "new row \(offset)"
+            )
+        }
+    }
 }
 
 private final class StitchLoadSlot: @unchecked Sendable {
@@ -837,6 +894,49 @@ private enum ScrollFixtures {
                 pixels[i + 1] = rgb[1]
                 pixels[i + 2] = rgb[2]
                 pixels[i + 3] = 255
+            }
+        }
+        return RGBAImage(width: width, height: height, pixels: pixels)
+    }
+
+    /// Slow ramp so a neighbor is a plausible match, without repeating across the frame.
+    static func neighboringRows(scroll: Int, height: Int = 40, replaceFirstRowWithPage: Int? = nil) -> RGBAImage {
+        var pixels = [UInt8](repeating: 255, count: width * height * 4)
+        for y in 0..<height {
+            let page = (y == 0 ? replaceFirstRowWithPage : nil) ?? (y + scroll)
+            let rgb = neighboringColor(page)
+            for x in 0..<width {
+                let i = (y * width + x) * 4
+                pixels[i] = rgb[0]
+                pixels[i + 1] = rgb[1]
+                pixels[i + 2] = rgb[2]
+            }
+        }
+        return RGBAImage(width: width, height: height, pixels: pixels)
+    }
+
+    static func neighboringColor(_ page: Int) -> [UInt8] {
+        // Step sums to 9, so a neighbor is distance 3. Stays inside UInt8 for this fixture's pages.
+        [UInt8(20 + page * 4), UInt8(page * 5), 160]
+    }
+
+    /// Card chrome repeats every 20 rows. The scroll is longer than one card, so chrome votes twice.
+    static func competingCards(scroll: Int, height: Int = 100, card: Int = 20, chrome: Int = 12) -> RGBAImage {
+        var pixels = [UInt8](repeating: 255, count: width * height * 4)
+        for y in 0..<height {
+            let page = y + scroll
+            let offset = page % card
+            let rgb: [UInt8]
+            if offset < chrome {
+                rgb = [UInt8(30 + (offset % 5) * 40), UInt8(40 + (offset % 3) * 50), 80]
+            } else {
+                rgb = [UInt8(truncatingIfNeeded: page &* 17), UInt8(truncatingIfNeeded: page &* 13 &+ 40), 200]
+            }
+            for x in 0..<width {
+                let i = (y * width + x) * 4
+                pixels[i] = rgb[0]
+                pixels[i + 1] = rgb[1]
+                pixels[i + 2] = rgb[2]
             }
         }
         return RGBAImage(width: width, height: height, pixels: pixels)
