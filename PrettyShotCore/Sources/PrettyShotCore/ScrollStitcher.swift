@@ -102,6 +102,36 @@ public struct ScrollSegment: Equatable {
     }
 }
 
+/// What the review window shows for one seam. The pending reverse seam uses the amber dashed label.
+public struct SeamCard: Equatable {
+    public enum Chrome: Equatable {
+        /// Solid rose 「需要对齐」.
+        case plain
+        /// Amber dashed 「待确认」.
+        case amberDashed
+    }
+
+    public var label: String
+    public var chrome: Chrome
+    public var title: String?
+    public var reason: String?
+    public var candidates: [String]
+
+    public init(
+        label: String,
+        chrome: Chrome,
+        title: String? = nil,
+        reason: String? = nil,
+        candidates: [String] = []
+    ) {
+        self.label = label
+        self.chrome = chrome
+        self.title = title
+        self.reason = reason
+        self.candidates = candidates
+    }
+}
+
 public struct ScrollSeam: Equatable {
     public var kind: Kind
     /// Best-guess overlap (rows) when `kind` is `.needsAlignment`. Not applied until the user says so.
@@ -119,6 +149,22 @@ public struct ScrollSeam: Equatable {
         self.kind = kind
         self.suggestedOverlap = suggestedOverlap
         self.note = note
+    }
+
+    /// Review copy for this boundary. `number` is the 1-based seam index.
+    /// This still returns today's plain 「需要对齐」 label; the amber pending style is not applied yet.
+    public func card(number: Int) -> SeamCard {
+        precondition(number >= 1)
+        let label: String
+        switch kind {
+        case .needsAlignment:
+            label = "需要对齐"
+        case .aligned:
+            label = "已手动对齐"
+        case .joinedAsIs:
+            label = "已按原样拼接"
+        }
+        return SeamCard(label: label, chrome: .plain, reason: note)
     }
 
     public var state: SeamState {

@@ -142,6 +142,35 @@ final class ScrollStitchTests: XCTestCase {
         XCTAssertNil(assembly.flattenedIfResolved())
         XCTAssertEqual(assembly.seams.count, 1)
         XCTAssertEqual(assembly.seams.last?.note, StitchCopy.reverseSeam)
+        let seam = try XCTUnwrap(assembly.seams.last)
+        let card = seam.card(number: 1)
+        XCTAssertEqual(card.label, "待确认")
+        XCTAssertEqual(card.chrome, .amberDashed)
+        XCTAssertNotEqual(card.label, "需要对齐")
+        XCTAssertEqual(card.reason, StitchCopy.reverseSeam)
+        XCTAssertEqual(assembly.unalignedSeamCount, 1)
+        XCTAssertEqual(assembly.pendingDuplicateConfirmCount, 0)
+        let bar = try XCTUnwrap(assembly.reviewBottomBar)
+        XCTAssertTrue(bar.contains("待对齐 1"))
+        XCTAssertFalse(bar.contains("待确认"))
+        let preview = try XCTUnwrap(assembly.renderPreview())
+        let mark = try XCTUnwrap(preview.marks.first { $0.state == .needsAlignment })
+        XCTAssertLessThan(mark.y, preview.image.height)
+        let pixels = preview.image.pixels
+        let amber = (UInt8(232), UInt8(163), UInt8(61))
+        var amberCount = 0
+        var otherCount = 0
+        for x in 0..<preview.image.width {
+            let i = (mark.y * preview.image.width + x) * 4
+            let sample = (pixels[i], pixels[i + 1], pixels[i + 2])
+            if sample == amber {
+                amberCount += 1
+            } else {
+                otherCount += 1
+            }
+        }
+        XCTAssertGreaterThan(amberCount, 0)
+        XCTAssertGreaterThan(otherCount, 0)
     }
 
     /// Repeating card chrome used to invent a second shift once the scroll passed one card.
