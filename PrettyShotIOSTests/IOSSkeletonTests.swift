@@ -1346,6 +1346,11 @@ final class FollowUp34CopyTests: XCTestCase {
     func testTwoPickedOneUnreadableUsesTheMultiErrorPage() {
         XCTAssertEqual(InAppStitchLoader.outcome(readableCount: 1, failedOrdinals: [2]), .failed)
         XCTAssertEqual(IOSCopy.memoryFailedTitle, "这张图片打不开")
+        XCTAssertEqual(IOSCopy.multiUnreadableTitle, "有图片没读出来")
+        XCTAssertEqual(
+            IOSCopy.multiUnreadableBody,
+            "可能还在 iCloud 中未下载，或文件已损坏。拼长图至少要 2 张，请重新选图。相册里的原图没动。"
+        )
         XCTAssertEqual(InAppStitchLoader.errorTitle(pickedCount: 2), "有图片没读出来")
         XCTAssertEqual(
             InAppStitchLoader.errorBody(pickedCount: 2),
@@ -1417,39 +1422,99 @@ final class FollowUp34CopyTests: XCTestCase {
         XCTAssertEqual(IOSCopy.addedBack(ordinal: 6, total: 7), "已加回第 6 张 · 7 张齐了")
     }
 
-    func testFrame11AppendsTheEditWarningOnlyForChangesInThisSession() {
+    func testFrame11TitleAndBodyStayOnTheUneditedCopy() {
         XCTAssertEqual(IOSCopy.largeTitle, "图片较大，去 App 里处理")
         XCTAssertEqual(
             IOSCopy.largeBody,
             "这张图尺寸很大，在分享菜单里按原分辨率导出可能内存不足。为了不丢图，请在 PrettyShot App 中继续。"
         )
+    }
+
+    func testFrame11StyleChangeAppendsTheEditWarning() {
+        let remembered = rememberedLastStyle()
+        let session = sessionReusing(remembered)
+        session.style = BackgroundStyle(presetKey: "moss-quiet", padding: remembered.padding, radius: remembered.radius, shadow: remembered.shadow)
+        XCTAssertNotEqual(session.style, remembered)
+        assertEditWarningShown(frame11Body(remembered: remembered, session: session))
+    }
+
+    func testFrame11CropChangeAppendsTheEditWarning() {
+        let remembered = rememberedLastStyle()
+        let session = sessionReusing(remembered)
+        session.removeStatusBar = false
+        XCTAssertEqual(session.style, remembered)
+        assertEditWarningShown(frame11Body(remembered: remembered, session: session))
+    }
+
+    func testFrame11ArrowAppendsTheEditWarning() {
+        let remembered = rememberedLastStyle()
+        let session = sessionReusing(remembered)
+        session.arrows.append(ArrowMark(start: CGPoint(x: 0.1, y: 0.2), end: CGPoint(x: 0.5, y: 0.7)))
+        XCTAssertEqual(session.style, remembered)
+        assertEditWarningShown(frame11Body(remembered: remembered, session: session))
+    }
+
+    func testFrame11RedactionAppendsTheEditWarning() {
+        let remembered = rememberedLastStyle()
+        let session = sessionReusing(remembered)
+        session.redactions.append(PixelRedaction(rect: CGRect(x: 12, y: 18, width: 40, height: 24)))
+        XCTAssertEqual(session.style, remembered)
+        assertEditWarningShown(frame11Body(remembered: remembered, session: session))
+    }
+
+    /// Last time the user picked Night Ink at padding 40. This session opens on that style and changes nothing.
+    func testFrame11RememberedStyleWithoutChangesOmitsTheEditWarning() {
+        let remembered = rememberedLastStyle()
+        XCTAssertNotEqual(remembered, BackgroundStyle.default)
+        let session = sessionReusing(remembered)
+        XCTAssertEqual(session.style, remembered)
+        XCTAssertTrue(session.removeStatusBar)
+        XCTAssertTrue(session.arrows.isEmpty)
+        XCTAssertTrue(session.redactions.isEmpty)
+        let body = frame11Body(remembered: remembered, session: session)
         let note = "App 会打开原图，样式和标注要重新调一下。"
-        let plain = LargeHandoff.body(changedStyle: false, changedCrop: false, addedArrow: false, addedRedaction: false)
-        XCTAssertEqual(plain, IOSCopy.largeBody)
-        XCTAssertFalse(plain.contains(note))
-        for change in [
-            (true, false, false, false),
-            (false, true, false, false),
-            (false, false, true, false),
-            (false, false, false, true),
-        ] {
-            let body = LargeHandoff.body(
-                changedStyle: change.0,
-                changedCrop: change.1,
-                addedArrow: change.2,
-                addedRedaction: change.3
-            )
-            XCTAssertEqual(body, IOSCopy.largeBody + note)
-            XCTAssertEqual(body.components(separatedBy: "重新调一下").count, 2)
-        }
+        XCTAssertEqual(body, IOSCopy.largeBody)
+        XCTAssertFalse(body.contains(note))
+    }
+
+    func testFrame11DropsTheManualOpenFooter() {
         XCTAssertFalse(LargeHandoff.showsManualOpenFooter())
         XCTAssertFalse(IOSCopy.largeBody.contains("如果没有自动打开"))
         XCTAssertFalse(IOSCopy.largeTitle.contains("图片已暂存"))
+    }
+
+    func testFrame11CancelKeepsEdits() {
         let kept = LargeHandoff.editsSurviveCancel(padding: 64, arrowCount: 1, redactionCount: 2, removeStatusBar: false)
         XCTAssertEqual(kept.padding, 64)
         XCTAssertEqual(kept.arrowCount, 1)
         XCTAssertEqual(kept.redactionCount, 2)
         XCTAssertFalse(kept.removeStatusBar)
+    }
+
+    /// A non-default style left over from the previous extension session.
+    private func rememberedLastStyle() -> BackgroundStyle {
+        BackgroundStyle(presetKey: "night-ink", padding: 40, radius: 16, shadow: 24)
+    }
+
+    private func sessionReusing(_ remembered: BackgroundStyle) -> EditorModel {
+        let model = EditorModel()
+        model.style = remembered
+        return model
+    }
+
+    private func frame11Body(remembered: BackgroundStyle, session: EditorModel) -> String {
+        LargeHandoff.body(
+            changedStyle: session.style != remembered,
+            changedCrop: session.removeStatusBar != true,
+            addedArrow: !session.arrows.isEmpty,
+            addedRedaction: !session.redactions.isEmpty
+        )
+    }
+
+    private func assertEditWarningShown(_ body: String) {
+        let note = "App 会打开原图，样式和标注要重新调一下。"
+        XCTAssertEqual(body, IOSCopy.largeBody + note)
+        XCTAssertEqual(body.components(separatedBy: "重新调一下").count, 2)
     }
 
     func testReadFailedOpenStaysOnThatPageAndMultiImageReselectsOnS10f() {
@@ -1501,12 +1566,8 @@ final class FollowUp34CopyTests: XCTestCase {
         var darkAlpha: CGFloat = 0
         XCTAssertTrue(light.getRed(&lightRed, green: &lightGreen, blue: &lightBlue, alpha: &lightAlpha))
         XCTAssertTrue(dark.getRed(&darkRed, green: &darkGreen, blue: &darkBlue, alpha: &darkAlpha))
-        XCTAssertEqual(lightRed, CGFloat(0x4F) / 255, accuracy: 0.02)
-        XCTAssertEqual(lightGreen, CGFloat(0x8F) / 255, accuracy: 0.02)
-        XCTAssertEqual(lightBlue, CGFloat(0x7E) / 255, accuracy: 0.02)
-        XCTAssertEqual(darkRed, CGFloat(0x8F) / 255, accuracy: 0.02)
-        XCTAssertEqual(darkGreen, CGFloat(0xCB) / 255, accuracy: 0.02)
-        XCTAssertEqual(darkBlue, CGFloat(0xBC) / 255, accuracy: 0.02)
+        XCTAssertEqual(Self.rgbHex(lightRed, lightGreen, lightBlue), 0x4F8F7E)
+        XCTAssertEqual(Self.rgbHex(darkRed, darkGreen, darkBlue), 0x7EB8A8)
         let circleLight = IOSTheme.stagedCircleColor.resolvedColor(with: UITraitCollection(userInterfaceStyle: .light))
         let circleDark = IOSTheme.stagedCircleColor.resolvedColor(with: UITraitCollection(userInterfaceStyle: .dark))
         var circleLightRed: CGFloat = 0
@@ -1520,6 +1581,11 @@ final class FollowUp34CopyTests: XCTestCase {
         XCTAssertTrue(circleLight.getRed(&circleLightRed, green: &circleLightGreen, blue: &circleLightBlue, alpha: &circleLightAlpha))
         XCTAssertTrue(circleDark.getRed(&circleDarkRed, green: &circleDarkGreen, blue: &circleDarkBlue, alpha: &circleDarkAlpha))
         XCTAssertNotEqual(circleLightRed, circleDarkRed)
+    }
+
+    private static func rgbHex(_ red: CGFloat, _ green: CGFloat, _ blue: CGFloat) -> UInt32 {
+        func channel(_ value: CGFloat) -> UInt32 { UInt32((value * 255).rounded()) }
+        return (channel(red) << 16) | (channel(green) << 8) | channel(blue)
     }
 
     private func solid(width: Int, height: Int) throws -> CGImage {
