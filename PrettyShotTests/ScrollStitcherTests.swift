@@ -283,7 +283,7 @@ final class ScrollStitcherTests: XCTestCase {
     }
 
     /// A 1 px scroll inside a mostly blank viewport must open a seam, not be dropped.
-    func testOnePixelShiftInBlankFrameStitches() throws {
+    func testOnePixelShiftInBlankFrameOpensSeam() throws {
         try assertBlankOpensASeam(
             ScrollFixtures.sparseViewport(scroll: 0, height: 60, contentRows: 10),
             ScrollFixtures.sparseViewport(scroll: 1, height: 60, contentRows: 10)
@@ -291,7 +291,7 @@ final class ScrollStitcherTests: XCTestCase {
     }
 
     /// A 3 px scroll in the same kind of frame opens a seam instead of being ignored.
-    func testThreePixelShiftInBlankFrameStitches() throws {
+    func testThreePixelShiftInBlankFrameOpensSeam() throws {
         try assertBlankOpensASeam(
             ScrollFixtures.sparseViewport(scroll: 0, height: 80, contentRows: 16),
             ScrollFixtures.sparseViewport(scroll: 3, height: 80, contentRows: 16)
@@ -299,7 +299,7 @@ final class ScrollStitcherTests: XCTestCase {
     }
 
     /// A mid-size scroll across blank space opens a seam instead of being ignored.
-    func testMidSizeShiftInBlankFrameStitches() throws {
+    func testMidSizeShiftInBlankFrameOpensSeam() throws {
         try assertBlankOpensASeam(
             ScrollFixtures.sparseViewport(scroll: 0, height: 80, contentRows: 20),
             ScrollFixtures.sparseViewport(scroll: 10, height: 80, contentRows: 20)
@@ -437,11 +437,15 @@ final class ScrollStitcherTests: XCTestCase {
     ) throws {
         var stitcher = ScrollStitcher()
         XCTAssertEqual(stitcher.ingest(first), .seeded, file: file, line: line)
-        XCTAssertEqual(stitcher.ingest(second), .appended(shift), file: file, line: line)
+        let outcome = stitcher.ingest(second)
+        XCTAssertEqual(outcome, .appended(shift), file: file, line: line)
+        // A wrong shift used to walk off the image and abort the suite.
+        guard outcome == .appended(shift) else { return }
         let assembly = stitcher.takeAssembly()
         XCTAssertFalse(assembly.needsReview, file: file, line: line)
         let image = try XCTUnwrap(assembly.flattenedIfResolved(), file: file, line: line)
         XCTAssertEqual(image.height, first.height + shift, file: file, line: line)
+        guard image.height == first.height + shift else { return }
         for y in 0..<first.height {
             XCTAssertEqual(ScrollFixtures.row(image, y), ScrollFixtures.row(first, y), "kept row \(y)", file: file, line: line)
         }

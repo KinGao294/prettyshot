@@ -32,21 +32,21 @@ final class ScrollStitchTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(assembly.flattenedIfResolved()).pixels, deduped.pixels)
     }
 
-    func testOnePixelShiftInBlankFrameStitches() throws {
+    func testOnePixelShiftInBlankFrameOpensSeam() throws {
         try assertBlankOpensASeam(
             CoreScrollFixtures.sparseViewport(scroll: 0, height: 60, contentRows: 10),
             CoreScrollFixtures.sparseViewport(scroll: 1, height: 60, contentRows: 10)
         )
     }
 
-    func testThreePixelShiftInBlankFrameStitches() throws {
+    func testThreePixelShiftInBlankFrameOpensSeam() throws {
         try assertBlankOpensASeam(
             CoreScrollFixtures.sparseViewport(scroll: 0, height: 80, contentRows: 16),
             CoreScrollFixtures.sparseViewport(scroll: 3, height: 80, contentRows: 16)
         )
     }
 
-    func testMidSizeShiftInBlankFrameStitches() throws {
+    func testMidSizeShiftInBlankFrameOpensSeam() throws {
         try assertBlankOpensASeam(
             CoreScrollFixtures.sparseViewport(scroll: 0, height: 80, contentRows: 20),
             CoreScrollFixtures.sparseViewport(scroll: 10, height: 80, contentRows: 20)
@@ -194,11 +194,15 @@ final class ScrollStitchTests: XCTestCase {
     ) throws {
         var stitcher = ScrollStitcher()
         XCTAssertEqual(stitcher.ingest(first), .seeded, file: file, line: line)
-        XCTAssertEqual(stitcher.ingest(second), .appended(shift), file: file, line: line)
+        let outcome = stitcher.ingest(second)
+        XCTAssertEqual(outcome, .appended(shift), file: file, line: line)
+        // A wrong shift used to walk off the image and abort the suite.
+        guard outcome == .appended(shift) else { return }
         let assembly = stitcher.takeAssembly()
         XCTAssertFalse(assembly.needsReview, file: file, line: line)
         let image = try XCTUnwrap(assembly.flattenedIfResolved(), file: file, line: line)
         XCTAssertEqual(image.height, first.height + shift, file: file, line: line)
+        guard image.height == first.height + shift else { return }
         for y in 0..<first.height {
             XCTAssertEqual(CoreScrollFixtures.row(image, y), CoreScrollFixtures.row(first, y), "kept row \(y)", file: file, line: line)
         }
