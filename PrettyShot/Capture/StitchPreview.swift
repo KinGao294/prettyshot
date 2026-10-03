@@ -397,6 +397,12 @@ struct StitchPreviewView: View {
                         .resizable()
                         .interpolation(.medium)
                         .aspectRatio(contentMode: .fit)
+                        .overlay(alignment: .topLeading) {
+                            if pendingSeamLabel != nil {
+                                pendingMark("待确认")
+                                    .padding(8)
+                            }
+                        }
                         .padding(16)
                 } else {
                     Text("没有可预览的画面")
@@ -420,6 +426,29 @@ struct StitchPreviewView: View {
         .background(Palette.drawer)
     }
 
+    private var pendingSeamLabel: String? {
+        for (index, seam) in model.assembly.seams.enumerated() where seam.card(number: index + 1).chrome == .amberDashed {
+            return seam.card(number: index + 1).label
+        }
+        return nil
+    }
+
+    /// 「待确认」 chip: 1 px dashed Warn border, Warn text, Warn fill at 18%.
+    private func pendingMark(_ title: String) -> some View {
+        Text(title)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(Color(hex: PendingSeamStyle.text))
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(Capsule().fill(Color(hex: PendingSeamStyle.warn).opacity(PendingSeamStyle.fillOpacity)))
+            .overlay(
+                Capsule().stroke(
+                    Color(hex: PendingSeamStyle.warn),
+                    style: StrokeStyle(lineWidth: CGFloat(PendingSeamStyle.labelBorderWidth), dash: [3, 2])
+                )
+            )
+    }
+
     private func seamCard(for mark: SeamMark) -> SeamCard? {
         guard let index = mark.boundaryIndex, model.assembly.seams.indices.contains(index) else { return nil }
         return model.assembly.seams[index].card(number: index + 1)
@@ -430,21 +459,18 @@ struct StitchPreviewView: View {
         let card = seamCard(for: mark)
         let pending = card?.chrome == .amberDashed
         let labelText = card?.label ?? label(for: mark.state)
-        let labelTint = pending ? Palette.amber : tint(for: mark.state)
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                Text(labelText)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(labelTint)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background {
-                        if pending {
-                            Capsule().stroke(labelTint, style: StrokeStyle(lineWidth: 1, dash: [3, 2]))
-                        } else {
-                            Capsule().fill(labelTint.opacity(0.15))
-                        }
-                    }
+                if pending {
+                    pendingMark(labelText)
+                } else {
+                    Text(labelText)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(tint(for: mark.state))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(tint(for: mark.state).opacity(0.15)))
+                }
                 Text("距顶部 \(mark.y) px")
                     .font(.system(size: 11))
                     .foregroundStyle(Palette.muted)

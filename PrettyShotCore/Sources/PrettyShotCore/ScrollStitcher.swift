@@ -102,14 +102,18 @@ public struct ScrollSegment: Equatable {
     }
 }
 
-/// Paint for a 「待确认」 seam. These are the values on screen today.
+/// Paint for a 「待确认」 seam. Warn from the design, shared by the label and the long-image line.
 public enum PendingSeamStyle {
-    public static let warn: UInt32 = 0xE8A33D
-    public static let text: UInt32 = 0xE8A33D
-    public static let fillOpacity: Double = 0
+    public static let warn: UInt32 = 0xE3B26B
+    public static let text: UInt32 = 0x8A5A12
+    public static let fillOpacity: Double = 0.18
     public static let labelBorderWidth: Int = 1
-    /// The seam line is one preview row, dashed 4 px on / 4 px off.
-    public static let seamLineWidth: Int = 1
+    /// Dashed stroke thickness of the seam line on the long image.
+    public static let seamLineWidth: Int = 3
+
+    public static var warnRGB: (UInt8, UInt8, UInt8) {
+        (UInt8((warn >> 16) & 0xFF), UInt8((warn >> 8) & 0xFF), UInt8(warn & 0xFF))
+    }
 }
 
 /// What the review window shows for one seam. The pending reverse seam uses the amber dashed label.
@@ -680,7 +684,8 @@ public struct ScrollAssembly: Equatable {
                         factor: factor,
                         outW: outW,
                         outH: outH,
-                        color: (232, 163, 61),
+                        color: PendingSeamStyle.warnRGB,
+                        thickness: PendingSeamStyle.seamLineWidth,
                         dashed: true,
                         into: &pixels
                     )
@@ -852,19 +857,26 @@ public struct ScrollAssembly: Equatable {
         outW: Int,
         outH: Int,
         color: (UInt8, UInt8, UInt8),
+        thickness: Int = 1,
         dashed: Bool = false,
         into pixels: inout [UInt8]
     ) {
         guard fullHeight > 0 else { return }
         let row = min(outH - 1, max(0, Int((CGFloat(fullY) * factor).rounded(.down))))
-        for x in 0..<outW {
-            // 4 px on, 4 px off, in preview pixels.
-            if dashed, x % 8 >= 4 { continue }
-            let d = (row * outW + x) * 4
-            pixels[d] = color.0
-            pixels[d + 1] = color.1
-            pixels[d + 2] = color.2
-            pixels[d + 3] = 255
+        let span = max(1, thickness)
+        let first = row - span / 2
+        for offset in 0..<span {
+            let target = first + offset
+            guard target >= 0, target < outH else { continue }
+            for x in 0..<outW {
+                // 3 px on, 2 px off. The old seam used 4 px on / 4 px off.
+                if dashed, x % 5 >= 3 { continue }
+                let d = (target * outW + x) * 4
+                pixels[d] = color.0
+                pixels[d + 1] = color.1
+                pixels[d + 2] = color.2
+                pixels[d + 3] = 255
+            }
         }
     }
 }

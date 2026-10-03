@@ -29,8 +29,6 @@ extension NSColor {
 
 enum Palette {
     static let bloomRose = Color(hex: 0xE8A0A8)
-    /// Pending-confirmation seam. Same amber as a comment pin.
-    static let amber = Color(hex: 0xE8A33D)
     static let bloomDeep = Color(hex: 0xD48993)
     static let softMint = Color(hex: 0x7EB8A8)
     static let ivory = Color(hex: 0xF5F2EC)
