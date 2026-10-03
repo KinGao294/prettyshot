@@ -525,10 +525,12 @@ final class ScrollStitcherTests: XCTestCase {
 
         let cold = HistoryStore(directory: directory, limit: 10)
         StitchLoadMetrics.reset()
-        async let first = cold.loadStitchForOverlay(cold.items[0])
-        async let second = cold.loadStitchForOverlay(cold.items[0])
-        let loaded = try XCTUnwrap(await first)
-        let shared = try XCTUnwrap(await second)
+        async let firstLoad = cold.loadStitchForOverlay(cold.items[0])
+        async let secondLoad = cold.loadStitchForOverlay(cold.items[0])
+        let first = await firstLoad
+        let second = await secondLoad
+        let loaded = try XCTUnwrap(first)
+        let shared = try XCTUnwrap(second)
         XCTAssertEqual(loaded.flattenedIfResolved()?.height, shared.flattenedIfResolved()?.height)
         XCTAssertEqual(StitchLoadMetrics.diskReads, 1, "concurrent overlay loads must share one disk read")
         XCTAssertFalse(StitchLoadMetrics.lastReadWasMainThread)
