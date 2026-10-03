@@ -139,9 +139,10 @@ final class ImageStorage {
     func copiedArray() -> [UInt8] {
         guard height > 0, width > 0 else { return [] }
         var out = [UInt8](repeating: 0, count: width * height * 4)
+        let count = out.count
         out.withUnsafeMutableBytes { raw in
             guard let base = raw.baseAddress else { return }
-            copyBytes(at: 0, count: out.count, into: base)
+            copyBytes(at: 0, count: count, into: base)
         }
         return out
     }
