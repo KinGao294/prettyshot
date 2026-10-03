@@ -327,7 +327,9 @@ final class ScrollStitchTests: XCTestCase {
             for x in 0..<image.width {
                 let i = (row * image.width + x) * 4
                 let sample = (image.pixels[i], image.pixels[i + 1], image.pixels[i + 2])
-                if ambers.contains(sample) { count += 1 }
+                if ambers.contains(where: { $0.0 == sample.0 && $0.1 == sample.1 && $0.2 == sample.2 }) {
+                    count += 1
+                }
             }
         }
         return count
