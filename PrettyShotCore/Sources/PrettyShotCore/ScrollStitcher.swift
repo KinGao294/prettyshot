@@ -200,15 +200,46 @@ struct DuplicateChoiceRecord: Equatable {
 /// A stretch that may repeat an earlier segment. It stays in 「待确认」 until the user chooses.
 public struct DuplicateSegmentCandidate: Equatable, Identifiable {
     public var id: String
-    /// Nil until the user chooses 「保留一次」 or 「都保留」.
+    /// Nil until the user chooses 「只保留一次」 or 「都保留」.
     public var choice: DuplicateSegmentChoice?
+    /// 1-based confident seam this repeat sits under. 0 when the candidate was built without one.
+    public var seamNumber: Int
+    public var rowCount: Int
+    /// Segment that owns `startRow` in that segment's stored image.
+    public var segmentIndex: Int
+    /// First duplicated row. 「只保留一次」 removes `rowCount` rows starting here.
+    public var startRow: Int
 
-    public init(id: String, choice: DuplicateSegmentChoice? = nil) {
+    public init(
+        id: String,
+        choice: DuplicateSegmentChoice? = nil,
+        seamNumber: Int = 0,
+        rowCount: Int = 0,
+        segmentIndex: Int = 0,
+        startRow: Int = 0
+    ) {
         self.id = id
         self.choice = choice
+        self.seamNumber = seamNumber
+        self.rowCount = rowCount
+        self.segmentIndex = segmentIndex
+        self.startRow = startRow
     }
 
     public var isUnresolved: Bool { choice == nil }
+
+    public func pendingTitle(displayIndex: Int) -> String {
+        StitchCopy.duplicatePendingTitle(displayIndex)
+    }
+
+    public var locationLine: String {
+        StitchCopy.duplicateLocation(seam: seamNumber, rows: rowCount)
+    }
+
+    public var handledLine: String? {
+        guard let choice else { return nil }
+        return StitchCopy.duplicateHandled(choice)
+    }
 }
 
 public enum StickyRestoreOutcome: Equatable {
@@ -307,11 +338,66 @@ public struct ScrollAssembly: Equatable {
 
     /// Puts one candidate back to unresolved (`choice == nil`) and records that restore on the undo stack.
     /// A missing id, or a candidate that is already unresolved, is left unchanged.
+    /// Restoring the same candidate again does not push a second undo entry.
     public mutating func restoreDuplicateCandidate(_ id: String) {
         guard let index = duplicateCandidates.firstIndex(where: { $0.id == id }) else { return }
         guard let previous = duplicateCandidates[index].choice else { return }
         duplicateChoiceUndo.append(DuplicateChoiceRecord(id: id, previous: previous))
         duplicateCandidates[index].choice = nil
+    }
+
+    public var duplicateUndoCount: Int { duplicateChoiceUndo.count }
+
+    /// Which preview step the primary button is on. Each step counts only its own kind.
+    public enum PreviewPrimaryStep: Equatable {
+        case seam
+        case sticky
+        case duplicate
+        case beautify
+    }
+
+    public var previewPrimaryStep: PreviewPrimaryStep {
+        if unalignedSeamCount > 0 { return .seam }
+        if pendingSticky?.isUnresolved == true { return .sticky }
+        if pendingDuplicateConfirmCount > 0 { return .duplicate }
+        return .beautify
+    }
+
+    /// Seam step: 「处理下一处 · N」 with N = 待对齐 (position-uncertain seams included).
+    /// Sticky step: 「处理下一处 · 1」. Duplicate step: 「先确认 N 处重复段」.
+    /// Ready: 「下一步 · 美化 →」.
+    public var previewPrimaryTitle: String {
+        switch previewPrimaryStep {
+        case .seam:
+            return StitchCopy.handleNext(unalignedSeamCount)
+        case .sticky:
+            return StitchCopy.handleNext(1)
+        case .duplicate:
+            return StitchCopy.confirmDuplicates(pendingDuplicateConfirmCount)
+        case .beautify:
+            return StitchCopy.nextBeautify
+        }
+    }
+
+    /// 「开始拼接」. Drops this pass's candidates and the undo stack.
+    /// The next ingest identifies uncertain duplicates again.
+    public mutating func beginStitch() {
+        clearDuplicateReview()
+    }
+
+    /// Manual alignment 「完成」. The seam overlap stays; duplicate choices do not.
+    public mutating func completeManualAlignment() {
+        clearDuplicateReview()
+    }
+
+    /// 「还原自动」 after the seam overlap has been put back. Clears duplicate review.
+    public mutating func restoreAutomaticAlignment() {
+        clearDuplicateReview()
+    }
+
+    private mutating func clearDuplicateReview() {
+        duplicateCandidates = []
+        duplicateChoiceUndo = []
     }
 
     /// Unaligned seams, unresolved duplicate-segment candidates, and one uncertain sticky band.
@@ -340,9 +426,9 @@ public struct ScrollAssembly: Equatable {
     /// Height of the stack if sticky bars are spliced back in. Does not allocate the pixel buffer.
     public func stackedHeight(deduping: Bool) -> Int {
         guard let first = segments.first else { return 0 }
-        var total = presentedHeight(first, dedupe: deduping)
+        var total = presentedHeight(first, dedupe: deduping, index: 0)
         for index in seams.indices where segments.indices.contains(index + 1) {
-            let nextHeight = presentedHeight(segments[index + 1], dedupe: deduping)
+            let nextHeight = presentedHeight(segments[index + 1], dedupe: deduping, index: index + 1)
             let start: Int
             switch seams[index].kind {
             case .needsAlignment, .joinedAsIs:
@@ -425,9 +511,11 @@ public struct ScrollAssembly: Equatable {
 
     /// Puts the overlap back on the automatic suggestion and marks the seam aligned.
     /// The capture itself never applies that suggestion until the user asks.
+    /// This is 「还原自动」: duplicate candidates and their undo stack are cleared.
     public mutating func restoreAutoAlignment(seam index: Int) {
         guard seams.indices.contains(index) else { return }
         align(seam: index, overlap: seams[index].suggestedOverlap ?? 0)
+        restoreAutomaticAlignment()
     }
 
     public mutating func joinAsIs(seam index: Int) {
@@ -616,11 +704,11 @@ public struct ScrollAssembly: Equatable {
         )
         if let cached = presentationCache.values[key] {
             presentationCache.hits += 1
-            return cached
+            return applyingKeepOnce(cached, segmentIndex: index)
         }
         let built = Self.makePresented(segment, dedupe: dedupeStickyBars)
         presentationCache.values[key] = built
-        return built
+        return applyingKeepOnce(built, segmentIndex: index)
     }
 
     private static func makePresented(_ segment: ScrollSegment, dedupe: Bool) -> (image: RGBAImage, confidentSeamYs: [Int]) {
@@ -641,10 +729,68 @@ public struct ScrollAssembly: Equatable {
         return (image, ys)
     }
 
-    private func presentedHeight(_ segment: ScrollSegment, dedupe: Bool) -> Int {
-        guard !dedupe else { return segment.image.height }
-        let extra = segment.stickyRepeats.reduce(0) { $0 + $1.header.height + $1.footer.height }
-        return segment.image.height + extra
+    private func presentedHeight(_ segment: ScrollSegment, dedupe: Bool, index: Int) -> Int {
+        let base: Int
+        if dedupe {
+            base = segment.image.height
+        } else {
+            let extra = segment.stickyRepeats.reduce(0) { $0 + $1.header.height + $1.footer.height }
+            base = segment.image.height + extra
+        }
+        return max(0, base - keepOnceRowCount(segment: index))
+    }
+
+    private func keepOnceRowCount(segment index: Int) -> Int {
+        duplicateCandidates.reduce(0) { sum, candidate in
+            guard candidate.segmentIndex == index, candidate.choice == .keepOnce else { return sum }
+            return sum + max(0, candidate.rowCount)
+        }
+    }
+
+    /// 「只保留一次」 drops the repeated rows. Pending and 「都保留」 leave them in the image.
+    private func applyingKeepOnce(
+        _ presented: (image: RGBAImage, confidentSeamYs: [Int]),
+        segmentIndex: Int
+    ) -> (image: RGBAImage, confidentSeamYs: [Int]) {
+        let cuts = duplicateCandidates
+            .filter { $0.segmentIndex == segmentIndex && $0.choice == .keepOnce && $0.rowCount > 0 }
+            .map { candidate -> (start: Int, rows: Int) in
+                let start = dedupeStickyBars
+                    ? candidate.startRow
+                    : Self.expandedY(candidate.startRow, repeats: segments[segmentIndex].stickyRepeats)
+                return (start, candidate.rowCount)
+            }
+            .sorted { $0.start > $1.start }
+        guard !cuts.isEmpty else { return presented }
+        var image = presented.image
+        var seamYs = presented.confidentSeamYs
+        for cut in cuts {
+            let start = min(max(0, cut.start), image.height)
+            let end = min(image.height, start + cut.rows)
+            let removed = end - start
+            guard removed > 0 else { continue }
+            let above = image.crop(rows: 0..<start)
+            let below = image.crop(rows: end..<image.height)
+            let parts = [above, below].filter { $0.height > 0 }
+            if let joined = RGBAImage.verticalJoin(parts) {
+                image = joined
+            } else {
+                image = RGBAImage(width: image.width, height: 0, pixels: [])
+            }
+            seamYs = seamYs.compactMap { y in
+                if y >= end { return y - removed }
+                if y >= start { return nil }
+                return y
+            }
+        }
+        return (image, seamYs)
+    }
+
+    private static func expandedY(_ y: Int, repeats: [StickyRepeat]) -> Int {
+        let extra = repeats.reduce(0) { partial, rep in
+            y >= rep.seamY ? partial + rep.header.height + rep.footer.height : partial
+        }
+        return y + extra
     }
 
     private static func contentSlices(_ segment: ScrollSegment, dedupe: Bool) -> [RGBAImage] {
@@ -816,9 +962,16 @@ public struct ScrollStitcher {
     /// instead of cropping a fresh header and footer on every frame.
     private var pinnedHeader: RGBAImage?
     private var pinnedFooter: RGBAImage?
+    /// Uncertain repeated runs found on confident joins. A new stitch pass starts empty.
+    private var duplicateCandidates: [DuplicateSegmentCandidate] = []
 
     public init(options: Options = Options()) {
         self.options = options
+    }
+
+    /// 「开始拼接」. Clears candidates found so far so the next frames are identified again.
+    public mutating func beginStitch() {
+        duplicateCandidates = []
     }
 
     public var hasFrame: Bool { open || !segments.isEmpty }
@@ -893,7 +1046,14 @@ public struct ScrollStitcher {
 
         let found = RowSamples.bestShift(prevRows, nextRows, header: headerH, footer: footerH, options: options)
         if let match = found, match.confident {
-            let outcome = apply(next: frame, shift: match.shift, headerH: headerH, footerH: footerH)
+            let duplicate = RowSamples.uncertainDuplicate(
+                prev: prevRows,
+                next: nextRows,
+                shift: match.shift,
+                header: headerH,
+                footer: footerH
+            )
+            let outcome = apply(next: frame, shift: match.shift, headerH: headerH, footerH: footerH, duplicate: duplicate)
             switch outcome {
             case .appended, .prepended, .reachedLimit:
                 if lockedHeader == nil {
@@ -920,7 +1080,12 @@ public struct ScrollStitcher {
     /// Seals the open segment and returns every piece. Call once, when capture ends.
     public mutating func takeAssembly() -> ScrollAssembly {
         sealOpenSegment()
-        return ScrollAssembly(segments: segments, seams: seams, pendingSticky: pendingSticky)
+        return ScrollAssembly(
+            segments: segments,
+            seams: seams,
+            pendingSticky: pendingSticky,
+            duplicateCandidates: duplicateCandidates
+        )
     }
 
     public func cgImage() -> CGImage? {
@@ -930,7 +1095,13 @@ public struct ScrollStitcher {
 
     // MARK: - Apply
 
-    private mutating func apply(next: RGBAImage, shift: Int, headerH: Int, footerH: Int) -> ScrollIngest {
+    private mutating func apply(
+        next: RGBAImage,
+        shift: Int,
+        headerH: Int,
+        footerH: Int,
+        duplicate: RowSamples.UncertainDuplicate? = nil
+    ) -> ScrollIngest {
         let strip: RGBAImage
         let prepend: Bool
         if shift > 0 {
@@ -989,6 +1160,9 @@ public struct ScrollStitcher {
             stickyRepeats = stickyRepeats.map {
                 StickyRepeat(seamY: $0.seamY + added, header: $0.header, footer: $0.footer)
             }
+            for index in duplicateCandidates.indices where duplicateCandidates[index].segmentIndex == segments.count {
+                duplicateCandidates[index].startRow += added
+            }
             joinY = canvasHeader + added
             confidentYs.append(joinY)
             canvas.insertRows(fitted, at: canvasHeader)
@@ -1014,8 +1188,28 @@ public struct ScrollStitcher {
         if repeatHeader.height > 0 || repeatFooter.height > 0 {
             stickyRepeats.append(StickyRepeat(seamY: joinY, header: repeatHeader, footer: repeatFooter))
         }
+        if !clipped, let duplicate {
+            recordUncertainDuplicate(duplicate, joinY: joinY, prepend: prepend)
+        }
         if clipped { return .reachedLimit }
         return prepend ? .prepended(fitted.height) : .appended(fitted.height)
+    }
+
+    /// Records one short repeated run under the seam just written. Only uncertain runs reach here.
+    private mutating func recordUncertainDuplicate(_ duplicate: RowSamples.UncertainDuplicate, joinY: Int, prepend: Bool) {
+        let startRow = prepend ? canvasHeader + duplicate.offsetInStrip : joinY + duplicate.offsetInStrip
+        let sealedSeams = segments.reduce(0) { $0 + $1.confidentSeamYs.count }
+        let seamNumber = sealedSeams + confidentYs.count
+        let segmentIndex = segments.count
+        let id = "dup-\(segmentIndex)-\(seamNumber)-\(startRow)"
+        guard !duplicateCandidates.contains(where: { $0.id == id }) else { return }
+        duplicateCandidates.append(DuplicateSegmentCandidate(
+            id: id,
+            seamNumber: seamNumber,
+            rowCount: duplicate.rowCount,
+            segmentIndex: segmentIndex,
+            startRow: startRow
+        ))
     }
 
     private mutating func breakUnmatched(_ frame: RGBAImage, suggested: Int?) -> ScrollIngest {
@@ -1156,6 +1350,64 @@ private enum RowSamples {
     struct ShiftChoice {
         var shift: Int
         var confident: Bool
+    }
+
+    /// A short run in the newly revealed strip that also appears earlier in the previous frame.
+    /// The join itself was confident, so this is not a seam: the user still has to say whether to keep it once.
+    struct UncertainDuplicate {
+        var offsetInStrip: Int
+        var rowCount: Int
+    }
+
+    static func uncertainDuplicate(prev: [RowSample], next: [RowSample], shift: Int, header: Int, footer: Int) -> UncertainDuplicate? {
+        let height = min(prev.count, next.count)
+        guard shift != 0, header >= 0, footer >= 0, header + footer < height else { return nil }
+        let newStart: Int
+        let newEnd: Int
+        if shift > 0 {
+            newEnd = height - footer
+            newStart = newEnd - shift
+        } else {
+            newStart = header
+            newEnd = header + (-shift)
+        }
+        guard newStart >= 0, newEnd <= height, newEnd - newStart >= 2 else { return nil }
+        let contentEnd = height - footer
+        guard header < contentEnd else { return nil }
+
+        var lookup: [[UInt8]: [Int]] = [:]
+        for y in header..<contentEnd where prev[y].distinctive {
+            lookup[prev[y].bytes, default: []].append(y)
+        }
+
+        var y = newStart
+        while y + 1 < newEnd {
+            guard next[y].distinctive, let prevYs = lookup[next[y].bytes] else {
+                y += 1
+                continue
+            }
+            var skippedLong = false
+            for prevY in prevYs {
+                var length = 1
+                while y + length < newEnd,
+                      prevY + length < contentEnd,
+                      next[y + length].distinctive,
+                      next[y + length].bytes == prev[prevY + length].bytes {
+                    length += 1
+                }
+                // A long repeat stays in the image. Skipping past it keeps its tail from looking like a short candidate.
+                if length > 8 {
+                    y += length
+                    skippedLong = true
+                    break
+                }
+                if (2...8).contains(length) {
+                    return UncertainDuplicate(offsetInStrip: y - newStart, rowCount: length)
+                }
+            }
+            if !skippedLong { y += 1 }
+        }
+        return nil
     }
 
     static func bestShift(_ prev: [RowSample], _ next: [RowSample], header: Int, footer: Int, options: ScrollStitcher.Options) -> ShiftChoice? {

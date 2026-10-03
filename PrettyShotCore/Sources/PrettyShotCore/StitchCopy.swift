@@ -113,6 +113,42 @@ public enum StitchCopy {
         return "⚠ 还有 \(remainder.count) 处没处理（\(remainder.detail)）。为了不拼错，处理完才能继续——不会静默拼接。"
     }
 
+    /// Preview primary while a seam or the sticky bar is the current step. N is that step's own count.
+    public static func handleNext(_ count: Int) -> String {
+        "处理下一处 · \(max(0, count))"
+    }
+
+    public static func confirmDuplicates(_ count: Int) -> String {
+        "先确认 \(max(0, count)) 处重复段"
+    }
+
+    public static let nextBeautify = "下一步 · 美化 →"
+
+    public static func duplicatePendingTitle(_ index: Int) -> String {
+        "重复段 \(index) · 待确认"
+    }
+
+    public static func duplicateLocation(seam: Int, rows: Int) -> String {
+        "接缝 \(seam) 下方 · \(rows) 行"
+    }
+
+    public static let duplicateDetail = "这段内容出现了两次"
+    public static let keepDuplicateOnce = "只保留一次"
+    public static let keepDuplicateBoth = "都保留"
+    public static let restoreDuplicate = "还原"
+    public static let undoDuplicate = "撤销"
+
+    public static func duplicateHandled(_ choice: DuplicateSegmentChoice) -> String {
+        switch choice {
+        case .keepOnce: return "✓ 已处理 · 只保留一次"
+        case .keepBoth: return "✓ 已处理 · 都保留"
+        }
+    }
+
+    public static func duplicateRestoredToast(index: Int, remaining: Int) -> String {
+        "重复段 \(index) 已还原为待确认 · 待确认还剩 \(remaining) 处"
+    }
+
     public static func savedSegments(_ count: Int) -> String {
         "已把 \(count) 段分别放进历史"
     }

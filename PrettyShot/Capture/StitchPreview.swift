@@ -104,6 +104,9 @@ final class StitchPreviewModel: ObservableObject {
     @Published var overlap: Double = 0
     @Published var loupe: NSImage?
     @Published var restoreLimitMessage: String?
+    @Published var duplicateToast: String?
+    @Published var selectedDuplicateID: String?
+    @Published var highlightPendingSticky = false
     let notice: String?
 
     init(assembly: ScrollAssembly, notice: String?) {
@@ -175,10 +178,59 @@ final class StitchPreviewModel: ObservableObject {
         refresh()
     }
 
+    /// 「还原自动」. Restores the selected seam's suggested overlap and clears duplicate review.
     func restoreAutoAlignment() {
         guard let selectedBoundary else { return }
-        let suggested = assembly.seams[selectedBoundary].suggestedOverlap ?? 0
-        updateOverlap(Double(suggested))
+        assembly.restoreAutoAlignment(seam: selectedBoundary)
+        overlap = Double(assembly.seams[selectedBoundary].editorOverlap)
+        clearDuplicateChrome()
+        refreshOverLimitMessage()
+        refresh()
+    }
+
+    /// 「开始拼接」. Drops duplicate candidates and the undo stack.
+    func beginStitch() {
+        assembly.beginStitch()
+        clearDuplicateChrome()
+    }
+
+    /// Manual alignment 「完成」. Applies the current overlap, then clears duplicate review.
+    func finishManualAlignment() {
+        if let selectedBoundary {
+            assembly.align(seam: selectedBoundary, overlap: Int(overlap.rounded()))
+        }
+        assembly.completeManualAlignment()
+        clearDuplicateChrome()
+        refreshOverLimitMessage()
+        refresh()
+    }
+
+    /// Moves the primary button one step: seams, then the sticky bar, then duplicate segments.
+    /// Returns true when the button is 「下一步 · 美化 →」 and the capture can be committed.
+    func focusPreviewPrimary() -> Bool {
+        switch assembly.previewPrimaryStep {
+        case .seam:
+            highlightPendingSticky = false
+            selectedDuplicateID = nil
+            focusFirstUnalignedSeam()
+            return false
+        case .sticky:
+            selectedDuplicateID = nil
+            highlightPendingSticky = true
+            return false
+        case .duplicate:
+            highlightPendingSticky = false
+            selectedDuplicateID = assembly.duplicateCandidates.first(where: \.isUnresolved)?.id
+            return false
+        case .beautify:
+            return assembly.previewPrimaryStep == .beautify && canCommit
+        }
+    }
+
+    private func clearDuplicateChrome() {
+        duplicateToast = nil
+        selectedDuplicateID = nil
+        highlightPendingSticky = false
     }
 
     func setDedupeStickyBars(_ enabled: Bool) {
@@ -202,19 +254,33 @@ final class StitchPreviewModel: ObservableObject {
         }
     }
 
-    /// 「保留一次」 or 「都保留」. The bottom bar recounts unresolved duplicate segments immediately.
+    /// 「只保留一次」 or 「都保留」. The bottom bar recounts unresolved duplicate segments immediately.
     func resolveDuplicateCandidate(_ id: String, choice: DuplicateSegmentChoice) {
         assembly.resolveDuplicateCandidate(id, choice: choice)
+        duplicateToast = nil
     }
 
     /// Puts the last duplicate-segment choice back into 「待确认」.
     func undoDuplicateCandidateChoice() {
         assembly.undoLastDuplicateCandidateChoice()
+        duplicateToast = nil
     }
 
-    /// Puts one candidate back to unresolved. Undo of this call restores the previous choice.
+    /// Puts one candidate back to unresolved and shows the restore toast. Undo restores the previous choice.
     func restoreDuplicateCandidate(_ id: String) {
+        guard let index = assembly.duplicateCandidates.firstIndex(where: { $0.id == id }) else { return }
+        guard assembly.duplicateCandidates[index].choice != nil else { return }
+        let displayIndex = index + 1
         assembly.restoreDuplicateCandidate(id)
+        let remaining = assembly.pendingDuplicateConfirmCount
+        duplicateToast = StitchCopy.duplicateRestoredToast(index: displayIndex, remaining: remaining)
+        selectedDuplicateID = id
+    }
+
+    /// 「撤销」 on the restore toast. One undo puts the choice back; the toast goes away.
+    func undoDuplicateToast() {
+        assembly.undoLastDuplicateCandidateChoice()
+        duplicateToast = nil
     }
 
     func confirmPendingSticky(keepOnce: Bool) {
@@ -307,15 +373,22 @@ struct StitchPreviewView: View {
                     .foregroundStyle(Palette.bloomDeep)
             }
             if let pending = model.assembly.pendingSticky, pending.isUnresolved {
-                Text(pending.prompt)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(Palette.charcoal)
-                HStack(spacing: 8) {
-                    Button(StitchCopy.keepOnceChoice) { model.confirmPendingSticky(keepOnce: true) }
-                        .buttonStyle(BloomPrimaryButtonStyle())
-                    Button(StitchCopy.keepAllChoice) { model.confirmPendingSticky(keepOnce: false) }
-                        .buttonStyle(LightButtonStyle())
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(pending.prompt)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(Palette.charcoal)
+                    HStack(spacing: 8) {
+                        Button(StitchCopy.keepOnceChoice) { model.confirmPendingSticky(keepOnce: true) }
+                            .buttonStyle(BloomPrimaryButtonStyle())
+                        Button(StitchCopy.keepAllChoice) { model.confirmPendingSticky(keepOnce: false) }
+                            .buttonStyle(LightButtonStyle())
+                    }
                 }
+                .padding(model.highlightPendingSticky ? 8 : 0)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(model.highlightPendingSticky ? duplicateAmber.opacity(0.12) : Color.clear)
+                )
             }
             HStack(spacing: 12) {
                 Toggle(StitchCopy.keepOnceToggle, isOn: Binding(
@@ -409,15 +482,93 @@ struct StitchPreviewView: View {
     }
 
     private var seamList: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 8) {
-                ForEach(model.marks) { mark in
-                    seamRow(mark)
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(model.marks) { mark in
+                        seamRow(mark)
+                    }
+                    ForEach(Array(model.assembly.duplicateCandidates.enumerated()), id: \.element.id) { offset, candidate in
+                        duplicateRow(candidate, displayIndex: offset + 1)
+                            .id(candidate.id)
+                    }
                 }
+                .padding(12)
             }
-            .padding(12)
+            .onChange(of: model.selectedDuplicateID, initial: false) { _, id in
+                guard let id else { return }
+                proxy.scrollTo(id, anchor: .center)
+            }
         }
         .background(Palette.drawer)
+    }
+
+    private func duplicateRow(_ candidate: DuplicateSegmentCandidate, displayIndex: Int) -> some View {
+        let selected = candidate.id == model.selectedDuplicateID
+        return VStack(alignment: .leading, spacing: 8) {
+            if let handled = candidate.handledLine {
+                Text(handled)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Palette.softMint)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(Palette.softMint.opacity(0.15)))
+                if candidate.rowCount > 0 {
+                    Text(candidate.locationLine)
+                        .font(.system(size: 11))
+                        .foregroundStyle(Palette.muted)
+                }
+                Button(StitchCopy.restoreDuplicate) {
+                    model.restoreDuplicateCandidate(candidate.id)
+                }
+                .buttonStyle(LightButtonStyle())
+            } else {
+                Text(candidate.pendingTitle(displayIndex: displayIndex))
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(duplicateAmber)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .overlay(
+                        Capsule(style: .continuous)
+                            .strokeBorder(duplicateAmber, style: StrokeStyle(lineWidth: 1, dash: [3, 2]))
+                    )
+                if candidate.rowCount > 0 {
+                    Text(candidate.locationLine)
+                        .font(.system(size: 11))
+                        .foregroundStyle(Palette.muted)
+                }
+                Text(StitchCopy.duplicateDetail)
+                    .font(.system(size: 12))
+                    .foregroundStyle(Palette.charcoal)
+                HStack(spacing: 8) {
+                    Button(StitchCopy.keepDuplicateOnce) {
+                        model.resolveDuplicateCandidate(candidate.id, choice: .keepOnce)
+                    }
+                    .buttonStyle(BloomPrimaryButtonStyle())
+                    Button(StitchCopy.keepDuplicateBoth) {
+                        model.resolveDuplicateCandidate(candidate.id, choice: .keepBoth)
+                    }
+                    .buttonStyle(LightButtonStyle())
+                }
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(selected && candidate.isUnresolved ? duplicateAmber.opacity(0.12) : Color.white.opacity(0.45))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(
+                    candidate.isUnresolved ? (selected ? duplicateAmber : Palette.borderLight) : Palette.softMint.opacity(0.7),
+                    style: StrokeStyle(lineWidth: 1, dash: candidate.isUnresolved ? [CGFloat(4), 3] : [])
+                )
+        )
+        .contentShape(Rectangle())
+        .onTapGesture {
+            model.selectedDuplicateID = candidate.id
+        }
     }
 
     private func seamRow(_ mark: SeamMark) -> some View {
@@ -451,7 +602,9 @@ struct StitchPreviewView: View {
                         .buttonStyle(LightButtonStyle())
                     Button("按原样拼接", action: onJoin)
                         .buttonStyle(LightButtonStyle())
-                    Button("恢复自动对齐", action: { model.restoreAutoAlignment() })
+                    Button("完成") { model.finishManualAlignment() }
+                        .buttonStyle(LightButtonStyle())
+                    Button("还原自动") { model.restoreAutoAlignment() }
                         .buttonStyle(LightButtonStyle())
                 }
             }
@@ -475,6 +628,26 @@ struct StitchPreviewView: View {
 
     private var footer: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if let toast = model.duplicateToast {
+                HStack(spacing: 8) {
+                    Text(toast)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(Palette.charcoal)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 8)
+                    Button(StitchCopy.undoDuplicate) { model.undoDuplicateToast() }
+                        .buttonStyle(LightButtonStyle())
+                }
+                .padding(10)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Palette.ivory)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(Palette.borderLight, lineWidth: 1)
+                )
+            }
             if let bar = model.assembly.reviewBottomBar {
                 Text(bar)
                     .font(.system(size: 12))
@@ -486,14 +659,20 @@ struct StitchPreviewView: View {
                     .buttonStyle(LightButtonStyle())
                     .help("按当前分段分别保存。已手动处理的相邻段会合并，未处理的接缝保持分开。")
                 Spacer()
-                Button("完成", action: onCommit)
-                    .buttonStyle(BloomPrimaryButtonStyle())
-                    .disabled(!model.canCommit)
-                    .help(model.canCommit ? "合成一张长图" : (model.assembly.reviewBottomBar ?? ""))
+                Button(model.assembly.previewPrimaryTitle) {
+                    if model.focusPreviewPrimary() {
+                        onCommit()
+                    }
+                }
+                .buttonStyle(BloomPrimaryButtonStyle())
+                .disabled(model.assembly.previewPrimaryStep == .beautify && !model.canCommit)
+                .help(model.canCommit ? "合成一张长图" : (model.assembly.reviewBottomBar ?? ""))
             }
         }
         .padding(14)
     }
+
+    private var duplicateAmber: Color { Color(red: 0.77, green: 0.54, blue: 0.16) }
 
     private func label(for state: SeamState) -> String {
         switch state {

@@ -42,6 +42,7 @@ final class ScrollingCaptureController {
     }
 
     func start(screen: NSScreen, globalRect: CGRect, sourceRect: CGRect, pixelWidth: Int, pixelHeight: Int) {
+        stitcher.beginStitch()
         driveScroll()
         presentChrome(on: screen, around: globalRect)
         let pump = RegionFramePump()
