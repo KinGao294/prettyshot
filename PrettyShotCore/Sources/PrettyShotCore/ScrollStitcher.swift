@@ -228,9 +228,9 @@ public struct DuplicateSegmentCandidate: Equatable, Identifiable {
     public var segmentIndex: Int
     /// First duplicated row. 「只保留一次」 removes `rowCount` rows starting here.
     public var startRow: Int
-    /// Trailing-boundary overlap of `segmentIndex` when this candidate was recognized.
-    /// A later 「完成」 keeps the choice only while the boundary still has this overlap.
-    /// 0 when that segment has no boundary.
+    /// Overlap of the seam above this segment when the candidate was recorded.
+    /// Segment 0 has no seam above it, so this stays 0. A later 「完成」 keeps the choice
+    /// only while that same seam still has this overlap.
     public var offset: Int
     /// True after re-detect cleared a choice because this segment's boundary moved.
     public var seamMoved: Bool
@@ -266,7 +266,9 @@ public struct DuplicateSegmentCandidate: Equatable, Identifiable {
     }
 
     public var locationLine: String {
-        StitchCopy.duplicateLocation(seam: seamNumber, rows: rowCount, seamMoved: seamMoved && choice == nil)
+        // A cleared card names the seam above it, the one align crops, so the label matches the toast.
+        let namedSeam = (seamMoved && choice == nil ? movedSeamNumber : nil) ?? seamNumber
+        return StitchCopy.duplicateLocation(seam: namedSeam, rows: rowCount, seamMoved: seamMoved && choice == nil)
     }
 
     public var handledLine: String? {
@@ -1333,7 +1335,6 @@ public struct ScrollStitcher {
     /// Seals the open segment and returns every piece. Call once, when capture ends.
     public mutating func takeAssembly() -> ScrollAssembly {
         sealOpenSegment()
-        rememberSealedDisplacement()
         return ScrollAssembly(
             segments: segments,
             seams: seams,
@@ -1443,15 +1444,17 @@ public struct ScrollStitcher {
             stickyRepeats.append(StickyRepeat(seamY: joinY, header: repeatHeader, footer: repeatFooter))
         }
         if !clipped, let duplicate {
-            recordUncertainDuplicate(duplicate, joinY: joinY, prepend: prepend)
+            recordUncertainDuplicate(duplicate, joinY: joinY)
         }
         if clipped { return .reachedLimit }
         return prepend ? .prepended(fitted.height) : .appended(fitted.height)
     }
 
     /// Records one short repeated run under the seam just written. Only uncertain runs reach here.
-    private mutating func recordUncertainDuplicate(_ duplicate: RowSamples.UncertainDuplicate, joinY: Int, prepend: Bool) {
-        let startRow = prepend ? canvasHeader + duplicate.offsetInStrip : joinY + duplicate.offsetInStrip
+    private mutating func recordUncertainDuplicate(_ duplicate: RowSamples.UncertainDuplicate, joinY: Int) {
+        // Live detection and re-detection both store the seam itself: the repeated rows just below it.
+        // An upward join used to store the copy above the seam, so the first 「完成」 never matched.
+        let startRow = joinY
         // Same order the preview lists marks: confident seams, then each unaligned boundary before them.
         let sealedSeams = segments.reduce(0) { $0 + $1.confidentSeamYs.count }
         let seamNumber = sealedSeams + seams.count + confidentYs.count
@@ -1464,7 +1467,7 @@ public struct ScrollStitcher {
             rowCount: duplicate.rowCount,
             segmentIndex: segmentIndex,
             startRow: startRow,
-            offset: displacement(forSegment: segmentIndex)
+            offset: seams.last?.editorOverlap ?? 0
         ))
     }
 
@@ -1479,7 +1482,6 @@ public struct ScrollStitcher {
         if pixelHeight > 0, room < frame.height { return .reachedLimit }
         sealOpenSegment()
         seams.append(ScrollSeam(kind: .needsAlignment, suggestedOverlap: suggested))
-        rememberSealedDisplacement()
         let savedHeader = lockedHeader
         let savedFooter = lockedFooter
         let savedPending = pendingSticky
@@ -1522,26 +1524,6 @@ public struct ScrollStitcher {
         stickyRepeats = []
         pinnedHeader = nil
         pinnedFooter = nil
-    }
-
-    /// The candidate was recorded while its segment was still open.
-    /// Once that segment is sealed, store the overlap of the seam above it — the seam that crops
-    /// this segment's top. Segment 0 has no seam above it, so its offset stays 0.
-    /// The first 「完成」 at that overlap is not a move.
-    private mutating func rememberSealedDisplacement() {
-        guard let sealed = segments.indices.last else { return }
-        let above = sealed - 1
-        let overlap = (above >= 0 && seams.indices.contains(above)) ? seams[above].editorOverlap : 0
-        for index in duplicateCandidates.indices where duplicateCandidates[index].segmentIndex == sealed {
-            duplicateCandidates[index].offset = overlap
-        }
-    }
-
-    /// Overlap of the seam above this segment. Segment 0 has none.
-    private func displacement(forSegment index: Int) -> Int {
-        let above = index - 1
-        guard above >= 0, seams.indices.contains(above) else { return 0 }
-        return seams[above].editorOverlap
     }
 
     private mutating func splitSeedIfNeeded(headerH: Int, footerH: Int) {
