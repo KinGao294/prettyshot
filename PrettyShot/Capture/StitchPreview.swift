@@ -310,6 +310,9 @@ struct StitchPreviewView: View {
                 Text(restoreLimitMessage)
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(Palette.bloomDeep)
+                Text(StitchCopy.overLimitNote)
+                    .font(.system(size: 12))
+                    .foregroundStyle(Palette.muted)
                 HStack(spacing: 8) {
                     if prompt.primaryExports {
                         Button(prompt.primaryTitle, action: onExportRestored)
@@ -444,20 +447,23 @@ struct StitchPreviewView: View {
     }
 
     private var footer: some View {
-        HStack {
-            Button(StitchCopy.exportSegments, action: onExport)
-                .buttonStyle(LightButtonStyle())
-                .help("按当前分段分别保存。已手动处理的相邻段会合并，未处理的接缝保持分开。")
-            if model.assembly.unresolvedItemCount > 0 {
-                Text(StitchCopy.remainingItems(model.assembly.unresolvedItemCount))
+        VStack(alignment: .leading, spacing: 8) {
+            if let bar = model.assembly.reviewBottomBar {
+                Text(bar)
                     .font(.system(size: 12))
-                    .foregroundStyle(Palette.muted)
+                    .foregroundStyle(Palette.bloomDeep)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            Spacer()
-            Button("完成", action: onCommit)
-                .buttonStyle(BloomPrimaryButtonStyle())
-                .disabled(!model.canCommit)
-                .help(model.canCommit ? "合成一张长图" : StitchCopy.remainingItems(model.assembly.unresolvedItemCount))
+            HStack {
+                Button(StitchCopy.exportSegments, action: onExport)
+                    .buttonStyle(LightButtonStyle())
+                    .help("按当前分段分别保存。已手动处理的相邻段会合并，未处理的接缝保持分开。")
+                Spacer()
+                Button("完成", action: onCommit)
+                    .buttonStyle(BloomPrimaryButtonStyle())
+                    .disabled(!model.canCommit)
+                    .help(model.canCommit ? "合成一张长图" : (model.assembly.reviewBottomBar ?? ""))
+            }
         }
         .padding(14)
     }

@@ -318,10 +318,18 @@ struct ScrollAssembly: Equatable {
     /// Seams the user has not aligned or joined as-is.
     var unalignedSeamCount: Int { seams.filter { !$0.isResolved }.count }
 
-    /// Unaligned seams, plus one when an uncertain sticky band is still undecided.
-    var unresolvedItemCount: Int {
-        unalignedSeamCount + (pendingSticky?.isUnresolved == true ? 1 : 0)
+    /// Unaligned seams, other confirmations, and one uncertain sticky band.
+    var reviewRemainder: StitchCopy.Remainder {
+        StitchCopy.Remainder(
+            unaligned: unalignedSeamCount,
+            pendingConfirm: 0,
+            stickyPending: pendingSticky?.isUnresolved == true
+        )
     }
+
+    var unresolvedItemCount: Int { reviewRemainder.count }
+
+    var reviewBottomBar: String? { StitchCopy.bottomBar(reviewRemainder) }
 
     var restoreExportPrompt: RestoreOverLimitPrompt {
         .make(unalignedCount: unalignedSeamCount)
@@ -361,8 +369,7 @@ struct ScrollAssembly: Equatable {
         let width = segments.first?.image.width ?? 0
         let pixels = Int64(max(width, 0)) * Int64(max(height, 0))
         if height > maxHeight || pixels > Int64(maxPixels) {
-            let cited = height > maxHeight ? maxHeight : ScrollOutputLimit.maxHeight
-            let message = StitchCopy.overLimit(height: height, limit: cited)
+            let message = StitchCopy.overLimit(height: height)
             return .exceedsLimit(height: height, message: message)
         }
         dedupeStickyBars = false

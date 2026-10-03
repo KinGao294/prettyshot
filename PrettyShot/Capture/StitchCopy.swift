@@ -1,24 +1,33 @@
 import Foundation
 
 /// User-facing copy for sticky bars, the over-limit restore prompt, and uncertain bands.
-/// Swap design-frame wording in this file only.
+/// Design frames replace wording in this file only.
 enum StitchCopy {
     static let overlayDeduped = "已去掉重复固定栏"
     static let restoreSticky = "还原固定栏"
+    static let overlayRestored = "已还原固定栏"
+    static let undoSticky = "撤销"
+    /// Space, middle dot, space. Used between chip halves and between remainder details.
+    static let joiner = " · "
+    static let overlayDedupedChip = overlayDeduped + joiner + restoreSticky
+    static let overlayRestoredChip = overlayRestored + joiner + undoSticky
+
     static let keepOnceToggle = "固定栏只保留一次"
-    static let keepOnceChoice = "当固定栏，只保留一次"
+    static let keepOnceChoice = "当固定栏，只留一次"
     static let keepAllChoice = "当内容，全部保留"
     static let keepDedupe = "保持去重"
     static let exportSegments = "分段导出"
     static let restoreHelp = "把去掉的页眉和页脚按接缝插回去"
+    static let overLimitNote = "不会悄悄截断。可以分段导出（每段都不超上限），或保持去重。"
 
-    /// ASCII thousands separators. Does not read `Locale`.
+    /// en_US grouping (comma, groups of three). Does not read `Locale.current`.
     static func grouped(_ value: Int) -> String {
         FixedThousandsFormat.string(value)
     }
 
-    static func overLimit(height: Int, limit: Int) -> String {
-        "还原后约 \(grouped(height)) px，超过单张上限 \(grouped(limit)) px"
+    /// 「还原后约 18,240 px，超过单张上限 16,384 px」
+    static func overLimit(height: Int) -> String {
+        "还原后约 \(grouped(height)) px，超过单张上限 \(grouped(ScrollOutputLimit.maxHeight)) px"
     }
 
     static func uncertainPrompt(headerRows: Int, footerRows: Int, seamCount: Int) -> String {
@@ -41,8 +50,29 @@ enum StitchCopy {
         "还有 \(count) 处待对齐，先处理再导出"
     }
 
-    static func remainingItems(_ count: Int) -> String {
-        "还有 \(count) 处没处理"
+    /// Counts for the preview bottom bar. Zero entries are left out of {明细}.
+    struct Remainder: Equatable {
+        var unaligned: Int = 0
+        var pendingConfirm: Int = 0
+        var stickyPending: Bool = false
+
+        var count: Int {
+            max(0, unaligned) + max(0, pendingConfirm) + (stickyPending ? 1 : 0)
+        }
+
+        var detail: String {
+            var parts: [String] = []
+            if unaligned > 0 { parts.append("待对齐 \(unaligned)") }
+            if pendingConfirm > 0 { parts.append("待确认 \(pendingConfirm)") }
+            if stickyPending { parts.append("固定栏待确认 1") }
+            return parts.joined(separator: StitchCopy.joiner)
+        }
+    }
+
+    /// 「⚠ 还有 N 处没处理（明细）。…」 or nil when nothing is left.
+    static func bottomBar(_ remainder: Remainder) -> String? {
+        guard remainder.count > 0 else { return nil }
+        return "⚠ 还有 \(remainder.count) 处没处理（\(remainder.detail)）。为了不拼错，处理完才能继续——不会静默拼接。"
     }
 
     static func savedSegments(_ count: Int) -> String {
@@ -85,7 +115,7 @@ struct RestoreOverLimitPrompt: Equatable {
     }
 }
 
-/// Groups digits by thousands with an ASCII comma. Independent of the user's locale.
+/// Groups digits by thousands with an ASCII comma, matching en_US. Independent of the user's locale.
 enum FixedThousandsFormat {
     static func string(_ value: Int) -> String {
         let sign = value < 0 ? "-" : ""

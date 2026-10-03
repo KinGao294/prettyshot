@@ -8,10 +8,33 @@ struct QuickOverlayActions {
     var save: () -> Void
     var pin: () -> Void
     var dismiss: () -> Void
-    /// Puts the removed sticky bars back into this capture only.
-    var restoreSticky: (() -> Void)? = nil
+    /// Deduped captures offer restore; a capture that was just restored offers undo.
+    var stickyChip: OverlayStickyChip? = nil
+    var onStickyChip: (() -> Void)? = nil
     /// Automatic dismissal stays off while the pointer is over the card.
     var pointerInside: ((Bool) -> Void)? = nil
+}
+
+/// ML10 completion chip. The two halves stay separate so the action is a button.
+enum OverlayStickyChip: Equatable {
+    case deduped
+    case restored
+
+    var leading: String {
+        switch self {
+        case .deduped: return StitchCopy.overlayDeduped
+        case .restored: return StitchCopy.overlayRestored
+        }
+    }
+
+    var actionTitle: String {
+        switch self {
+        case .deduped: return StitchCopy.restoreSticky
+        case .restored: return StitchCopy.undoSticky
+        }
+    }
+
+    var line: String { leading + StitchCopy.joiner + actionTitle }
 }
 
 enum OverlayDismissPolicy {
@@ -151,11 +174,11 @@ struct QuickOverlayView: View {
             }
 
             dragHandle
-            if actions.restoreSticky != nil {
-                HStack(spacing: 6) {
-                    Text(StitchCopy.overlayDeduped)
-                    Text("·")
-                    Button(StitchCopy.restoreSticky) { actions.restoreSticky?() }
+            if let chip = actions.stickyChip {
+                HStack(spacing: 0) {
+                    Text(chip.leading)
+                    Text(StitchCopy.joiner)
+                    Button(chip.actionTitle) { actions.onStickyChip?() }
                         .buttonStyle(.plain)
                         .foregroundStyle(Palette.ivory)
                 }

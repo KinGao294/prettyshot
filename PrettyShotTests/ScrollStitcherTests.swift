@@ -298,7 +298,10 @@ final class ScrollStitcherTests: XCTestCase {
         XCTAssertEqual(assembly.pendingSticky?.seamCount, frameCount - 1)
         XCTAssertEqual(assembly.pendingSticky?.prompt, "待确认 · 顶部这条可能是固定栏（涉及 \(frameCount - 1) 处接缝）")
         XCTAssertEqual(assembly.unresolvedItemCount, 1)
-        XCTAssertEqual(StitchCopy.remainingItems(assembly.unresolvedItemCount), "还有 1 处没处理")
+        XCTAssertEqual(
+            assembly.reviewBottomBar,
+            "⚠ 还有 1 处没处理（固定栏待确认 1）。为了不拼错，处理完才能继续——不会静默拼接。"
+        )
         XCTAssertTrue(assembly.needsReview)
         XCTAssertNil(assembly.flattenedIfResolved())
 
@@ -325,8 +328,8 @@ final class ScrollStitcherTests: XCTestCase {
         switch assembly.restoreStickyBars(maxHeight: 100, maxPixels: 24_000_000) {
         case .exceedsLimit(let height, let message):
             XCTAssertEqual(height, restoredHeight)
-            XCTAssertEqual(message, StitchCopy.overLimit(height: restoredHeight, limit: 100))
-            XCTAssertEqual(message, "还原后约 \(restoredHeight) px，超过单张上限 100 px")
+            XCTAssertEqual(message, StitchCopy.overLimit(height: restoredHeight))
+            XCTAssertEqual(message, "还原后约 \(restoredHeight) px，超过单张上限 16,384 px")
         default:
             XCTFail("expected the over-limit prompt")
         }
@@ -436,11 +439,7 @@ final class ScrollStitcherTests: XCTestCase {
         XCTAssertFalse(blocked.segmentExportEnabled)
         XCTAssertEqual(blocked.segmentExportCaption, "还有 2 处待对齐，先处理再导出")
         XCTAssertEqual(StitchCopy.keepDedupe, "保持去重")
-        XCTAssertEqual(StitchCopy.overlayDeduped, "已去掉重复固定栏")
-        XCTAssertEqual(
-            StitchCopy.overLimit(height: 18_240, limit: 16_384),
-            "还原后约 18,240 px，超过单张上限 16,384 px"
-        )
+        XCTAssertEqual(StitchCopy.overlayDedupedChip, "已去掉重复固定栏 · 还原固定栏")
 
         model.select(boundary: 0)
         model.assembly.align(seam: 0, overlap: 0)
@@ -459,6 +458,46 @@ final class ScrollStitcherTests: XCTestCase {
         XCTAssertTrue(ready.segmentExportEnabled)
         XCTAssertNil(ready.segmentExportCaption)
         XCTAssertFalse(model.assembly.exportWithinLimits().isEmpty)
+    }
+
+    func testFrameCopyUsesGroupedNumbersAndOmitsEmptyRemainder() {
+        XCTAssertEqual(StitchCopy.grouped(17_436), "17,436")
+        XCTAssertEqual(StitchCopy.grouped(16_384), "16,384")
+        XCTAssertEqual(StitchCopy.grouped(999), "999")
+        XCTAssertEqual(StitchCopy.overLimit(height: 18_240), "还原后约 18,240 px，超过单张上限 16,384 px")
+        XCTAssertEqual(StitchCopy.overLimitNote, "不会悄悄截断。可以分段导出（每段都不超上限），或保持去重。")
+        XCTAssertEqual(StitchCopy.overlayDedupedChip, "已去掉重复固定栏 · 还原固定栏")
+        XCTAssertEqual(StitchCopy.overlayRestoredChip, "已还原固定栏 · 撤销")
+        XCTAssertEqual(OverlayStickyChip.deduped.line, "已去掉重复固定栏 · 还原固定栏")
+        XCTAssertEqual(OverlayStickyChip.restored.line, "已还原固定栏 · 撤销")
+        XCTAssertEqual(StitchCopy.keepOnceChoice, "当固定栏，只留一次")
+        XCTAssertEqual(StitchCopy.keepAllChoice, "当内容，全部保留")
+        XCTAssertEqual(
+            StitchCopy.uncertainPrompt(headerRows: 8, footerRows: 0, seamCount: 7),
+            "待确认 · 顶部这条可能是固定栏（涉及 7 处接缝）"
+        )
+
+        let all = StitchCopy.Remainder(unaligned: 2, pendingConfirm: 1, stickyPending: true)
+        XCTAssertEqual(
+            StitchCopy.bottomBar(all),
+            "⚠ 还有 4 处没处理（待对齐 2 · 待确认 1 · 固定栏待确认 1）。为了不拼错，处理完才能继续——不会静默拼接。"
+        )
+        let omitConfirm = StitchCopy.Remainder(unaligned: 3, pendingConfirm: 0, stickyPending: true)
+        XCTAssertEqual(
+            StitchCopy.bottomBar(omitConfirm),
+            "⚠ 还有 4 处没处理（待对齐 3 · 固定栏待确认 1）。为了不拼错，处理完才能继续——不会静默拼接。"
+        )
+        let onlyConfirm = StitchCopy.Remainder(unaligned: 0, pendingConfirm: 2, stickyPending: false)
+        XCTAssertEqual(
+            StitchCopy.bottomBar(onlyConfirm),
+            "⚠ 还有 2 处没处理（待确认 2）。为了不拼错，处理完才能继续——不会静默拼接。"
+        )
+        let onlySticky = StitchCopy.Remainder(stickyPending: true)
+        XCTAssertEqual(
+            StitchCopy.bottomBar(onlySticky),
+            "⚠ 还有 1 处没处理（固定栏待确认 1）。为了不拼错，处理完才能继续——不会静默拼接。"
+        )
+        XCTAssertNil(StitchCopy.bottomBar(.init()))
     }
 
     func testSeamLoupeIsFullResolutionAndTracksOverlap() throws {

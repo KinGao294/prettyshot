@@ -277,11 +277,47 @@ final class AppCoordinator: ObservableObject {
                 save: { [weak self] in self?.save(image: image) },
                 pin: { [weak self] in self?.pins.pin(image: image, scale: scale) },
                 dismiss: { [weak self] in self?.restoreFocus() },
-                restoreSticky: item.hasStickyRestore ? { [weak self] in
-                    self?.restoreStickyBars(for: item, fromOverlay: true)
-                } : nil
+                stickyChip: stickyChip(for: item),
+                onStickyChip: stickyChip(for: item) == nil ? nil : { [weak self] in
+                    self?.handleStickyChip(for: item, fromOverlay: true)
+                }
             )
         )
+    }
+
+    /// Deduped stitch offers restore; a restored stitch offers undo. Nil when this image has no sticky bars.
+    private func stickyChip(for item: HistoryItem) -> OverlayStickyChip? {
+        guard let assembly = history.loadStitch(for: item),
+              assembly.hasStickyRepeats,
+              assembly.pendingSticky?.isUnresolved != true else { return nil }
+        return assembly.dedupeStickyBars ? .deduped : .restored
+    }
+
+    private func handleStickyChip(for item: HistoryItem, fromOverlay: Bool) {
+        guard let assembly = history.loadStitch(for: item) else { return }
+        if assembly.dedupeStickyBars {
+            restoreStickyBars(for: item, fromOverlay: fromOverlay)
+        } else {
+            undoStickyBars(for: item, fromOverlay: fromOverlay)
+        }
+    }
+
+    /// Puts the deduped image back after a restore on this history item.
+    private func undoStickyBars(for item: HistoryItem, fromOverlay: Bool) {
+        guard var assembly = history.loadStitch(for: item) else { return }
+        assembly.confirmStickyBars(keepOnce: true)
+        guard let image = assembly.flattenedIfResolved()?.cgImage() else { return }
+        do {
+            try history.replaceImage(of: item.id, with: image)
+            if let updated = history.items.first(where: { $0.id == item.id }) {
+                try history.saveStitch(assembly, for: updated)
+                if fromOverlay {
+                    showOverlay(for: updated, image: image)
+                }
+            }
+        } catch {
+            ToastPresenter.shared.show(StitchCopy.restoreFailed(error.localizedDescription), style: .error, duration: 4)
+        }
     }
 
     /// Restores sticky bars on this history image only. Over the single-image cap, offers a split export.
@@ -305,6 +341,7 @@ final class AppCoordinator: ObservableObject {
         case .exceedsLimit(_, let message):
             let alert = NSAlert()
             alert.messageText = message
+            alert.informativeText = StitchCopy.overLimitNote
             alert.addButton(withTitle: StitchCopy.exportSegments)
             alert.addButton(withTitle: StitchCopy.keepDedupe)
             let response = alert.runModal()
