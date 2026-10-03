@@ -351,6 +351,12 @@ final class ImageStorage {
         return tiles.count
     }
 
+    func copyRowBytes(row: Int, byteOffset: Int, count: Int, into dest: UnsafeMutableRawPointer) {
+        guard row >= 0, row < height, count > 0 else { return }
+        let (index, local) = location(of: row)
+        tiles[index].copyBytes(to: dest, localRow: local, byteOffset: byteOffset, count: count)
+    }
+
     private func location(of row: Int) -> (tile: Int, local: Int) {
         var cursor = 0
         for index in tiles.indices {
@@ -369,6 +375,9 @@ public struct RGBAImage: Equatable {
     public var width: Int
     public var height: Int
     private var storage: ImageStorage
+    /// Physical row ranges still visible. Nil means every stored row is shown, in order.
+    /// A 「只保留一次」 view shares `storage` and skips the repeated rows instead of copying the image.
+    private var keptRows: [Range<Int>]?
 
     public init(width: Int, height: Int, pixels: [UInt8]) {
         self.width = width
@@ -393,9 +402,22 @@ public struct RGBAImage: Equatable {
     public var byteCount: Int { width * height * 4 }
 
     public var pixels: [UInt8] {
-        get { storage.copiedArray() }
+        get {
+            guard keptRows != nil else { return storage.copiedArray() }
+            guard height > 0, width > 0 else { return [] }
+            var out = [UInt8](repeating: 0, count: width * height * 4)
+            for y in 0..<height {
+                withRow(y) { row in
+                    let dest = y * width * 4
+                    for index in 0..<min(row.count, width * 4) {
+                        out[dest + index] = row[index]
+                    }
+                }
+            }
+            return out
+        }
         set {
-            if isKnownUniquelyReferenced(&storage), newValue.count == byteCount, width > 0 {
+            if isKnownUniquelyReferenced(&storage), keptRows == nil, newValue.count == byteCount, width > 0 {
                 newValue.withUnsafeBytes { raw in
                     guard let base = raw.baseAddress else { return }
                     let replacement = ImageStorage(width: width)
@@ -410,12 +432,49 @@ public struct RGBAImage: Equatable {
 
     public static func == (lhs: RGBAImage, rhs: RGBAImage) -> Bool {
         if lhs.width != rhs.width || lhs.height != rhs.height { return false }
-        if lhs.storage === rhs.storage { return true }
-        return lhs.storage.bytesEqual(to: rhs.storage)
+        if lhs.keptRows == nil, rhs.keptRows == nil {
+            if lhs.storage === rhs.storage { return true }
+            return lhs.storage.bytesEqual(to: rhs.storage)
+        }
+        guard lhs.height > 0 else { return true }
+        for y in 0..<lhs.height {
+            let same = lhs.withRow(y) { left in
+                rhs.withRow(y) { right in
+                    left.elementsEqual(right)
+                }
+            }
+            if !same { return false }
+        }
+        return true
     }
 
     func withRow<T>(_ y: Int, _ body: (UnsafeBufferPointer<UInt8>) -> T) -> T {
-        storage.withRow(y, body)
+        storage.withRow(physicalRow(y), body)
+    }
+
+    /// Shares the underlying tiles and hides `ranges` (physical rows of this image).
+    func omitting(rows ranges: [Range<Int>]) -> RGBAImage {
+        let dropping = ranges.filter { !$0.isEmpty }
+        guard !dropping.isEmpty else { return self }
+        if keptRows != nil {
+            let dense = crop(rows: 0..<height)
+            return dense.omitting(rows: ranges)
+        }
+        let physicalHeight = storage.height
+        let sorted = dropping.sorted { $0.lowerBound < $1.lowerBound }
+        var kept: [Range<Int>] = []
+        var cursor = 0
+        for range in sorted {
+            let start = min(max(0, range.lowerBound), physicalHeight)
+            let end = min(max(start, range.upperBound), physicalHeight)
+            if start > cursor { kept.append(cursor..<start) }
+            cursor = max(cursor, end)
+        }
+        if cursor < physicalHeight { kept.append(cursor..<physicalHeight) }
+        var copy = self
+        copy.keptRows = kept
+        copy.height = kept.reduce(0) { $0 + $1.count }
+        return copy
     }
 
     public func crop(rows: Range<Int>) -> RGBAImage {
@@ -424,9 +483,23 @@ public struct RGBAImage: Equatable {
         guard width > 0, upper > lower else {
             return RGBAImage(width: width, height: 0, pixels: [])
         }
-        if lower == 0, upper == height { return self }
+        if keptRows == nil {
+            if lower == 0, upper == height { return self }
+            let sliced = ImageStorage(width: width)
+            sliced.appendRows(from: storage, sourceRow: lower, count: upper - lower, exact: true)
+            return RGBAImage(width: width, height: upper - lower, storage: sliced)
+        }
         let sliced = ImageStorage(width: width)
-        sliced.appendRows(from: storage, sourceRow: lower, count: upper - lower, exact: true)
+        var logical = lower
+        while logical < upper {
+            let physical = physicalRow(logical)
+            var run = 1
+            while logical + run < upper, physicalRow(logical + run) == physical + run {
+                run += 1
+            }
+            sliced.appendRows(from: storage, sourceRow: physical, count: run, exact: true)
+            logical += run
+        }
         return RGBAImage(width: width, height: upper - lower, storage: sliced)
     }
 
@@ -436,33 +509,70 @@ public struct RGBAImage: Equatable {
         if pieces.count == 1 { return pieces[0] }
         let storage = ImageStorage(width: width)
         for piece in pieces {
-            storage.append(from: piece.storage)
+            piece.appendKeptRows(into: storage)
         }
         return RGBAImage(width: width, height: storage.height, storage: storage)
     }
 
+    private func appendKeptRows(into dest: ImageStorage) {
+        if let keptRows {
+            for range in keptRows where !range.isEmpty {
+                dest.appendRows(from: storage, sourceRow: range.lowerBound, count: range.count)
+            }
+        } else {
+            dest.append(from: storage)
+        }
+    }
+
+    private func physicalRow(_ logical: Int) -> Int {
+        guard let keptRows else { return logical }
+        var left = logical
+        for range in keptRows {
+            if left < range.count { return range.lowerBound + left }
+            left -= range.count
+        }
+        return max(0, storage.height - 1)
+    }
+
     /// Top-down RGBA → CGImage. The provider reads the row tiles; it does not copy them.
     public func cgImage() -> CGImage? {
-        guard width > 0, height > 0, storage.height == height,
-              let space = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
+        guard width > 0, height > 0, let space = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
+        if let keptRows {
+            let view = KeptRowBytes(storage: storage, kept: keptRows, rowBytes: width * 4, height: height)
+            return Self.makeCGImage(width: width, height: height, space: space, info: Unmanaged.passRetained(view)) { info, buffer, position, count in
+                guard let info else { return 0 }
+                let view = Unmanaged<KeptRowBytes>.fromOpaque(info).takeUnretainedValue()
+                return view.copy(at: Int(position), count: count, into: buffer)
+            }
+        }
+        guard storage.height == height else { return nil }
+        return Self.makeCGImage(width: width, height: height, space: space, info: Unmanaged.passRetained(storage)) { info, buffer, position, count in
+            guard let info else { return 0 }
+            let storage = Unmanaged<ImageStorage>.fromOpaque(info).takeUnretainedValue()
+            return storage.copyBytes(at: Int(position), count: count, into: buffer)
+        }
+    }
+
+    private static func makeCGImage<T: AnyObject>(
+        width: Int,
+        height: Int,
+        space: CGColorSpace,
+        info: Unmanaged<T>,
+        getBytes: @escaping CGDataProviderGetBytesAtPositionCallback
+    ) -> CGImage? {
         let byteSize = width * height * 4
-        let retained = Unmanaged.passRetained(storage)
         var callbacks = CGDataProviderDirectCallbacks(
             version: 0,
             getBytePointer: nil,
             releaseBytePointer: nil,
-            getBytesAtPosition: { info, buffer, position, count in
-                guard let info else { return 0 }
-                let storage = Unmanaged<ImageStorage>.fromOpaque(info).takeUnretainedValue()
-                return storage.copyBytes(at: Int(position), count: count, into: buffer)
-            },
+            getBytesAtPosition: getBytes,
             releaseInfo: { info in
                 guard let info else { return }
-                Unmanaged<ImageStorage>.fromOpaque(info).release()
+                Unmanaged<AnyObject>.fromOpaque(info).release()
             }
         )
-        guard let provider = CGDataProvider(directInfo: retained.toOpaque(), size: off_t(byteSize), callbacks: &callbacks) else {
-            retained.release()
+        guard let provider = CGDataProvider(directInfo: info.toOpaque(), size: off_t(byteSize), callbacks: &callbacks) else {
+            info.release()
             return nil
         }
         return CGImage(
@@ -508,6 +618,7 @@ public struct RGBAImage: Equatable {
 
     mutating func insertRows(_ rows: RGBAImage, at row: Int) {
         guard rows.height > 0, rows.width == width else { return }
+        materializeKeptRows()
         ensureUnique()
         storage.insert(rows.storage, atRow: row)
         height = storage.height
@@ -515,6 +626,7 @@ public struct RGBAImage: Equatable {
 
     mutating func overwriteRows(_ range: Range<Int>, with rows: RGBAImage) {
         guard rows.width == width, rows.height == range.count, range.lowerBound >= 0 else { return }
+        materializeKeptRows()
         ensureUnique()
         storage.overwrite(from: rows.storage, atRow: range.lowerBound)
     }
@@ -522,14 +634,66 @@ public struct RGBAImage: Equatable {
     /// Removes rows from the bottom without copying the prefix that stays.
     mutating func removeLastRows(_ count: Int) {
         guard count > 0 else { return }
+        materializeKeptRows()
         ensureUnique()
         storage.removeLastRows(count)
         height = storage.height
+    }
+
+    /// A skipped-row view becomes a dense image before rows are inserted or removed.
+    private mutating func materializeKeptRows() {
+        guard keptRows != nil else { return }
+        self = crop(rows: 0..<height)
     }
 
     private mutating func ensureUnique() {
         if !isKnownUniquelyReferenced(&storage) {
             storage = storage.clone()
         }
+    }
+}
+
+/// CGImage byte source for a row view. Reads the original tiles and skips removed rows.
+private final class KeptRowBytes {
+    let storage: ImageStorage
+    let kept: [Range<Int>]
+    let rowBytes: Int
+    let height: Int
+
+    init(storage: ImageStorage, kept: [Range<Int>], rowBytes: Int, height: Int) {
+        self.storage = storage
+        self.kept = kept
+        self.rowBytes = rowBytes
+        self.height = height
+    }
+
+    func copy(at position: Int, count: Int, into dest: UnsafeMutableRawPointer) -> Int {
+        var remaining = count
+        var pos = position
+        var out = dest
+        let total = height * rowBytes
+        if pos >= total || remaining <= 0 { return 0 }
+        if pos + remaining > total { remaining = total - pos }
+        let requested = remaining
+        while remaining > 0 {
+            let logical = pos / rowBytes
+            let offset = pos % rowBytes
+            let available = rowBytes - offset
+            let n = min(remaining, available)
+            storage.copyRowBytes(row: physicalRow(logical), byteOffset: offset, count: n, into: out)
+            remaining -= n
+            pos += n
+            out = out.advanced(by: n)
+        }
+        return requested
+    }
+
+    private func physicalRow(_ logical: Int) -> Int {
+        var left = logical
+        for range in kept {
+            if left < range.count { return range.lowerBound + left }
+            left -= range.count
+        }
+        return 0
     }
 }
