@@ -243,9 +243,9 @@ enum IOSCopy {
         "第 \(index) 处重复段已还原为待确认"
     }
 
-    /// toast 小字。只数重复段。
+    /// toast 小字。只数重复段；固定栏还在待确认也照样写「都处理完了」（L7h / L7i）。
     static func duplicateRemaining(_ pending: Int) -> String {
-        "待确认还剩 \(pending) 处"
+        pending > 0 ? "待确认还剩 \(pending) 处" : "重复段都处理完了"
     }
 
     static let undone = "已撤销"
