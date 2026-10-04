@@ -459,6 +459,48 @@ final class ExtensionMemoryBudgetTests: XCTestCase {
         }
     }
 
+    /// Review eea0efd must-fix 2. 1830×1830 at padding 28 stays in the extension on the formula alone
+    /// (about 124.0MB of 125.8MB). Measure it the way the 1179×2556 sample is measured, and require the
+    /// same 12MB left over that card ① asks of the measured peak.
+    func testDefaultPadding1830MeasuredPeakLeavesTwelveMegabytes() throws {
+        let side = 1830
+        XCTAssertEqual(
+            ExtensionMemoryBudget.plan(pixelWidth: side, pixelHeight: side, canTransferToApp: true),
+            .fullResolutionInline
+        )
+        let source = try solidImage(width: side, height: side)
+        let before = FootprintSampler.current()
+        let sampler = FootprintSampler()
+        sampler.start()
+        let redacted = Redactor.apply(
+            [PixelRedaction(rect: CGRect(x: 40, y: 120, width: 200, height: 60))],
+            to: source,
+            scale: 1
+        )
+        let canvas = try XCTUnwrap(BeautifyRenderer.render(BeautifyInput(
+            base: redacted,
+            crop: CGRect(x: 0, y: 0, width: redacted.width, height: redacted.height),
+            background: BackgroundStyle.default,
+            scale: 1
+        )))
+        let encoded = try XCTUnwrap(ShotEncoder.pngData(canvas))
+        let during = sampler.stop()
+        let delta = during - before
+        let sourceBytes = side * side * ExtensionMemoryBudget.bytesPerPixel
+        let peak = ExtensionMemoryBudget.exportPeakBytes(
+            sourcePixels: side * side,
+            canvasPixels: ExtensionMemoryBudget.canvasPixelCount(width: side, height: side)
+        )
+        let total = ExtensionMemoryBudget.headroomBytes + sourceBytes + Int(delta)
+        print("PRETTYSHOT_RENDER_DELTA 1830x1830 before=\(before) during=\(during) delta=\(delta) residentSource=\(sourceBytes) sameBasis=\(delta + Int64(sourceBytes)) exportPeak=\(peak) total=\(total) left=\(ExtensionMemoryBudget.limitBytes - total) encodedBytes=\(encoded.count)")
+        XCTAssertGreaterThan(delta, 0)
+        XCTAssertLessThanOrEqual(delta, Int64(peak))
+        XCTAssertLessThanOrEqual(total, ExtensionMemoryBudget.limitBytes)
+        XCTAssertLessThanOrEqual(total + ExtensionMemoryBudget.renderMarginBytes, ExtensionMemoryBudget.limitBytes)
+        XCTAssertEqual(canvas.width, side + 56)
+        withExtendedLifetime(source) {}
+    }
+
     /// 1320×2868 at the default style is over the 5-buffer gate, so it hands off to the app.
     /// The sample is the current `phys_footprint` during the render, not the lifetime ledger peak.
     func testInsideGateScreenshotStaysInTheExtension() throws {
