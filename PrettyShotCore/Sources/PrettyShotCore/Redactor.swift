@@ -1,6 +1,7 @@
 import CoreGraphics
 import CoreImage
 import CoreImage.CIFilterBuiltins
+import Foundation
 
 public enum RedactionKind: Equatable {
     case pixelate
@@ -88,10 +89,8 @@ public enum Redactor {
             // the top, a number at the bottom) never make a patch that spans the image between them.
             for group in groups {
                 autoreleasepool {
-                    if let patch = redactedPatch(group.members.map { planned[$0] }, roi: group.roi, from: owned,
-                                                 bytesPerRow: bytesPerRow, imageHeight: height, space: space) {
-                        canvas.draw(patch, in: group.roi)
-                    }
+                    redactPatch(group.members.map { planned[$0] }, roi: group.roi, in: owned,
+                                bytesPerRow: bytesPerRow, imageHeight: height, space: space)
                     context.clearCaches()
                 }
             }
@@ -142,30 +141,31 @@ public enum Redactor {
         return groups
     }
 
-    /// Runs the redaction filters over `roi` only. `roi` covers every redacted rect plus the
-    /// distance its filter reads, so clamping at the patch edge does not reach the redacted pixels.
-    /// The patch is copied out of `bitmap` first, so Core Image never reads what is being written.
-    private static func redactedPatch(
+    /// Runs the redaction filters over `roi` only and writes the result straight back into `bitmap`.
+    /// `roi` covers every redacted rect plus the distance its filter reads, so clamping at the patch
+    /// edge does not reach the redacted pixels. The patch is copied out of `bitmap` first, so Core
+    /// Image never reads what is being written. Rendering into `bitmap` (rather than into a new
+    /// CGImage drawn back over it) keeps a second patch-sized copy out of the peak.
+    private static func redactPatch(
         _ planned: [(kind: RedactionKind, rect: CGRect, amount: Float)],
         roi: CGRect,
-        from bitmap: OwnedBitmap,
+        in bitmap: OwnedBitmap,
         bytesPerRow: Int,
         imageHeight: Int,
         space: CGColorSpace
-    ) -> CGImage? {
+    ) {
         let patchWidth = Int(roi.width)
         let patchHeight = Int(roi.height)
-        guard patchWidth > 0, patchHeight > 0 else { return nil }
+        guard patchWidth > 0, patchHeight > 0 else { return }
         let patchBytesPerRow = patchWidth * 4
         let top = imageHeight - Int(roi.maxY)
         let left = Int(roi.minX)
-        var bytes = Data(count: patchBytesPerRow * patchHeight)
-        bytes.withUnsafeMutableBytes { dest in
-            guard let base = dest.baseAddress else { return }
-            for row in 0..<patchHeight {
-                let from = bitmap.baseAddress + (top + row) * bytesPerRow + left * 4
-                (base + row * patchBytesPerRow).copyMemory(from: from, byteCount: patchBytesPerRow)
-            }
+        // Filled in place and handed over toll-free: bridging a Swift `Data` may copy the patch again.
+        guard let bytes = NSMutableData(length: patchBytesPerRow * patchHeight) else { return }
+        let base = bytes.mutableBytes
+        for row in 0..<patchHeight {
+            let from = bitmap.baseAddress + (top + row) * bytesPerRow + left * 4
+            (base + row * patchBytesPerRow).copyMemory(from: from, byteCount: patchBytesPerRow)
         }
         guard let provider = CGDataProvider(data: bytes as CFData),
               let patch = CGImage(
@@ -174,7 +174,7 @@ public enum Redactor {
                 space: space,
                 bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
                 provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent
-              ) else { return nil }
+              ) else { return }
 
         let source = CIImage(cgImage: patch)
             .transformed(by: CGAffineTransform(translationX: roi.minX, y: roi.minY))
@@ -198,7 +198,10 @@ public enum Redactor {
                 output = effect.cropped(to: region.rect).composited(over: output)
             }
         }
-        return context.createCGImage(output, from: roi)
+        // Core Image writes the top row of `roi` first, at the patch's top-left pixel in `bitmap`.
+        let target = bitmap.baseAddress + top * bytesPerRow + left * 4
+        context.render(output, toBitmap: target, rowBytes: bytesPerRow, bounds: roi,
+                       format: .RGBA8, colorSpace: space)
     }
 
     /// Downscaled copy of `image` for cheap live previews.
