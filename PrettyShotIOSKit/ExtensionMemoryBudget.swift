@@ -165,14 +165,21 @@ enum ImagePrep {
     }
 
     /// Native pixel size. Used for export and stitch input, never a long-side cap.
-    static func fullImage(_ data: Data) -> CGImage? {
+    /// `cached: false` keeps ImageIO from holding a decoded bitmap inside the image. Export uses it:
+    /// the redactor decodes straight into its own buffer, so the source is not a second resident copy.
+    static func fullImage(_ data: Data, cached: Bool = true) -> CGImage? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
-        return CGImageSourceCreateImageAtIndex(source, 0, nil)
+        return CGImageSourceCreateImageAtIndex(source, 0, decodeOptions(cached: cached))
     }
 
-    static func fullImage(_ url: URL) -> CGImage? {
+    static func fullImage(_ url: URL, cached: Bool = true) -> CGImage? {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
-        return CGImageSourceCreateImageAtIndex(source, 0, nil)
+        return CGImageSourceCreateImageAtIndex(source, 0, decodeOptions(cached: cached))
+    }
+
+    private static func decodeOptions(cached: Bool) -> CFDictionary? {
+        guard !cached else { return nil }
+        return [kCGImageSourceShouldCache: false, kCGImageSourceShouldCacheImmediately: false] as CFDictionary
     }
 
     private static func pixelSize(_ source: CGImageSource) -> (width: Int, height: Int)? {
