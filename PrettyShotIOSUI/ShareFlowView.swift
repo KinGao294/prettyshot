@@ -420,3 +420,50 @@ extension ShareClassification {
         return 0
     }
 }
+
+/// The sheet the extension shows when export goes to the app (frame 11 / 11a).
+struct LargeHandoffSheet: Equatable {
+    var frame: LargeHandoffFrame
+    var title: String
+    var body: String
+}
+
+/// What the extension does on copy or save.
+enum ShareExportRoute: Equatable {
+    case inline
+    case largeSheet(LargeHandoffSheet)
+    case reselectInApp
+
+    /// Placeholder matching `ShareViewController` and `ShareFlowView` today: over budget with a transfer
+    /// channel shows `IOSCopy.largeTitle` and `LargeHandoff.body`; without one it asks to reselect in the app.
+    static func decide(_ model: EditorModel, canTransferToApp: Bool) -> ShareExportRoute {
+        switch ExportFidelityRouter.decide(
+            pixelWidth: model.pixelWidth,
+            pixelHeight: model.pixelHeight,
+            canTransferToApp: canTransferToApp,
+            style: model.style,
+            scale: model.cropMatch.map { CGFloat($0.scale) }
+        ) {
+        case .fullResolutionPNG:
+            return .inline
+        case .reselectInApp:
+            return .reselectInApp
+        case .handOffOriginal:
+            let changedStyle = model.changedStyleThisSession
+            let changedCrop = model.changedCropThisSession
+            let addedArrow = model.addedArrowThisSession
+            let addedRedaction = model.addedRedactionThisSession
+            return .largeSheet(LargeHandoffSheet(
+                frame: LargeHandoff.frame(
+                    changedStyle: changedStyle, changedCrop: changedCrop,
+                    addedArrow: addedArrow, addedRedaction: addedRedaction
+                ),
+                title: IOSCopy.largeTitle,
+                body: LargeHandoff.body(
+                    changedStyle: changedStyle, changedCrop: changedCrop,
+                    addedArrow: addedArrow, addedRedaction: addedRedaction
+                )
+            ))
+        }
+    }
+}

@@ -1970,3 +1970,79 @@ final class LargeHandoffRoutingTests: XCTestCase {
         return data as Data
     }
 }
+
+/// Review eea0efd must-fix 4. Asserts on `ShareExportRoute.decide`, the route the extension acts on,
+/// not on `LargeHandoff.frame` alone. Guards existing behavior: the extension has no 11b today.
+final class ShareExportRouteTests: XCTestCase {
+    private let frame11bTitle = "按这个样式导出太大，去 App 里处理"
+
+    func testDefaultStyleOverflowRoutesToFrame11() throws {
+        let model = try loaded(1320, 2868)
+        XCTAssertEqual(
+            ShareExportRoute.decide(model, canTransferToApp: true),
+            .largeSheet(LargeHandoffSheet(frame: .frame11, title: IOSCopy.largeTitle, body: IOSCopy.largeBody))
+        )
+    }
+
+    func testEachEditRoutesToFrame11a() throws {
+        let edited = IOSCopy.largeBody + LargeHandoff.editedNote
+        let expected = ShareExportRoute.largeSheet(LargeHandoffSheet(frame: .frame11a, title: IOSCopy.largeTitle, body: edited))
+
+        let arrow = try loaded(1320, 2868)
+        arrow.addArrow(start: CGPoint(x: 10, y: 10), end: CGPoint(x: 200, y: 300), in: CGSize(width: 440, height: 956))
+        XCTAssertEqual(ShareExportRoute.decide(arrow, canTransferToApp: true), expected)
+
+        let redaction = try loaded(1320, 2868)
+        redaction.addRedaction(rect: CGRect(x: 20, y: 40, width: 120, height: 40), in: CGSize(width: 440, height: 956))
+        XCTAssertEqual(ShareExportRoute.decide(redaction, canTransferToApp: true), expected)
+
+        let crop = try loaded(1320, 2868)
+        crop.setRemoveStatusBar(!crop.removeStatusBar)
+        XCTAssertTrue(crop.changedCropThisSession)
+        XCTAssertEqual(ShareExportRoute.decide(crop, canTransferToApp: true), expected)
+
+        let style = try loaded(1320, 2868)
+        style.style = BackgroundStyle(presetKey: "night-ink", padding: 28, radius: 12, shadow: 48)
+        XCTAssertEqual(ShareExportRoute.decide(style, canTransferToApp: true), expected)
+    }
+
+    /// Larger margins on a shot that is already over at the default style stay on 11a, never 11b.
+    func testEnlargedMarginsOnDefaultOverflowNeverRouteTo11b() throws {
+        let model = try loaded(1320, 2868)
+        model.style = BackgroundStyle(presetKey: "pastel-air", padding: 64, radius: 12, shadow: 48)
+        guard case .largeSheet(let sheet) = ShareExportRoute.decide(model, canTransferToApp: true) else {
+            XCTFail("1320×2868 at padding 64 must show the large sheet")
+            return
+        }
+        XCTAssertNotEqual(sheet.frame, .frame11b)
+        XCTAssertNotEqual(sheet.title, frame11bTitle)
+        XCTAssertEqual(sheet.title, IOSCopy.largeTitle)
+        XCTAssertEqual(sheet.frame, .frame11a)
+    }
+
+    func testNoTransferChannelAsksToReselect() throws {
+        XCTAssertEqual(ShareExportRoute.decide(try loaded(1320, 2868), canTransferToApp: false), .reselectInApp)
+    }
+
+    func testInsideGateStaysInline() throws {
+        XCTAssertEqual(ShareExportRoute.decide(try loaded(1179, 2556), canTransferToApp: true), .inline)
+    }
+
+    private func loaded(_ width: Int, _ height: Int) throws -> EditorModel {
+        let space = try XCTUnwrap(CGColorSpace(name: CGColorSpace.sRGB))
+        let context = try XCTUnwrap(CGContext(
+            data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+            space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ))
+        context.setFillColor(CGColor(srgbRed: 0.3, green: 0.4, blue: 0.9, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        let image = try XCTUnwrap(context.makeImage())
+        let data = NSMutableData()
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithData(data, "public.png" as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, image, nil)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        let model = EditorModel()
+        model.load(data as Data)
+        return model
+    }
+}
