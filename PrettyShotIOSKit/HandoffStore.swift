@@ -257,9 +257,15 @@ enum PendingShareResume {
 /// Reads every image first, then confirms. A later delete still returns the bytes already read.
 /// What the app opens for `prettyshot://<host>`.
 enum HandoffLaunch {
-    /// Placeholder matching current behavior: the app stays on the home screen and shows the banner.
+    static let handoffHost = "handoff"
+
+    /// The extension's frame 11 handed over one large image: open it straight in the editor (A4).
+    /// Only the newest ticket counts, and only a single image. Stitch batches stay on the A1b banner.
     static func ticketToOpen(host: String?, pending: [HandoffTicket]) -> HandoffTicket? {
-        nil
+        guard host?.lowercased() == handoffHost,
+              let newest = PendingShareResume.ticket(pending),
+              newest.kind == .singleImage else { return nil }
+        return newest
     }
 }
 
