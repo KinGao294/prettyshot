@@ -64,6 +64,19 @@ public enum BeautifyRenderer {
         drawAnnotations: ((CGContext) -> Void)? = nil,
         overlay: ((CGContext) -> Void)? = nil
     ) {
+        draw(input, in: context, opaqueBase: false, drawAnnotations: drawAnnotations, overlay: overlay)
+    }
+
+    /// `opaqueBase` means every pixel of `input.base` has alpha 1. The clipped base then has exactly the
+    /// rounded rect's coverage as its alpha, so the shadow can come from that shape instead of a
+    /// canvas-sized transparency layer.
+    static func draw(
+        _ input: BeautifyInput,
+        in context: CGContext,
+        opaqueBase: Bool,
+        drawAnnotations: ((CGContext) -> Void)?,
+        overlay: ((CGContext) -> Void)?
+    ) {
         let layout = BeautifyRenderer.layout(for: input)
         let canvas = CGRect(origin: .zero, size: layout.canvasSize)
 
@@ -80,7 +93,11 @@ public enum BeautifyRenderer {
                              layout.imageRect.width / 2, layout.imageRect.height / 2)
             imageClip = CGPath(roundedRect: layout.imageRect, cornerWidth: radius, cornerHeight: radius, transform: nil)
 
-            if input.background.shadow > 0 {
+            if input.background.shadow > 0, opaqueBase {
+                let metrics = shadowMetrics(amount: CGFloat(input.background.shadow) * input.scale, in: context)
+                castShapeShadow(imageClip, canvas: canvas, metrics: metrics, in: context)
+                drawBase(input, layout: layout, clip: imageClip, in: context)
+            } else if input.background.shadow > 0 {
                 let metrics = shadowMetrics(amount: CGFloat(input.background.shadow) * input.scale, in: context)
                 context.saveGState()
                 context.setShadow(offset: metrics.offset, blur: metrics.blur,
@@ -122,11 +139,16 @@ public enum BeautifyRenderer {
     /// Renders to a new sRGB bitmap at output resolution.
     /// The bitmap is the context's own buffer. `makeImage()` would keep a second canvas-sized
     /// copy alive next to the shadow layer, which pushes a 1179×2556 export over the extension cap.
+    /// An opaque base (every screenshot) casts its shadow from the rounded rect, so no canvas-sized
+    /// transparency layer is allocated beside the canvas. The pixels are the same.
     public static func render(
         _ input: BeautifyInput,
         drawAnnotations: ((CGContext) -> Void)? = nil
     ) -> CGImage? {
-        autoreleasepool {
+        // Checked before the canvas exists, so a provider copy made by the check is not alive beside it.
+        let opaqueBase = input.background.preset != nil && input.background.shadow > 0
+            && autoreleasepool { isOpaque(input.base) }
+        return autoreleasepool {
             let layout = BeautifyRenderer.layout(for: input)
             let width = Int(layout.canvasSize.width.rounded(.up))
             let height = Int(layout.canvasSize.height.rounded(.up))
@@ -141,7 +163,7 @@ public enum BeautifyRenderer {
             ) else { return nil }
             context.translateBy(x: 0, y: CGFloat(height))
             context.scaleBy(x: 1, y: -1)
-            draw(input, in: context, drawAnnotations: drawAnnotations)
+            draw(input, in: context, opaqueBase: opaqueBase, drawAnnotations: drawAnnotations, overlay: nil)
             context.flush()
             let info = Unmanaged.passRetained(owned).toOpaque()
             guard let provider = CGDataProvider(
@@ -201,6 +223,62 @@ public enum BeautifyRenderer {
         let size = input.baseSize ?? CGSize(width: input.base.width, height: input.base.height)
         drawImage(input.base, in: CGRect(origin: origin, size: size), context: context)
         context.restoreGState()
+    }
+
+    /// Draws only the shadow of `shape`. The shape is filled outside the canvas and the shadow offset
+    /// brings it back, so the fill itself never lands. Same alpha mask as the clipped opaque base.
+    private static func castShapeShadow(
+        _ shape: CGPath,
+        canvas: CGRect,
+        metrics: (offset: CGSize, blur: CGFloat),
+        in context: CGContext
+    ) {
+        let shift = (canvas.width + metrics.blur * 4 + abs(metrics.offset.width)).rounded(.up)
+        let t = context.userSpaceToDeviceSpaceTransform
+        context.saveGState()
+        context.setShadow(
+            offset: CGSize(width: metrics.offset.width - shift * t.a, height: metrics.offset.height - shift * t.b),
+            blur: metrics.blur,
+            color: CGColor(srgbRed: 0.17, green: 0.16, blue: 0.16, alpha: 0.32)
+        )
+        context.translateBy(x: shift, y: 0)
+        context.addPath(shape)
+        context.setFillColor(CGColor(srgbRed: 0, green: 0, blue: 0, alpha: 1))
+        context.fillPath()
+        context.restoreGState()
+    }
+
+    /// True when the image declares no alpha, or is 8-bit RGBA whose alpha bytes are all 255.
+    /// Anything else (window shots with transparent corners, other layouts) is treated as not opaque.
+    static func isOpaque(_ image: CGImage) -> Bool {
+        switch image.alphaInfo {
+        case .none, .noneSkipFirst, .noneSkipLast:
+            return true
+        case .alphaOnly:
+            return false
+        case .premultipliedLast, .premultipliedFirst, .last, .first:
+            break
+        @unknown default:
+            return false
+        }
+        guard image.bitsPerComponent == 8, image.bitsPerPixel == 32,
+              let data = image.dataProvider?.data,
+              let bytes = CFDataGetBytePtr(data) else { return false }
+        let alphaLast = image.alphaInfo == .premultipliedLast || image.alphaInfo == .last
+        let little = image.bitmapInfo.contains(.byteOrder32Little)
+        let alphaOffset = alphaLast != little ? 3 : 0
+        let width = image.width
+        let bytesPerRow = image.bytesPerRow
+        guard CFDataGetLength(data) >= bytesPerRow * (image.height - 1) + width * 4 else { return false }
+        for y in 0..<image.height {
+            let row = bytes + y * bytesPerRow + alphaOffset
+            var x = 0
+            while x < width {
+                if row[x * 4] != 255 { return false }
+                x += 1
+            }
+        }
+        return true
     }
 
     /// CG shadows are specified in device space (unaffected by the CTM), so derive a consistent

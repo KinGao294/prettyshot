@@ -18,10 +18,11 @@ import PrettyShotCore
 /// itself. There is no tiled render in M3. A 12MP image's five buffers are about 240MB, so that image
 /// is handed to the app. Editing keeps the file URL plus one preview. Nothing is exported at preview size.
 ///
-/// The 1320×2868 sample's delta omitted the source that was already resident. Putting that copy back
-/// makes the low sample about 94.3MB, while five buffers alone are 84.5MB. The 12MB margin is that gap.
-/// A second CI sample sits near 102MB. That spread is not folded into the formula: doing so would
-/// hand 1179×2556 and 1830×1830 at padding 28 to the app. Noted for (36).
+/// The gate still counts five buffers plus a 12MB margin. The render now uses fewer: redaction bakes into
+/// one buffer, and an opaque base casts its shadow from the rounded rect instead of a canvas-sized
+/// transparency layer. On CI (run 37165492481) 1320×2868 measured 73.6MB on the same basis against a
+/// 97.1MB estimate, and 1179×2556 with headroom came to 104.0MB of the 125.8MB (120MiB) cap. The old high
+/// samples were 102.0MB and 127.7MB. (36): the gate goes back to fewer buffers only after on-device numbers.
 enum ExtensionMemoryBudget {
     static let limitBytes = 120 * 1024 * 1024
     /// Left unused so the process, ImageIO, and the shadow layer's allocator overhead still fit.
@@ -30,7 +31,7 @@ enum ExtensionMemoryBudget {
     static let previewMaxLongSide = 1280
     /// Source + redacted + canvas + shadow layer + one extra canvas buffer.
     static let fullSizeCopiesWhileExporting = 5
-    /// Bytes the five-buffer total misses on the 94.3MB sample. See the type comment. Visible for (36).
+    /// Allocator and process slack on top of the counted buffers. See the type comment.
     static let renderMarginBytes = 12 * 1024 * 1024
     static let forbiddenSimultaneousFullSizeCopies = 3
 
@@ -165,14 +166,21 @@ enum ImagePrep {
     }
 
     /// Native pixel size. Used for export and stitch input, never a long-side cap.
-    static func fullImage(_ data: Data) -> CGImage? {
+    /// `cached: false` keeps ImageIO from holding a decoded bitmap inside the image. Export uses it:
+    /// the redactor decodes straight into its own buffer, so the source is not a second resident copy.
+    static func fullImage(_ data: Data, cached: Bool = true) -> CGImage? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
-        return CGImageSourceCreateImageAtIndex(source, 0, nil)
+        return CGImageSourceCreateImageAtIndex(source, 0, decodeOptions(cached: cached))
     }
 
-    static func fullImage(_ url: URL) -> CGImage? {
+    static func fullImage(_ url: URL, cached: Bool = true) -> CGImage? {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
-        return CGImageSourceCreateImageAtIndex(source, 0, nil)
+        return CGImageSourceCreateImageAtIndex(source, 0, decodeOptions(cached: cached))
+    }
+
+    private static func decodeOptions(cached: Bool) -> CFDictionary? {
+        guard !cached else { return nil }
+        return [kCGImageSourceShouldCache: false, kCGImageSourceShouldCacheImmediately: false] as CFDictionary
     }
 
     private static func pixelSize(_ source: CGImageSource) -> (width: Int, height: Int)? {

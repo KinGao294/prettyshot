@@ -37,10 +37,12 @@ public enum Redactor {
         }
         guard !regions.isEmpty else { return image }
 
-        let source = CIImage(cgImage: image)
-        let extent = source.extent
-        var output = source
-
+        let width = image.width
+        let height = image.height
+        let extent = CGRect(x: 0, y: 0, width: width, height: height)
+        // Core Image y-up rects, plus how far each filter reads past its rect.
+        var planned: [(kind: RedactionKind, rect: CGRect, amount: Float)] = []
+        var area = CGRect.null
         for region in regions {
             // Image pixels (y-down) → Core Image (y-up).
             let full = region.rect
@@ -49,45 +51,48 @@ public enum Redactor {
             let ciRect = CGRect(x: r.minX, y: extent.height - r.maxY, width: r.width, height: r.height)
                 .intersection(extent)
             guard !ciRect.isEmpty else { continue }
-
-            let effect: CIImage?
+            let amount: Float
+            let reach: CGFloat
             switch region.kind {
             case .pixelate:
-                let filter = CIFilter.pixellate()
-                filter.inputImage = output.clampedToExtent()
-                filter.scale = Float(max(10 * scale * geometryScale, min(ciRect.width, ciRect.height) / 8))
-                filter.center = ciRect.origin
-                effect = filter.outputImage
+                amount = Float(max(10 * scale * geometryScale, min(ciRect.width, ciRect.height) / 8))
+                reach = CGFloat(amount) + 2
             case .blur:
-                let filter = CIFilter.gaussianBlur()
-                filter.inputImage = output.clampedToExtent()
-                filter.radius = Float(max(14 * scale * geometryScale, min(ciRect.width, ciRect.height) / 10))
-                effect = filter.outputImage
+                amount = Float(max(14 * scale * geometryScale, min(ciRect.width, ciRect.height) / 10))
+                reach = CGFloat(amount) * 4 + 2
             }
-            if let effect {
-                output = effect.cropped(to: ciRect).composited(over: output)
-            }
+            planned.append((region.kind, ciRect, amount))
+            area = area.union(ciRect.insetBy(dx: -reach, dy: -reach))
         }
+
         return autoreleasepool { () -> CGImage in
-            guard let rendered = context.createCGImage(output, from: extent) else { return image }
-            let width = rendered.width
-            let height = rendered.height
             let bytesPerRow = (width * 4 + 15) & ~15
             let byteCount = bytesPerRow * height
             guard width > 0, height > 0, byteCount > 0,
-                  let space = CGColorSpace(name: CGColorSpace.sRGB) else { return rendered }
-            // One destination buffer. `makeImage()` would keep a third full-size copy
-            // beside the Core Image result and the context.
+                  let space = CGColorSpace(name: CGColorSpace.sRGB) else { return image }
+            // The only full-size buffer. The source is drawn into it once, and Core Image
+            // only renders the redacted area back over it. A full-extent Core Image render
+            // would add its own full-size result and intermediates beside this copy.
             let owned = OwnedBitmap(byteCount: byteCount)
-            guard let copy = CGContext(
+            guard let canvas = CGContext(
                 data: owned.baseAddress, width: width, height: height,
                 bitsPerComponent: 8, bytesPerRow: bytesPerRow,
                 space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-            ) else { return rendered }
-            copy.interpolationQuality = .none
-            copy.draw(rendered, in: CGRect(x: 0, y: 0, width: width, height: height))
-            copy.flush()
-            context.clearCaches()
+            ) else { return image }
+            canvas.interpolationQuality = .none
+            canvas.setBlendMode(.copy)
+            canvas.draw(image, in: extent)
+
+            if !planned.isEmpty {
+                let roi = area.integral.intersection(extent)
+                if let patch = redactedPatch(planned, roi: roi, from: owned, bytesPerRow: bytesPerRow,
+                                             imageHeight: height, space: space) {
+                    canvas.draw(patch, in: roi)
+                }
+                context.clearCaches()
+            }
+            canvas.flush()
+
             let info = Unmanaged.passRetained(owned).toOpaque()
             guard let provider = CGDataProvider(
                 dataInfo: info, data: owned.baseAddress, size: byteCount,
@@ -97,7 +102,7 @@ public enum Redactor {
                 }
             ) else {
                 Unmanaged<OwnedBitmap>.fromOpaque(info).takeRetainedValue()
-                return rendered
+                return image
             }
             guard let detached = CGImage(
                 width: width, height: height,
@@ -105,9 +110,68 @@ public enum Redactor {
                 space: space,
                 bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
                 provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent
-            ) else { return rendered }
+            ) else { return image }
             return detached
         }
+    }
+
+    /// Runs the redaction filters over `roi` only. `roi` covers every redacted rect plus the
+    /// distance its filter reads, so clamping at the patch edge does not reach the redacted pixels.
+    /// The patch is copied out of `bitmap` first, so Core Image never reads what is being written.
+    private static func redactedPatch(
+        _ planned: [(kind: RedactionKind, rect: CGRect, amount: Float)],
+        roi: CGRect,
+        from bitmap: OwnedBitmap,
+        bytesPerRow: Int,
+        imageHeight: Int,
+        space: CGColorSpace
+    ) -> CGImage? {
+        let patchWidth = Int(roi.width)
+        let patchHeight = Int(roi.height)
+        guard patchWidth > 0, patchHeight > 0 else { return nil }
+        let patchBytesPerRow = patchWidth * 4
+        let top = imageHeight - Int(roi.maxY)
+        let left = Int(roi.minX)
+        var bytes = Data(count: patchBytesPerRow * patchHeight)
+        bytes.withUnsafeMutableBytes { dest in
+            guard let base = dest.baseAddress else { return }
+            for row in 0..<patchHeight {
+                let from = bitmap.baseAddress + (top + row) * bytesPerRow + left * 4
+                (base + row * patchBytesPerRow).copyMemory(from: from, byteCount: patchBytesPerRow)
+            }
+        }
+        guard let provider = CGDataProvider(data: bytes as CFData),
+              let patch = CGImage(
+                width: patchWidth, height: patchHeight,
+                bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: patchBytesPerRow,
+                space: space,
+                bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent
+              ) else { return nil }
+
+        let source = CIImage(cgImage: patch)
+            .transformed(by: CGAffineTransform(translationX: roi.minX, y: roi.minY))
+        var output = source
+        for region in planned {
+            let effect: CIImage?
+            switch region.kind {
+            case .pixelate:
+                let filter = CIFilter.pixellate()
+                filter.inputImage = output.clampedToExtent()
+                filter.scale = region.amount
+                filter.center = region.rect.origin
+                effect = filter.outputImage
+            case .blur:
+                let filter = CIFilter.gaussianBlur()
+                filter.inputImage = output.clampedToExtent()
+                filter.radius = region.amount
+                effect = filter.outputImage
+            }
+            if let effect {
+                output = effect.cropped(to: region.rect).composited(over: output)
+            }
+        }
+        return context.createCGImage(output, from: roi)
     }
 
     /// Downscaled copy of `image` for cheap live previews.

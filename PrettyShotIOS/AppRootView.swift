@@ -70,6 +70,9 @@ struct AppRootView: View {
             if url.host?.lowercased() == "pick" {
                 showSinglePicker = true
             }
+            if let ticket = HandoffLaunch.ticketToOpen(host: url.host, pending: pending) {
+                openHandedOff(ticket)
+            }
         }
         .photosPicker(isPresented: $showSinglePicker, selection: $singleItem, matching: .images, photoLibrary: .shared())
         .photosPicker(isPresented: $showStitchPicker, selection: $stitchItems, maxSelectionCount: 20, matching: .images, photoLibrary: .shared())
@@ -488,6 +491,22 @@ struct AppRootView: View {
             editor.load(first.data)
             route = .editor
         }
+    }
+
+    /// A4. The large image from frame 11 opens in the editor at full resolution.
+    /// If its file cannot be read, the ticket stays pending and the home banner still offers it.
+    private func openHandedOff(_ ticket: HandoffTicket) {
+        guard let data = try? ReceiptConfirmation.imageData(of: [ticket], store: store),
+              let first = data.first else {
+            refreshPending()
+            return
+        }
+        missingOrdinals = []
+        expectedTotal = 0
+        ordered = []
+        editor.load(first)
+        refreshPending()
+        route = .editor
     }
 
     private func copyEditor() {

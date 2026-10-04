@@ -499,10 +499,7 @@ final class ExtensionMemoryBudgetTests: XCTestCase {
         print("PRETTYSHOT_RENDER_DELTA 1320x2868 before=\(before) during=\(during) delta=\(delta) residentSource=\(residentSource) sameBasis=\(sameBasis) exportPeak=\(exportPeak) margin=\(Int64(exportPeak) - sameBasis) encodedBytes=\(encoded.count)")
         XCTAssertGreaterThan(delta, 0)
         XCTAssertLessThanOrEqual(delta, Int64(exportPeak))
-        // The formula's 12MB margin covers the low sample (~94.3MB same basis).
-        // On this runner the high sample is about 102MB, ~5MB over that peak.
-        // The spread stays out of the formula so 1179 and 1830/pad 28 stay inline. Noted for (36).
-        XCTAssertLessThanOrEqual(sameBasis, Int64(exportPeak) + 8 * 1024 * 1024)
+        XCTAssertLessThanOrEqual(sameBasis, Int64(exportPeak))
         XCTAssertGreaterThan(encoded.count, 100_000)
         XCTAssertEqual(source.width, width)
         XCTAssertEqual(redacted.width, width)
@@ -540,12 +537,51 @@ final class ExtensionMemoryBudgetTests: XCTestCase {
         print("PRETTYSHOT_RENDER_DELTA 1179x2556 before=\(fitBefore) during=\(fitDuring) delta=\(fitDelta) residentSource=\(fitSourceBytes) sameBasis=\(fitSameBasis) exportPeak=\(fitPeak) margin=\(Int64(fitPeak) - fitSameBasis)")
         XCTAssertGreaterThan(fitDelta, 0)
         XCTAssertLessThanOrEqual(fitDelta, Int64(fitPeak))
-        // High sample of headroom + source + delta is about 127.7MB, ~2MB over the cap.
-        // Same 8MB runner spread as the 1320 check. The plan itself stays inline.
         XCTAssertLessThanOrEqual(
             ExtensionMemoryBudget.headroomBytes + fitSourceBytes + Int(fitDelta),
-            ExtensionMemoryBudget.limitBytes + 8 * 1024 * 1024
+            ExtensionMemoryBudget.limitBytes
         )
+    }
+
+    /// (36) Redaction keeps one full-size buffer. Drawing the source through Core Graphics also left
+    /// a cached full-size copy attached to the source for as long as the source lived.
+    func testRedactionHoldsOneFullSizeBuffer() throws {
+        // Core Image setup happens on first use. Do it here so test order does not matter.
+        _ = Redactor.apply([PixelRedaction(rect: CGRect(x: 0, y: 0, width: 8, height: 8))], to: try solidImage(width: 16, height: 16), scale: 1)
+        let width = 1320
+        let height = 2868
+        let source = try solidImage(width: width, height: height)
+        let sourceBytes = Int64(width * height * ExtensionMemoryBudget.bytesPerPixel)
+        let slack = Int64(2 * 1024 * 1024)
+        // A `makeImage()` source is only charged to this process once its pixels are first touched
+        // (CI run 37167419555: 0.05MB after makeImage, +15.1MB on first draw, back to 0 when released;
+        // asking for the provider's length does not touch them). Touch every page before sampling,
+        // so the numbers below are what redaction itself holds.
+        let pixels = try XCTUnwrap(source.dataProvider?.data)
+        XCTAssertGreaterThanOrEqual(CFDataGetLength(pixels), Int(sourceBytes))
+        let pixelBytes = try XCTUnwrap(CFDataGetBytePtr(pixels))
+        var touched = 0
+        for offset in stride(from: 0, to: CFDataGetLength(pixels), by: 4096) {
+            touched &+= Int(pixelBytes[offset])
+        }
+        XCTAssertGreaterThanOrEqual(touched, 0)
+        let before = FootprintSampler.current()
+        let sampler = FootprintSampler()
+        sampler.start()
+        var redacted: CGImage? = Redactor.apply(
+            [PixelRedaction(rect: CGRect(x: 40, y: 200, width: 120, height: 80))],
+            to: source,
+            scale: 3
+        )
+        let peak = sampler.stop() - before
+        XCTAssertEqual(redacted?.width, width)
+        XCTAssertEqual(redacted?.height, height)
+        redacted = nil
+        let retained = FootprintSampler.current() - before
+        print("PRETTYSHOT_REDACT_PEAK 1320x2868 peak=\(peak) retained=\(retained) sourceBytes=\(sourceBytes)")
+        XCTAssertLessThanOrEqual(peak, sourceBytes + slack)
+        XCTAssertLessThanOrEqual(retained, slack)
+        withExtendedLifetime(source) {}
     }
 
     private final class FootprintSampler: @unchecked Sendable {
@@ -1889,5 +1925,116 @@ final class FollowUp35Tests: XCTestCase {
         context.setFillColor(CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 1))
         context.fill(CGRect(x: 0, y: 0, width: width, height: height))
         return try XCTUnwrap(context.makeImage())
+    }
+}
+
+/// Card ① task 3. A shot still over the gate at the default style goes to the app through the
+/// existing frame 11 flow and copy. Never a silent failure, never frame 11b.
+final class LargeHandoffRoutingTests: XCTestCase {
+    func testDefaultStyleOverflowShowsFrame11WithLargeBody() throws {
+        let model = EditorModel()
+        model.load(try png(width: 1320, height: 2868))
+        let attempt = try XCTUnwrap(model.export(canTransferToApp: true))
+        guard case .handoff = attempt else {
+            XCTFail("1320×2868 at the default style must hand off, got \(attempt)")
+            return
+        }
+        let frame = LargeHandoff.frame(
+            changedStyle: model.changedStyleThisSession,
+            changedCrop: model.changedCropThisSession,
+            addedArrow: model.addedArrowThisSession,
+            addedRedaction: model.addedRedactionThisSession
+        )
+        XCTAssertEqual(frame, .frame11)
+        XCTAssertEqual(
+            LargeHandoff.body(
+                changedStyle: model.changedStyleThisSession,
+                changedCrop: model.changedCropThisSession,
+                addedArrow: model.addedArrowThisSession,
+                addedRedaction: model.addedRedactionThisSession
+            ),
+            IOSCopy.largeBody
+        )
+    }
+
+    func testEditedOverflowShowsFrame11a() throws {
+        let model = EditorModel()
+        model.load(try png(width: 1320, height: 2868))
+        model.addArrow(start: CGPoint(x: 10, y: 10), end: CGPoint(x: 200, y: 300), in: CGSize(width: 440, height: 956))
+        let attempt = try XCTUnwrap(model.export(canTransferToApp: true))
+        guard case .handoff = attempt else {
+            XCTFail("an edited 1320×2868 must still hand off, got \(attempt)")
+            return
+        }
+        XCTAssertEqual(LargeHandoff.frame(changedStyle: false, changedCrop: false, addedArrow: true, addedRedaction: false), .frame11a)
+        XCTAssertEqual(
+            LargeHandoff.body(changedStyle: false, changedCrop: false, addedArrow: true, addedRedaction: false),
+            IOSCopy.largeBody + LargeHandoff.editedNote
+        )
+    }
+
+    /// 11b is only for a shot that fits at the default style and is pushed over by larger margins.
+    /// A default-style overflow stays on 11 / 11a even when the user also enlarged the margins.
+    func testDefaultStyleOverflowNeverShowsFrame11b() throws {
+        let model = EditorModel()
+        model.load(try png(width: 1320, height: 2868))
+        model.style = BackgroundStyle(presetKey: "pastel-air", padding: 64, radius: 12, shadow: 48)
+        let attempt = try XCTUnwrap(model.export(canTransferToApp: true))
+        guard case .handoff = attempt else {
+            XCTFail("1320×2868 at padding 64 must hand off, got \(attempt)")
+            return
+        }
+        let frame = LargeHandoff.frame(
+            changedStyle: model.changedStyleThisSession,
+            changedCrop: model.changedCropThisSession,
+            addedArrow: model.addedArrowThisSession,
+            addedRedaction: model.addedRedactionThisSession
+        )
+        XCTAssertNotEqual(frame, .frame11b)
+        XCTAssertEqual(frame, .frame11a)
+        for edited in [false, true] {
+            XCTAssertNotEqual(
+                LargeHandoff.frame(changedStyle: edited, changedCrop: false, addedArrow: false, addedRedaction: false),
+                .frame11b
+            )
+        }
+    }
+
+    /// Without a transfer channel the extension asks the user to reselect in the app. It does not fail silently.
+    func testOverflowWithoutTransferIsNotSilent() throws {
+        let model = EditorModel()
+        model.load(try png(width: 1320, height: 2868))
+        let attempt = try XCTUnwrap(model.export(canTransferToApp: false))
+        guard case .reselectInApp = attempt else {
+            XCTFail("expected reselectInApp, got \(attempt)")
+            return
+        }
+    }
+
+    /// A4: the app opens a single handed-off image straight into the editor, not the home banner.
+    func testAppOpensSingleImageHandoffDirectlyInA4() {
+        let older = HandoffTicket(id: "a", kind: .stitch, fileNames: ["000-a.png", "001-b.png"], createdAt: Date(timeIntervalSince1970: 10))
+        let single = HandoffTicket(id: "b", kind: .singleImage, fileNames: ["000-big.png"], createdAt: Date(timeIntervalSince1970: 20))
+        XCTAssertEqual(HandoffLaunch.ticketToOpen(host: "handoff", pending: [single]), single)
+        XCTAssertEqual(HandoffLaunch.ticketToOpen(host: "handoff", pending: [single, older]), single)
+        XCTAssertNil(HandoffLaunch.ticketToOpen(host: "handoff", pending: [older]))
+        XCTAssertNil(HandoffLaunch.ticketToOpen(host: "pick", pending: [single]))
+        XCTAssertNil(HandoffLaunch.ticketToOpen(host: "handoff", pending: []))
+    }
+
+    private func png(width: Int, height: Int) throws -> Data {
+        let space = try XCTUnwrap(CGColorSpace(name: CGColorSpace.sRGB))
+        let context = try XCTUnwrap(CGContext(
+            data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+            space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ))
+        context.setFillColor(CGColor(srgbRed: 0.3, green: 0.4, blue: 0.9, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        let image = try XCTUnwrap(context.makeImage())
+        let data = NSMutableData()
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithData(data, "public.png" as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, image, nil)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        return data as Data
     }
 }
