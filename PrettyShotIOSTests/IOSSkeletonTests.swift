@@ -499,10 +499,7 @@ final class ExtensionMemoryBudgetTests: XCTestCase {
         print("PRETTYSHOT_RENDER_DELTA 1320x2868 before=\(before) during=\(during) delta=\(delta) residentSource=\(residentSource) sameBasis=\(sameBasis) exportPeak=\(exportPeak) margin=\(Int64(exportPeak) - sameBasis) encodedBytes=\(encoded.count)")
         XCTAssertGreaterThan(delta, 0)
         XCTAssertLessThanOrEqual(delta, Int64(exportPeak))
-        // The formula's 12MB margin covers the low sample (~94.3MB same basis).
-        // On this runner the high sample is about 102MB, ~5MB over that peak.
-        // The spread stays out of the formula so 1179 and 1830/pad 28 stay inline. Noted for (36).
-        XCTAssertLessThanOrEqual(sameBasis, Int64(exportPeak) + 8 * 1024 * 1024)
+        XCTAssertLessThanOrEqual(sameBasis, Int64(exportPeak))
         XCTAssertGreaterThan(encoded.count, 100_000)
         XCTAssertEqual(source.width, width)
         XCTAssertEqual(redacted.width, width)
@@ -540,11 +537,9 @@ final class ExtensionMemoryBudgetTests: XCTestCase {
         print("PRETTYSHOT_RENDER_DELTA 1179x2556 before=\(fitBefore) during=\(fitDuring) delta=\(fitDelta) residentSource=\(fitSourceBytes) sameBasis=\(fitSameBasis) exportPeak=\(fitPeak) margin=\(Int64(fitPeak) - fitSameBasis)")
         XCTAssertGreaterThan(fitDelta, 0)
         XCTAssertLessThanOrEqual(fitDelta, Int64(fitPeak))
-        // High sample of headroom + source + delta is about 127.7MB, ~2MB over the cap.
-        // Same 8MB runner spread as the 1320 check. The plan itself stays inline.
         XCTAssertLessThanOrEqual(
             ExtensionMemoryBudget.headroomBytes + fitSourceBytes + Int(fitDelta),
-            ExtensionMemoryBudget.limitBytes + 8 * 1024 * 1024
+            ExtensionMemoryBudget.limitBytes
         )
     }
 
