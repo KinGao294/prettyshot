@@ -543,6 +543,98 @@ final class ExtensionMemoryBudgetTests: XCTestCase {
         )
     }
 
+    func testZZProbeRenderBreakdown() throws {
+        let w = 1320, h = 2868
+        let src = try solidImage(width: w, height: h)
+        let red = Redactor.apply([PixelRedaction(rect: CGRect(x: 40, y: 200, width: 120, height: 80))], to: src, scale: 3)
+        func peak(_ label: String, _ body: () -> CGImage?) -> CGImage? {
+            let b = FootprintSampler.current()
+            let s = FootprintSampler(); s.start()
+            let out = body()
+            let p = s.stop() - b
+            let after = FootprintSampler.current() - b
+            print("PRETTYSHOT_PROBE2 \(label) peak=\(p) retained=\(after)")
+            return out
+        }
+        func input(_ style: BackgroundStyle, base: CGImage) -> BeautifyInput {
+            BeautifyInput(base: base, crop: CGRect(x: 0, y: 0, width: base.width, height: base.height), background: style, scale: 3)
+        }
+        let def = BackgroundStyle.default
+        _ = peak("warmup-default") { BeautifyRenderer.render(input(def, base: red)) }
+        let reference = peak("default") { BeautifyRenderer.render(input(def, base: red)) }
+        _ = peak("shadow0") { BeautifyRenderer.render(input(BackgroundStyle(presetKey: def.presetKey, padding: 28, radius: 12, shadow: 0), base: red)) }
+        _ = peak("radius0") { BeautifyRenderer.render(input(BackgroundStyle(presetKey: def.presetKey, padding: 28, radius: 0, shadow: 48), base: red)) }
+        _ = peak("linear-preset") { BeautifyRenderer.render(input(BackgroundStyle(presetKey: "paper-mist", padding: 28, radius: 12, shadow: 48), base: red)) }
+        _ = peak("nobg") { BeautifyRenderer.render(input(BackgroundStyle(presetKey: nil, padding: 28, radius: 12, shadow: 48), base: red)) }
+        _ = peak("base=src") { BeautifyRenderer.render(input(def, base: src)) }
+        let trick = peak("offscreen-shadow") { offscreenShadowRender(input(def, base: red)) }
+        if let reference, let trick {
+            let a = TestBytes.of(reference), b = TestBytes.of(trick)
+            var diff = 0, maxd = 0
+            for i in 0..<min(a.count, b.count) where a[i] != b[i] { diff += 1; maxd = max(maxd, abs(Int(a[i]) - Int(b[i]))) }
+            print("PRETTYSHOT_PROBE2 trick-vs-ref bytes=\(a.count) diff=\(diff) max=\(maxd)")
+        }
+        for key in ["paper-mist", "night-ink", "pastel-air"] {
+            for (pad, rad, sh) in [(28.0, 12.0, 48.0), (16.0, 0.0, 20.0), (64.0, 28.0, 80.0)] {
+                let small = try solidImage(width: 300, height: 500)
+                let st = BackgroundStyle(presetKey: key, padding: pad, radius: rad, shadow: sh)
+                for sc in [CGFloat(1), CGFloat(3)] {
+                    let inp = BeautifyInput(base: small, crop: CGRect(x: 0, y: 0, width: 300, height: 500), background: st, scale: sc)
+                    let a = TestBytes.of(BeautifyRenderer.render(inp)!), b = TestBytes.of(offscreenShadowRender(inp)!)
+                    var diff = 0, maxd = 0
+                    for i in 0..<min(a.count, b.count) where a[i] != b[i] { diff += 1; maxd = max(maxd, abs(Int(a[i]) - Int(b[i]))) }
+                    print("PRETTYSHOT_PROBE2 exact \(key) p\(pad) r\(rad) s\(sh) x\(sc) diff=\(diff) max=\(maxd)")
+                }
+            }
+        }
+        withExtendedLifetime((src, red)) {}
+    }
+
+    private enum TestBytes {
+        static func of(_ image: CGImage) -> [UInt8] {
+            var data = [UInt8](repeating: 0, count: image.width * image.height * 4)
+            let ctx = CGContext(data: &data, width: image.width, height: image.height, bitsPerComponent: 8, bytesPerRow: image.width * 4,
+                                space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+            ctx.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+            return data
+        }
+    }
+
+    private func offscreenShadowRender(_ input: BeautifyInput) -> CGImage? {
+        let layout = BeautifyRenderer.layout(for: input)
+        let width = Int(layout.canvasSize.width.rounded(.up)), height = Int(layout.canvasSize.height.rounded(.up))
+        guard let ctx = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: (width * 4 + 15) & ~15,
+                                  space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        ctx.translateBy(x: 0, y: CGFloat(height)); ctx.scaleBy(x: 1, y: -1)
+        let canvas = CGRect(origin: .zero, size: layout.canvasSize)
+        guard let preset = input.background.preset else { return nil }
+        preset.fill(canvas, in: ctx)
+        let radius = min(CGFloat(input.background.radius) * input.scale, layout.imageRect.width / 2, layout.imageRect.height / 2)
+        let clip = CGPath(roundedRect: layout.imageRect, cornerWidth: radius, cornerHeight: radius, transform: nil)
+        if input.background.shadow > 0 {
+            let amount = CGFloat(input.background.shadow) * input.scale
+            let t = ctx.userSpaceToDeviceSpaceTransform
+            let deviceScale = max(hypot(t.c, t.d), 0.0001)
+            let down: CGFloat = t.d < 0 ? -1 : 1
+            let blur = amount * 0.6 * deviceScale
+            let shift = (layout.canvasSize.width + blur * 4).rounded(.up)
+            ctx.saveGState()
+            ctx.setShadow(offset: CGSize(width: -shift * deviceScale, height: down * amount * 0.25 * deviceScale), blur: blur,
+                          color: CGColor(srgbRed: 0.17, green: 0.16, blue: 0.16, alpha: 0.32))
+            ctx.translateBy(x: shift, y: 0)
+            ctx.addPath(clip)
+            ctx.setFillColor(CGColor(srgbRed: 0, green: 0, blue: 0, alpha: 1))
+            ctx.fillPath()
+            ctx.restoreGState()
+        }
+        ctx.saveGState()
+        ctx.addPath(clip); ctx.clip()
+        ctx.interpolationQuality = .none
+        BeautifyRenderer.drawImage(input.base, in: layout.imageRect, context: ctx)
+        ctx.restoreGState()
+        return ctx.makeImage()
+    }
+
     private final class FootprintSampler: @unchecked Sendable {
         private let lock = NSLock()
         private var running = false
