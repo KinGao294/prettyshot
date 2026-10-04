@@ -146,6 +146,8 @@ enum PickerLaunchOutcome: Equatable {
     case opened
     /// S10f stored nothing. Stay there and ask the user to open the app. Do not switch to S10d.
     case stayAndAskToOpenApp
+    /// Frame 13. Opening the app failed. Stay on the read-failed page.
+    case stayOnReadFailedPage
 }
 
 enum ExtensionLaunchRouter {
@@ -160,8 +162,10 @@ enum ExtensionLaunchRouter {
         }
     }
 
-    static func afterPickerOpen(succeeded: Bool) -> PickerLaunchOutcome {
-        succeeded ? .opened : .stayAndAskToOpenApp
+    static func afterPickerOpen(succeeded: Bool, fromReadFailedPage: Bool = false) -> PickerLaunchOutcome {
+        if succeeded { return .opened }
+        if fromReadFailedPage { return .stayOnReadFailedPage }
+        return .stayAndAskToOpenApp
     }
 
     /// Frame 63 「重试」. Drop the previous ticket before staging another, so two copies do not stack.
@@ -170,14 +174,119 @@ enum ExtensionLaunchRouter {
     }
 }
 
-/// A1b. The banner counts the ticket 「继续拼接」 will open, and only the files actually staged.
+/// S12. The multi-image page failed to open the app before anything was staged.
+enum S12OpenResult: Equatable {
+    case stayOnMultiPage(hint: String)
+    /// Files are already staged, so this is frame 63b, not S12.
+    case notThisPage
+    /// Multi-image page cannot hand the files off. Go back to S10f.
+    case reselectOnS10f
+}
+
+enum S12Launch {
+    static func afterOpenFailed(stagedFileCount: Int) -> S12OpenResult {
+        if stagedFileCount > 0 {
+            return .notThisPage
+        }
+        return .reselectOnS10f
+    }
+}
+
+/// A1b. Every staged batch is one list, in share order (oldest first). The count is the files, not the missing shots.
 enum PendingShareResume {
+    static func ordered(_ pending: [HandoffTicket]) -> [HandoffTicket] {
+        pending.sorted { $0.createdAt < $1.createdAt }
+    }
+
     static func ticket(_ pending: [HandoffTicket]) -> HandoffTicket? {
-        pending.last
+        ordered(pending).last
     }
 
     static func stagedFileCount(_ pending: [HandoffTicket]) -> Int {
-        ticket(pending)?.fileNames.count ?? 0
+        ordered(pending).reduce(0) { count, ticket in
+            ticket.kind == .pdf ? count : count + ticket.fileNames.count
+        }
+    }
+
+    static func fileURLs(_ pending: [HandoffTicket], store: HandoffStore) throws -> [URL] {
+        var urls: [URL] = []
+        for ticket in ordered(pending) where ticket.kind != .pdf {
+            urls.append(contentsOf: try store.files(for: ticket.id))
+        }
+        return urls
+    }
+
+    /// 1-based positions of image files across every share. `pending` must already use global missing ordinals
+    /// (the list `pendingTickets()` returns). PDF tickets are not in the list and do not shift later cards.
+    static func globalFileOrdinals(_ pending: [HandoffTicket]) -> [Int] {
+        var offset = 0
+        var ordinals: [Int] = []
+        for ticket in ordered(pending) {
+            if ticket.kind == .pdf { continue }
+            let span = ticket.fileNames.count + ticket.missingShots.count
+            let localMissing = Set(ticket.missingShots.map { $0.ordinal - offset })
+            if span > 0 {
+                for position in 1...span where !localMissing.contains(position) {
+                    ordinals.append(offset + position)
+                }
+            }
+            offset += span
+        }
+        return ordinals
+    }
+
+    /// Missing ordinals stored on disk are local to each share. Readers see one continuous list.
+    /// A PDF share does not move the next image's ordinal.
+    static func withGlobalMissingOrdinals(_ tickets: [HandoffTicket]) -> [HandoffTicket] {
+        var offset = 0
+        var result: [HandoffTicket] = []
+        for ticket in tickets {
+            var copy = ticket
+            if ticket.kind == .pdf {
+                result.append(copy)
+                continue
+            }
+            copy.missingShots = ticket.missingShots.map { MissingShot(ordinal: $0.ordinal + offset) }
+            result.append(copy)
+            offset += ticket.fileNames.count + ticket.missingShots.count
+        }
+        return result
+    }
+}
+
+/// Reads every image first, then confirms. A later delete still returns the bytes already read.
+/// What the app opens for `prettyshot://<host>`.
+enum HandoffLaunch {
+    static let handoffHost = "handoff"
+
+    /// The extension's frame 11 handed over one large image: open it straight in the editor (A4).
+    /// Only the newest ticket counts, and only a single image. Stitch batches stay on the A1b banner.
+    static func ticketToOpen(host: String?, pending: [HandoffTicket]) -> HandoffTicket? {
+        guard host?.lowercased() == handoffHost,
+              let newest = PendingShareResume.ticket(pending),
+              newest.kind == .singleImage else { return nil }
+        return newest
+    }
+}
+
+enum ReceiptConfirmation {
+    static func imageData(of tickets: [HandoffTicket], store: HandoffStore) throws -> [Data] {
+        let ordered = PendingShareResume.ordered(tickets)
+        var data: [Data] = []
+        for ticket in ordered where ticket.kind != .pdf {
+            let urls = try store.files(for: ticket.id)
+            for url in urls {
+                data.append(try Data(contentsOf: url))
+            }
+        }
+        for ticket in ordered where ticket.kind != .pdf {
+            do {
+                try store.confirmReceipt(ticketID: ticket.id)
+            } catch {
+                return data
+            }
+        }
+        return data
     }
 }
 
@@ -276,7 +385,8 @@ final class DirectoryHandoffStore: HandoffStore {
                   let ticket = try? JSONDecoder().decode(HandoffTicket.self, from: data) else { continue }
             tickets.append(ticket)
         }
-        return tickets.sorted { $0.createdAt < $1.createdAt }
+        let sorted = tickets.sorted { $0.createdAt < $1.createdAt }
+        return PendingShareResume.withGlobalMissingOrdinals(sorted)
     }
 
     func files(for ticketID: String) throws -> [URL] {

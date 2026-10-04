@@ -10,7 +10,8 @@ struct EditorScreen: View {
     var onCopy: () -> Void
     var onSave: () -> Void
     var missingLine: String?
-    var onReadd: () -> Void = {}
+    var missingOrdinals: [Int] = []
+    var onReadd: (Int) -> Void = { _ in }
     /// Extension only, and only for an image that is over the extension memory budget.
     var showsPreviewDownsampleChip: Bool = false
 
@@ -18,16 +19,18 @@ struct EditorScreen: View {
         VStack(spacing: 0) {
             topBar
             if let missingLine {
-                HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 6) {
                     Text(missingLine)
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(IOSTheme.charcoal)
-                    Spacer(minLength: 8)
-                    Button(IOSCopy.readdShot, action: onReadd)
-                        .font(.system(size: 13, weight: .semibold))
+                    ForEach(missingOrdinals, id: \.self) { ordinal in
+                        Button(IOSCopy.readdButton(ordinal: ordinal, missingCount: missingOrdinals.count)) { onReadd(ordinal) }
+                            .font(.system(size: 13, weight: .semibold))
+                    }
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .background(IOSTheme.warn.opacity(0.22))
             }
             canvas
@@ -207,17 +210,21 @@ struct EditorScreen: View {
     @ViewBuilder
     private var toast: some View {
         if let title = model.toastTitle {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.system(size: 15, weight: .semibold))
-                if let detail = model.toastDetail {
-                    Text(detail).font(.system(size: 12))
+            if model.toastDetail == nil, ReaddToast.draws(on: .editor) {
+                SuccessToastBanner(title: title)
+            } else {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).font(.system(size: 15, weight: .semibold))
+                    if let detail = model.toastDetail {
+                        Text(detail).font(.system(size: 12))
+                    }
                 }
+                .foregroundStyle(Color(hex: 0xF5F2EC))
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .background(Color(hex: 0x1C1C1E).opacity(0.88), in: Capsule())
+                .padding(.top, 70)
             }
-            .foregroundStyle(Color(hex: 0xF5F2EC))
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            .background(Color(hex: 0x1C1C1E).opacity(0.88), in: Capsule())
-            .padding(.top, 70)
         }
     }
 
@@ -256,5 +263,36 @@ struct EditorScreen: View {
                     break
                 }
             }
+    }
+}
+
+/// Generic success toast: 70pt under the Dynamic Island, centered, dark blur capsule, Mint check, title only.
+struct SuccessToastBanner: View {
+    var title: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if ReaddToast.showsMintCheck {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(Color(hex: 0x7EB8A8))
+            }
+            Text(title)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(Color(hex: 0xF5F2EC))
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background {
+            if ReaddToast.usesDarkBlur {
+                ZStack {
+                    Capsule().fill(.ultraThinMaterial)
+                    Capsule().fill(Color(hex: 0x1C1C1E).opacity(0.72))
+                }
+            } else {
+                Capsule().fill(Color(hex: 0x1C1C1E).opacity(0.88))
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.top, ReaddToast.topOffset)
     }
 }

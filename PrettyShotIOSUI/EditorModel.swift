@@ -13,11 +13,13 @@ enum ExportAttempt {
 
 enum ShotEncoder {
     static func pngData(_ image: CGImage) -> Data? {
-        let data = NSMutableData()
-        guard let destination = CGImageDestinationCreateWithData(data, "public.png" as CFString, 1, nil) else { return nil }
-        CGImageDestinationAddImage(destination, image, nil)
-        guard CGImageDestinationFinalize(destination) else { return nil }
-        return data as Data
+        autoreleasepool {
+            let data = NSMutableData()
+            guard let destination = CGImageDestinationCreateWithData(data, "public.png" as CFString, 1, nil) else { return nil }
+            CGImageDestinationAddImage(destination, image, nil)
+            guard CGImageDestinationFinalize(destination) else { return nil }
+            return data as Data
+        }
     }
 }
 
@@ -32,6 +34,8 @@ final class EditorModel: ObservableObject {
     @Published var preview: UIImage?
     @Published var toastTitle: String?
     @Published var toastDetail: String?
+    /// Set when a re-add toast plays the success haptic. Nothing does that today.
+    var lastFeedbackIsSuccess = false
     @Published var pixelWidth = 0
     @Published var pixelHeight = 0
     @Published private(set) var canUndo = false
@@ -40,6 +44,14 @@ final class EditorModel: ObservableObject {
     private var encoded = Data()
     /// Set when the extension loaded a file URL. Handoff copies this file and does not keep a second decoded bitmap.
     private var sourceURL: URL?
+    /// Style and crop at the moment this image was opened. A remembered style applied before load is the baseline.
+    private var openingStyle = BackgroundStyle.default
+    private var openingRemoveStatusBar = true
+
+    var changedStyleThisSession: Bool { style != openingStyle }
+    var changedCropThisSession: Bool { removeStatusBar != openingRemoveStatusBar }
+    var addedArrowThisSession: Bool { !arrows.isEmpty }
+    var addedRedactionThisSession: Bool { !redactions.isEmpty }
     private var undoStack: [Snapshot] = []
     private var redoStack: [Snapshot] = []
 
@@ -54,6 +66,7 @@ final class EditorModel: ObservableObject {
         encoded = data
         applySize(ImagePrep.pixelSize(data))
         refreshPreview()
+        markSessionBaseline()
     }
 
     /// Keeps the file. Pixel size comes from the header; the only decoded image is the preview.
@@ -62,6 +75,17 @@ final class EditorModel: ObservableObject {
         encoded = Data()
         applySize(ImagePrep.pixelSize(fileURL))
         refreshPreview()
+        markSessionBaseline()
+    }
+
+    private func markSessionBaseline() {
+        openingStyle = style
+        openingRemoveStatusBar = removeStatusBar
+    }
+
+    /// 11b 「改小边距」: back to S5 with the padding slider in view. No value changes.
+    func openPaddingControl() {
+        tool = .style
     }
 
     func refreshPreview() {
@@ -86,7 +110,13 @@ final class EditorModel: ObservableObject {
     /// to reselect it in the app. It never returns a downscaled bitmap.
     func export(canTransferToApp: Bool) -> ExportAttempt? {
         guard pixelCount > 0, sourceURL != nil || !encoded.isEmpty else { return nil }
-        switch ExportFidelityRouter.decide(pixelWidth: pixelWidth, pixelHeight: pixelHeight, canTransferToApp: canTransferToApp) {
+        switch ExportFidelityRouter.decide(
+            pixelWidth: pixelWidth,
+            pixelHeight: pixelHeight,
+            canTransferToApp: canTransferToApp,
+            style: style,
+            scale: cropMatch.map { CGFloat($0.scale) }
+        ) {
         case .handOffOriginal:
             return .handoff
         case .reselectInApp:
@@ -105,11 +135,12 @@ final class EditorModel: ObservableObject {
     private func renderFullResolution() -> CGImage? {
         preview = nil
         let rendered: CGImage? = {
+            // Not cached: the decoded pixels land in the redacted buffer, not beside it.
             let full: CGImage?
             if let sourceURL {
-                full = ImagePrep.fullImage(sourceURL)
+                full = ImagePrep.fullImage(sourceURL, cached: false)
             } else {
-                full = ImagePrep.fullImage(encoded)
+                full = ImagePrep.fullImage(encoded, cached: false)
             }
             guard let full else { return nil }
             return render(full)
@@ -190,6 +221,22 @@ final class EditorModel: ObservableObject {
     func showToast(_ title: String, detail: String) {
         toastTitle = title
         toastDetail = detail
+    }
+
+    /// Single-line re-add toast. No subtitle. Success haptic. Cleared by `expireToast`.
+    func showReaddToast(_ title: String) {
+        toastTitle = title
+        toastDetail = nil
+        lastFeedbackIsSuccess = ReaddToast.playsSuccessHaptic
+        if ReaddToast.playsSuccessHaptic {
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+        }
+    }
+
+    func expireToast(after elapsed: TimeInterval) {
+        guard toastDetail == nil, ReaddToast.dismissAfter > 0, elapsed + 0.000_1 >= ReaddToast.dismissAfter else { return }
+        toastTitle = nil
+        toastDetail = nil
     }
 
     private func applySize(_ size: (width: Int, height: Int)?) {

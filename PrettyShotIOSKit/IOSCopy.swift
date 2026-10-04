@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import PrettyShotCore
 
@@ -45,7 +46,7 @@ enum IOSCopy {
     static let chipManualCrop = "手动裁"
     static let chipUndoCrop = "撤回"
     static let chipRemoveAgain = "去除"
-    static let chipDownsampled = "预览已降采样"
+    static let chipDownsampled = "大图 · 预览已降采样"
     static let arrowHint = "在空白处拖一条直线。短于 18pt 的拖动会忽略。"
     static let redactHint = "框选要打码的区域。导出时写入像素，不能还原。"
     static let redactRule = "编辑过程中可以撤销。存入相册或复制之后不能还原。"
@@ -59,7 +60,10 @@ enum IOSCopy {
     // MARK: - 导出 · 帧 10 / 14 / 32 / 33
 
     static let toastSaved = "已存入相册"
-    static let toastSavedDetail = "原图未改动"
+    /// Frame 10, extension only. The in-app line is `inAppSavedDetail`.
+    static let toastSavedDetail = "原图未改动 · 即将返回"
+    /// In-app save line. Not frame 10.
+    static let inAppSavedDetail = "原图未改动 · 已存为新图片"
     static let toastCopied = "已复制"
     static let toastCopiedDetail = "可直接粘贴到聊天、备忘录等"
     static let photoUsage = "用于把美化后的图片存为一张新照片。PrettyShot 不会读取、修改或删除你已有的照片。"
@@ -79,14 +83,20 @@ enum IOSCopy {
     static let memoryFailedBody = "可能还在 iCloud 中未下载、格式暂不支持，或图片过大导致内存不足。"
     static let pickAgain = "重新选图"
     static let backHome = "返回首页"
+    /// 选了多张、读出来的不够两张。单张打不开仍用 `memoryFailedTitle`。
+    static let multiUnreadableTitle = "有图片没读出来"
+    static let multiUnreadableBody = "可能还在 iCloud 中未下载，或文件已损坏。拼长图至少要 2 张，请重新选图。相册里的原图没动。"
 
     /// 帧 11。只出现在分享扩展，且只有能把原文件交给 App 时。主 App 不用这句。
     /// 交接只拷贝原文件，不带编辑样式，所以这里不写「样式会一起带过去」。
     static let largeTitle = "图片较大，去 App 里处理"
     static let largeBody = "这张图尺寸很大，在分享菜单里按原分辨率导出可能内存不足。为了不丢图，请在 PrettyShot App 中继续。"
     static let continueInApp = "在 App 中继续"
+    /// 帧 11b。默认样式放得下，用户这次改大的样式放不下。
+    static let largeStyleTitle = "按这个样式导出太大，去 App 里处理"
+    static let shrinkPadding = "改小边距"
     /// S10c。
-    static let handoffProgressTitle = "正在交给 PrettyShot..."
+    static let handoffProgressTitle = "正在交给 PrettyShot…"
     static let handoffProgressBody = "图片只在本机暂存，不上传。App 确认收到之前，暂存的副本不会删；相册里的原图始终不动。"
     static let copyingToStaging = "复制到本机暂存区"
     static let cancelHandoffNote = "取消 = 不交接，清掉这次暂存的副本\n相册里的原图没有被改动"
@@ -112,6 +122,10 @@ enum IOSCopy {
     static let handoffRetry = "再试一次"
     /// 帧 63b。图已经暂存，只是没能打开 App。没有「重试」。
     static func stagedTitle(_ count: Int) -> String { "已暂存 \(count) 张" }
+    /// 多张仍是拼接那句。单张不写「拼接」。
+    static func stagedBody(count: Int) -> String {
+        count <= 1 ? "打开 PrettyShot 即可继续，图片不会丢。" : stagedBody
+    }
     static let stagedBody = "打开 PrettyShot 即可继续拼接，图片不会丢。"
     static let stagedHint = "打开 App 后，首页会出现「继续上次分享」"
     /// S10f 拉不起 App。停在这一页，不进 S10d。
@@ -128,6 +142,10 @@ enum IOSCopy {
         "这张长图少了 \(ordinals.count) 张（\(missingList(ordinals))没读出来）"
     }
     static func addedBack(ordinal: Int, total: Int) -> String { "已加回第 \(ordinal) 张 · \(total) 张齐了" }
+    /// One shot is back and others are still missing. The banner stays until the last one returns.
+    static func addedBackStillMissing(ordinal: Int, stillMissing: Int) -> String {
+        "已加回第 \(ordinal) 张 · 还少 \(stillMissing) 张"
+    }
     static let continueStitch = "继续拼接"
     static let dismissPending = "不用了"
     static let bannerFootnote = "暂存只在本机 · 相册里的原图没动"
@@ -141,7 +159,10 @@ enum IOSCopy {
     static let multiStitch = "在 PrettyShot 中拼成长图"
     static let multiDetail = "拼接在 App 内完成，可以调整顺序、删掉某一张。扩展里不拼接。"
     static let multiFootnote = "若没有自动打开，手动打开 PrettyShot 即可继续。"
-    static let multiInlineFootnote = "当前签名不能把这些图交给 App。请打开 PrettyShot，用「拼长图」从相册再选一次。"
+    /// Frame 13. The app did not open from the read-failed page.
+    static let s12OpenFailedHint = "没能打开 PrettyShot。请从主屏幕打开它，在 App 里选图。"
+    /// S10f when a multi-image or PDF share cannot be handed off.
+    static let multiInlineFootnote = "这些图没法从分享菜单交给 App · 原图没动。请打开 PrettyShot，用「拼长图」从相册再选一次。"
     static func pdfShareTitle(count: Int) -> String {
         "收到 \(count) 个整页 PDF"
     }
@@ -154,7 +175,17 @@ enum IOSCopy {
     static let stitchResort = "按时间重排"
     static let stitchStart = "开始拼接"
     static let stitchRemoved = "已移除 1 张 · 原图未删除"
-    static let stitchSizeMismatch = "有的图尺寸不一致，拼接时被跳过。请用同一台手机的竖屏截图。"
+    static func stitchSizeMismatch(ordinals: [Int]) -> String {
+        let listed: String
+        if ordinals.count == 1 {
+            listed = "第 \(ordinals[0]) 张"
+        } else if ordinals.count > 1 {
+            listed = "第 " + ordinals.map(String.init).joined(separator: "、") + " 张"
+        } else {
+            listed = "有的图"
+        }
+        return "\(listed)尺寸不一致，拼接时被跳过。请用同一台手机的竖屏截图。"
+    }
     static let stitchPreviewNote = "预览可以缩小。拼接输入和导出走文件里的像素，这里不降采样。"
     static let keepOnce = "固定栏只保留一次"
     static let keepOnceDetail = "顶栏只留第 1 张 · 底栏只留最后 1 张"
@@ -282,8 +313,36 @@ enum IOSCopy {
     static let pdfPickedStub = "已选中 PDF。光栅化留到下一轮，这一步不会生成长图。"
 
     static let handoffBannerTitle = "继续上次分享"
-    static func handoffBannerDetail(count: Int) -> String {
-        "有 \(count) 张图从分享扩展暂存过来，可以接着拼。"
+    /// One share omits 「次分享」. `shares` is the number of staged batches, not a fixed 2 or 3.
+    static func handoffBannerDetail(count: Int, shares: Int = 1) -> String {
+        if shares <= 1 {
+            return "已暂存 \(count) 张"
+        }
+        return "已暂存 \(count) 张 · 来自 \(shares) 次分享"
+    }
+
+    static let continueEditing = "继续编辑"
+
+    /// A1b 主按钮。只暂存 1 张时打开的是编辑页，所以写「继续编辑」（PRD（35）b）。
+    static func handoffBannerAction(stagedCount: Int) -> String {
+        stagedCount == 1 ? continueEditing : continueStitch
+    }
+
+    static func handoffBannerAction(for pending: [HandoffTicket]) -> String {
+        handoffBannerAction(stagedCount: PendingShareResume.stagedFileCount(pending))
+    }
+
+    /// L3m / L9m「重新加入」按钮。只缺 1 张时同帧 67 不带序号；缺多张时每个按钮带序号（PRD（35）c）。
+    static func readdButton(ordinal: Int, missingCount: Int) -> String {
+        missingCount <= 1 ? readdShot : "\(readdShot) · 第 \(ordinal) 张"
+    }
+
+    static func handoffBannerDetail(for pending: [HandoffTicket]) -> String {
+        let imageShares = pending.filter { $0.kind != .pdf }.count
+        return handoffBannerDetail(
+            count: PendingShareResume.stagedFileCount(pending),
+            shares: imageShares
+        )
     }
 
     static let longEditorChip = "长图"
@@ -292,5 +351,148 @@ enum IOSCopy {
     /// 底栏。设计师若改 iOS 措辞，只改这个函数。
     static func bottomBar(_ remainder: StitchCopy.Remainder) -> String? {
         StitchCopy.bottomBar(remainder)
+    }
+}
+
+/// Frame 10 in the extension. No buttons; the extension dismisses itself.
+enum ExtensionSavedToast {
+    static let dismissAfter: TimeInterval = 1.6
+    static let hasButtons = false
+}
+
+enum LargeHandoffFrame: Equatable {
+    case frame11
+    case frame11a
+    case frame11b
+}
+
+/// Frame 11 / 11a. The grey 「如果没有自动打开」footer is not part of this frame.
+enum LargeHandoff {
+    static let editedNote = "App 会打开原图，样式和标注要重新调一下。"
+
+    static func body(changedStyle: Bool, changedCrop: Bool, addedArrow: Bool, addedRedaction: Bool) -> String {
+        let edited = changedStyle || changedCrop || addedArrow || addedRedaction
+        return edited ? IOSCopy.largeBody + editedNote : IOSCopy.largeBody
+    }
+
+    /// Frame 11 (default style is already over the gate) or 11b (only the current style is).
+    enum Kind: Equatable {
+        case large
+        case style
+    }
+
+    /// Nil when the export fits in the extension. Frame 11 when even the default style is over the gate;
+    /// 11b when only the style the user set is over it.
+    static func kind(pixelWidth: Int, pixelHeight: Int, style: BackgroundStyle, scale: CGFloat? = nil) -> Kind? {
+        guard !fits(pixelWidth, pixelHeight, style: style, scale: scale) else { return nil }
+        return fits(pixelWidth, pixelHeight, style: .default, scale: scale) ? .style : .large
+    }
+
+    static func title(_ kind: Kind) -> String {
+        switch kind {
+        case .large: return IOSCopy.largeTitle
+        case .style: return IOSCopy.largeStyleTitle
+        }
+    }
+
+    /// `padding` is the current padding in pt. Only a padding above the default 28 is named.
+    static func body(_ kind: Kind, padding: Int, edited: Bool) -> String {
+        let main: String
+        switch kind {
+        case .large:
+            main = IOSCopy.largeBody
+        case .style:
+            let named = padding > defaultPadding ? "（边距 \(padding)）" : ""
+            main = "这张图本身不大，但当前样式\(named)让导出尺寸变得很大，在分享菜单里按原分辨率导出可能内存不足。为了不丢图，请在 PrettyShot App 中继续。"
+        }
+        return edited ? main + editedNote : main
+    }
+
+    /// 「改小边距」 only on 11b, and only when padding 28 with everything else unchanged fits.
+    static func showsShrinkPadding(pixelWidth: Int, pixelHeight: Int, style: BackgroundStyle, scale: CGFloat? = nil) -> Bool {
+        guard kind(pixelWidth: pixelWidth, pixelHeight: pixelHeight, style: style, scale: scale) == .style else { return false }
+        var shrunk = style
+        shrunk.padding = BackgroundStyle.default.padding
+        return fits(pixelWidth, pixelHeight, style: shrunk, scale: scale)
+    }
+
+    private static var defaultPadding: Int { Int(BackgroundStyle.default.padding.rounded()) }
+
+    private static func fits(_ width: Int, _ height: Int, style: BackgroundStyle, scale: CGFloat?) -> Bool {
+        ExtensionMemoryBudget.plan(
+            pixelWidth: width,
+            pixelHeight: height,
+            canTransferToApp: true,
+            style: style,
+            scale: scale
+        ) == .fullResolutionInline
+    }
+
+    static func showsManualOpenFooter() -> Bool { false }
+
+    /// Which sheet `body` belongs to. Placeholder matching the current sheet: 11, or 11a with edits.
+    /// Frame 11b is (35).
+    static func frame(changedStyle: Bool, changedCrop: Bool, addedArrow: Bool, addedRedaction: Bool) -> LargeHandoffFrame {
+        let edited = changedStyle || changedCrop || addedArrow || addedRedaction
+        return edited ? .frame11a : .frame11
+    }
+
+    /// Cancel returns to the editor and keeps the edits from this session.
+    static func editsSurviveCancel(
+        padding: Int,
+        arrowCount: Int,
+        redactionCount: Int,
+        removeStatusBar: Bool
+    ) -> (padding: Int, arrowCount: Int, redactionCount: Int, removeStatusBar: Bool) {
+        (padding, arrowCount, redactionCount, removeStatusBar)
+    }
+}
+
+/// Where a re-add leaves the user, and how that screen draws 「已加回」.
+enum ReaddSurface: Equatable {
+    case editor
+    case order
+    case stitch
+}
+
+enum ReaddToast {
+    /// 70pt below the Dynamic Island, centered.
+    static let topOffset: CGFloat = 70
+    /// Generic success toast. Inside 1.6–1.8s.
+    static let dismissAfter: TimeInterval = 1.7
+    static let showsMintCheck = true
+    static let usesDarkBlur = true
+    static let playsSuccessHaptic = true
+    /// Single-line title. The in-app save line is not this toast's subtitle.
+    static var subtitle: String? { nil }
+
+    static func surfaceAfterReadd(from surface: ReaddSurface) -> ReaddSurface {
+        switch surface {
+        case .editor, .stitch:
+            return .stitch
+        case .order:
+            return .order
+        }
+    }
+
+    /// The screen the user is on after re-adding draws the toast. Editor does too,
+    /// so a re-add that stays put is still visible, and a dismissed toast is gone.
+    static func draws(on surface: ReaddSurface) -> Bool {
+        switch surface {
+        case .editor, .order, .stitch:
+            return true
+        }
+    }
+}
+
+/// Frame 11 cancel closes the sheet and leaves every edit as it was.
+enum Frame11Cancel {
+    static func preserved(
+        padding: Double,
+        arrowCount: Int,
+        redactionCount: Int,
+        removeStatusBar: Bool
+    ) -> (padding: Double, arrowCount: Int, redactionCount: Int, removeStatusBar: Bool) {
+        (padding, arrowCount, redactionCount, removeStatusBar)
     }
 }

@@ -16,8 +16,11 @@ struct AppRootView: View {
     @State private var pdfStub = false
     @State private var pending: [HandoffTicket] = []
     @State private var showSinglePicker = false
+    @State private var showStitchPicker = false
     @State private var showReaddPicker = false
     @State private var readdItem: PhotosPickerItem?
+    @State private var readdOrdinal: Int?
+    @State private var failedPickCount = 1
     @State private var showPhotoDenied = false
     @State private var missingOrdinals: [Int] = []
     @State private var expectedTotal = 0
@@ -36,9 +39,11 @@ struct AppRootView: View {
                             onCopy: copyEditor,
                             onSave: saveEditor,
                             missingLine: missingOrdinals.isEmpty ? nil : IOSCopy.missingEditorLine(missingOrdinals),
-                            onReadd: { showReaddPicker = true }
+                            missingOrdinals: missingOrdinals,
+                            onReadd: beginReadd
                         )
                             .navigationBarHidden(true)
+                            .task(id: editor.toastTitle) { await dismissReaddToastIfNeeded() }
                     case .order:
                         orderScreen
                     case .stitch:
@@ -48,9 +53,12 @@ struct AppRootView: View {
                             onBeautify: openFlattened,
                             onExportSegments: saveSegments,
                             missingLine: missingOrdinals.isEmpty ? nil : IOSCopy.missingBanner(missingOrdinals),
-                            onReadd: { showReaddPicker = true }
+                            missingOrdinals: missingOrdinals,
+                            onReadd: beginReadd,
+                            readdToastTitle: editor.toastDetail == nil ? editor.toastTitle : nil
                         )
                             .navigationBarHidden(true)
+                            .task(id: editor.toastTitle) { await dismissReaddToastIfNeeded() }
                     case .error:
                         openFailedPage
                     }
@@ -62,8 +70,12 @@ struct AppRootView: View {
             if url.host?.lowercased() == "pick" {
                 showSinglePicker = true
             }
+            if let ticket = HandoffLaunch.ticketToOpen(host: url.host, pending: pending) {
+                openHandedOff(ticket)
+            }
         }
         .photosPicker(isPresented: $showSinglePicker, selection: $singleItem, matching: .images, photoLibrary: .shared())
+        .photosPicker(isPresented: $showStitchPicker, selection: $stitchItems, maxSelectionCount: 20, matching: .images, photoLibrary: .shared())
         .photosPicker(isPresented: $showReaddPicker, selection: $readdItem, matching: .images, photoLibrary: .shared())
         .onChange(of: readdItem) { _, item in
             guard let item else { return }
@@ -147,14 +159,16 @@ struct AppRootView: View {
     private var orderScreen: some View {
         VStack(alignment: .leading, spacing: 12) {
             if !missingOrdinals.isEmpty {
-                HStack {
+                VStack(alignment: .leading, spacing: 8) {
                     Text(IOSCopy.missingBanner(missingOrdinals))
                         .font(.system(size: 13, weight: .semibold))
-                    Spacer()
-                    Button(IOSCopy.readdShot) { showReaddPicker = true }
-                        .font(.system(size: 13, weight: .semibold))
+                    ForEach(missingOrdinals, id: \.self) { ordinal in
+                        Button(IOSCopy.readdButton(ordinal: ordinal, missingCount: missingOrdinals.count)) { beginReadd(ordinal) }
+                            .font(.system(size: 13, weight: .semibold))
+                    }
                 }
                 .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .background(IOSTheme.warn.opacity(0.22), in: RoundedRectangle(cornerRadius: 12))
             }
             Text(IOSCopy.stitchOrderHint).font(.system(size: 13)).foregroundStyle(IOSTheme.muted)
@@ -171,36 +185,41 @@ struct AppRootView: View {
                     missingOrdinals = Array(Set(missingOrdinals + loaded.missingOrdinals)).sorted()
                 }
                 guard loaded.images.count >= 2 else {
-                    route = .error
+                    fail(.stitchStart(picked: ordered.count))
                     return
                 }
-                stitch.ingest(loaded.images)
+                ingestLoaded(loaded, from: ordered)
                 route = .stitch
             }
             .buttonStyle(BloomButtonStyle())
             .disabled(ordered.count < 2)
             .padding(.horizontal, 16)
         }
+        .overlay(alignment: .top) {
+            if ReaddToast.draws(on: .order), editor.toastDetail == nil, let title = editor.toastTitle {
+                SuccessToastBanner(title: title)
+            }
+        }
+        .task(id: editor.toastTitle) { await dismissReaddToastIfNeeded() }
         .navigationTitle(IOSCopy.stitchCardTitle)
     }
 
-    /// A1b. 「继续拼接」opens the staged shots. 「不用了」drops the staged copies only.
+    /// A1b. 「继续拼接」opens the staged shots (「继续编辑」 when only one). 「不用了」drops the staged copies only.
     private var continueShareBanner: some View {
-        let count = PendingShareResume.stagedFileCount(pending)
-        return VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 10) {
                 Image(systemName: "square.and.arrow.down")
                     .foregroundStyle(IOSTheme.charcoal)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(IOSCopy.handoffBannerTitle)
                         .font(.system(size: 16, weight: .semibold))
-                    Text(IOSCopy.handoffBannerDetail(count: max(count, 1)))
+                    Text(IOSCopy.handoffBannerDetail(for: pending))
                         .font(.system(size: 13))
                         .foregroundStyle(IOSTheme.muted)
                 }
             }
             HStack(spacing: 16) {
-                Button(IOSCopy.continueStitch, action: openPending)
+                Button(IOSCopy.handoffBannerAction(for: pending), action: openPending)
                     .font(.system(size: 15, weight: .semibold))
                     .padding(.horizontal, 16)
                     .frame(height: 36)
@@ -245,19 +264,26 @@ struct AppRootView: View {
         .presentationDetents([.medium])
     }
 
-    /// Frame 19. Reselect opens the system picker at the file's original resolution.
+    /// Frame 19 for one image. A multi-image pick that could not be read uses the multi-image copy
+    /// and reopens the multi-image picker. 「重新选图」 is the same button label either way.
     private var openFailedPage: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        let multi = InAppStitchLoader.reselectOpensMultiPicker(pickedCount: failedPickCount)
+        return VStack(alignment: .leading, spacing: 16) {
             Spacer()
-            Text(IOSCopy.memoryFailedTitle)
+            Text(InAppStitchLoader.errorTitle(pickedCount: failedPickCount))
                 .font(.system(size: 28, weight: .bold))
                 .foregroundStyle(IOSTheme.charcoal)
-            Text(IOSCopy.memoryFailedBody)
+            Text(InAppStitchLoader.errorBody(pickedCount: failedPickCount))
                 .font(.system(size: 16))
                 .foregroundStyle(IOSTheme.muted)
             Button(IOSCopy.pickAgain) {
                 route = nil
-                showSinglePicker = true
+                if multi {
+                    stitchItems = []
+                    showStitchPicker = true
+                } else {
+                    showSinglePicker = true
+                }
             }
             .buttonStyle(BloomButtonStyle())
             Button(IOSCopy.backHome) { route = nil }
@@ -286,7 +312,7 @@ struct AppRootView: View {
     private func loadSingle(_ item: PhotosPickerItem) async {
         do {
             guard let data = try await item.loadTransferable(type: Data.self), ImagePrep.fullImage(data) != nil else {
-                await MainActor.run { route = .error }
+                await MainActor.run { fail(.singlePick) }
                 return
             }
             await MainActor.run {
@@ -301,7 +327,7 @@ struct AppRootView: View {
                 route = .editor
             }
         } catch {
-            await MainActor.run { route = .error }
+            await MainActor.run { fail(.singlePick) }
         }
     }
 
@@ -310,7 +336,13 @@ struct AppRootView: View {
         var failed: [Int] = []
         for (index, item) in items.enumerated() {
             if let data = try? await item.loadTransferable(type: Data.self), ImagePrep.fullImage(data) != nil {
-                files.append(ShotFile(label: "\(index + 1)", data: data, capturedAt: ImagePrep.captureDate(data)))
+                let ordinal = index + 1
+                files.append(ShotFile(
+                    label: "\(ordinal)",
+                    data: data,
+                    capturedAt: ImagePrep.captureDate(data),
+                    originalOrdinal: ordinal
+                ))
             } else {
                 failed.append(index + 1)
             }
@@ -329,9 +361,15 @@ struct AppRootView: View {
             case .ready, .missing:
                 route = .order
             case .failed:
-                route = .error
+                fail(.multiPick(picked: items.count))
             }
         }
+    }
+
+    /// Every error path goes through here so the page never shows the copy for an older failure.
+    private func fail(_ failure: OpenFailure) {
+        failedPickCount = InAppStitchLoader.pickedCount(after: failure, previous: failedPickCount)
+        route = .error
     }
 
     private func refreshPending() {
@@ -345,19 +383,36 @@ struct AppRootView: View {
         refreshPending()
     }
 
+    private func dismissReaddToastIfNeeded() async {
+        guard editor.toastTitle != nil, editor.toastDetail == nil else { return }
+        let title = editor.toastTitle
+        try? await Task.sleep(nanoseconds: UInt64(ReaddToast.dismissAfter * 1_000_000_000))
+        guard editor.toastTitle == title else { return }
+        editor.expireToast(after: ReaddToast.dismissAfter)
+    }
+
+    private func beginReadd(_ ordinal: Int) {
+        readdOrdinal = ordinal
+        showReaddPicker = true
+    }
+
     private func loadReadd(_ item: PhotosPickerItem) async {
         guard let data = try? await item.loadTransferable(type: Data.self) else { return }
         await MainActor.run { insertReadded(data) }
     }
 
     private func insertReadded(_ data: Data) {
-        let step = MissingShotSession(ordinals: missingOrdinals, expectedTotal: expectedTotal).addingBackOne()
-        guard let ordinal = step.restored else { return }
+        guard let ordinal = readdOrdinal else { return }
+        let step = MissingShotSession(ordinals: missingOrdinals, expectedTotal: expectedTotal).addingBack(ordinal: ordinal)
+        guard step.restored == ordinal else { return }
+        readdOrdinal = nil
         let date = ImagePrep.captureDate(data)
-        let shot = ShotFile(label: "", data: data, capturedAt: date)
-        let mapped = ordered.map { OrderedShot(id: $0.id.uuidString, capturedAt: $0.capturedAt) }
+        let shot = ShotFile(label: "\(ordinal)", data: data, capturedAt: date, originalOrdinal: ordinal)
+        let mapped = ordered.map {
+            OrderedShot(id: $0.id.uuidString, capturedAt: $0.capturedAt, globalOrdinal: $0.originalOrdinal)
+        }
         let placed = ShotOrdering.inserting(
-            OrderedShot(id: shot.id.uuidString, capturedAt: date),
+            OrderedShot(id: shot.id.uuidString, capturedAt: date, globalOrdinal: ordinal),
             into: mapped,
             missingOrdinal: ordinal
         )
@@ -365,20 +420,31 @@ struct AppRootView: View {
         byID[shot.id.uuidString] = shot
         ordered = placed.compactMap { byID[$0.id] }
         for index in ordered.indices {
-            ordered[index].label = "\(index + 1)"
+            ordered[index].label = "\(ordered[index].originalOrdinal)"
         }
         let total = max(expectedTotal, ordered.count)
         missingOrdinals = step.session.ordinals
+        readdItem = nil
         if missingOrdinals.isEmpty {
-            editor.showToast(IOSCopy.addedBack(ordinal: ordinal, total: total), detail: IOSCopy.toastSavedDetail)
+            editor.showReaddToast(IOSCopy.addedBack(ordinal: ordinal, total: total))
+        } else {
+            editor.showReaddToast(IOSCopy.addedBackStillMissing(ordinal: ordinal, stillMissing: missingOrdinals.count))
         }
         if route == .stitch || route == .editor {
             let loaded = StitchSourceLoader.load(ordered.map(\.data))
             if loaded.images.count >= 2 {
-                stitch.ingest(loaded.images)
+                ingestLoaded(loaded, from: ordered)
                 route = .stitch
             }
         }
+    }
+
+    private func ingestLoaded(_ loaded: LoadedStitchSources, from files: [ShotFile]) {
+        let missingIndexes = Set(loaded.missingOrdinals)
+        let ordinals = files.enumerated().compactMap { index, file -> Int? in
+            missingIndexes.contains(index + 1) ? nil : file.originalOrdinal
+        }
+        stitch.ingest(loaded.images, ordinals: ordinals)
     }
 
     private func openSettings() {
@@ -387,24 +453,32 @@ struct AppRootView: View {
     }
 
     private func openPending() {
-        guard let ticket = PendingShareResume.ticket(pending) else { return }
-        let urls = (try? store.files(for: ticket.id)) ?? []
-        let loaded = urls.enumerated().compactMap { index, url -> ShotFile? in
-            guard let data = try? Data(contentsOf: url) else { return nil }
-            return ShotFile(label: "\(index + 1)", data: data, capturedAt: ImagePrep.captureDate(data))
-        }
-        guard !urls.isEmpty, loaded.count == urls.count else {
-            route = .error
-            return
-        }
+        let tickets = PendingShareResume.ordered(pending)
+        guard !tickets.isEmpty else { return }
+        let data: [Data]
         do {
-            try store.confirmReceipt(ticketID: ticket.id)
+            data = try ReceiptConfirmation.imageData(of: tickets, store: store)
         } catch {
-            route = .error
+            fail(.pendingResume(staged: PendingShareResume.stagedFileCount(tickets)))
             return
         }
+        guard !data.isEmpty else {
+            refreshPending()
+            return
+        }
+        let ordinals = PendingShareResume.globalFileOrdinals(tickets)
+        let loaded = data.enumerated().map { index, blob in
+            let ordinal = index < ordinals.count ? ordinals[index] : index + 1
+            return ShotFile(
+                label: "\(ordinal)",
+                data: blob,
+                capturedAt: ImagePrep.captureDate(blob),
+                originalOrdinal: ordinal
+            )
+        }
+        let missing = tickets.flatMap { $0.missingShots.map(\.ordinal) }
         let session = MissingShotSession.remember(
-            failedOrdinals: ticket.missingShots.map(\.ordinal),
+            failedOrdinals: missing,
             loadedCount: loaded.count
         )
         missingOrdinals = session.ordinals
@@ -419,9 +493,25 @@ struct AppRootView: View {
         }
     }
 
+    /// A4. The large image from frame 11 opens in the editor at full resolution.
+    /// If its file cannot be read, the ticket stays pending and the home banner still offers it.
+    private func openHandedOff(_ ticket: HandoffTicket) {
+        guard let data = try? ReceiptConfirmation.imageData(of: [ticket], store: store),
+              let first = data.first else {
+            refreshPending()
+            return
+        }
+        missingOrdinals = []
+        expectedTotal = 0
+        ordered = []
+        editor.load(first)
+        refreshPending()
+        route = .editor
+    }
+
     private func copyEditor() {
         guard let image = editor.exportOriginalResolution() else {
-            route = .error
+            fail(.editorExport)
             return
         }
         PhotoLibrarySaver.copyToPasteboard(image)
@@ -430,14 +520,14 @@ struct AppRootView: View {
 
     private func saveEditor() {
         guard let image = editor.exportOriginalResolution(), let data = ShotEncoder.pngData(image) else {
-            route = .error
+            fail(.editorExport)
             return
         }
         PhotoLibrarySaver.savePNG(data) { status in
             if PhotoSaveRouter.route(for: status) == .offerCopy {
                 showPhotoDenied = true
             } else {
-                editor.showToast(IOSCopy.toastSaved, detail: IOSCopy.toastSavedDetail)
+                editor.showToast(IOSCopy.toastSaved, detail: IOSCopy.inAppSavedDetail)
             }
         }
     }
@@ -456,7 +546,7 @@ struct AppRootView: View {
             PhotoLibrarySaver.savePNG(blob) { _ in
                 remaining -= 1
                 if remaining == 0 {
-                    editor.showToast(IOSCopy.toastSegments(blobs.count), detail: IOSCopy.toastSavedDetail)
+                    editor.showToast(IOSCopy.toastSegments(blobs.count), detail: IOSCopy.inAppSavedDetail)
                 }
             }
         }
@@ -468,6 +558,8 @@ private struct ShotFile: Identifiable {
     var label: String
     var data: Data
     var capturedAt: Date? = nil
+    /// Original 1-based position. Re-adding inserts by this, never by capture time.
+    var originalOrdinal: Int = 0
 }
 
 private enum AppRoute: Hashable {

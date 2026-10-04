@@ -64,11 +64,27 @@ public enum BeautifyRenderer {
         drawAnnotations: ((CGContext) -> Void)? = nil,
         overlay: ((CGContext) -> Void)? = nil
     ) {
+        draw(input, in: context, opaqueBase: false, drawAnnotations: drawAnnotations, overlay: overlay)
+    }
+
+    /// `opaqueBase` means every pixel of `input.base` has alpha 1. The clipped base then has exactly the
+    /// rounded rect's coverage as its alpha, so the shadow can come from that shape instead of a
+    /// canvas-sized transparency layer.
+    static func draw(
+        _ input: BeautifyInput,
+        in context: CGContext,
+        opaqueBase: Bool,
+        drawAnnotations: ((CGContext) -> Void)?,
+        overlay: ((CGContext) -> Void)?
+    ) {
         let layout = BeautifyRenderer.layout(for: input)
         let canvas = CGRect(origin: .zero, size: layout.canvasSize)
 
         context.saveGState()
-        context.interpolationQuality = .high
+        // A 1:1 device blit does not resample. High quality still allocates a filter
+        // buffer beside the shadow layer; nearest-neighbor matches those pixels.
+        // Scaled draws (and a zoomed editor canvas) keep the high-quality filter.
+        context.interpolationQuality = imageIsOneToOneDeviceBlit(input, context: context) ? .none : .high
 
         let imageClip: CGPath
         if let preset = input.background.preset {
@@ -77,13 +93,20 @@ public enum BeautifyRenderer {
                              layout.imageRect.width / 2, layout.imageRect.height / 2)
             imageClip = CGPath(roundedRect: layout.imageRect, cornerWidth: radius, cornerHeight: radius, transform: nil)
 
-            if input.background.shadow > 0 {
+            if input.background.shadow > 0, opaqueBase {
+                let metrics = shadowMetrics(amount: CGFloat(input.background.shadow) * input.scale, in: context)
+                castShapeShadow(imageClip, canvas: canvas, metrics: metrics, in: context)
+                drawBase(input, layout: layout, clip: imageClip, in: context)
+            } else if input.background.shadow > 0 {
                 let metrics = shadowMetrics(amount: CGFloat(input.background.shadow) * input.scale, in: context)
                 context.saveGState()
                 context.setShadow(offset: metrics.offset, blur: metrics.blur,
                                   color: CGColor(srgbRed: 0.17, green: 0.16, blue: 0.16, alpha: 0.32))
                 // Shadow the composited layer, so transparent window corners cast a correct shadow.
+                // The layer starts with its own interpolation. A 1:1 blit must set `.none` again
+                // or Core Graphics allocates a filter buffer beside this layer.
                 context.beginTransparencyLayer(auxiliaryInfo: nil)
+                context.interpolationQuality = imageIsOneToOneDeviceBlit(input, context: context) ? .none : .high
                 drawBase(input, layout: layout, clip: imageClip, in: context)
                 context.endTransparencyLayer()
                 context.restoreGState()
@@ -95,6 +118,7 @@ public enum BeautifyRenderer {
             drawBase(input, layout: layout, clip: imageClip, in: context)
         }
 
+        context.interpolationQuality = .high
         context.saveGState()
         context.addPath(imageClip)
         context.clip()
@@ -113,23 +137,53 @@ public enum BeautifyRenderer {
     }
 
     /// Renders to a new sRGB bitmap at output resolution.
+    /// The bitmap is the context's own buffer. `makeImage()` would keep a second canvas-sized
+    /// copy alive next to the shadow layer, which pushes a 1179×2556 export over the extension cap.
+    /// An opaque base (every screenshot) casts its shadow from the rounded rect, so no canvas-sized
+    /// transparency layer is allocated beside the canvas. The pixels are the same.
     public static func render(
         _ input: BeautifyInput,
         drawAnnotations: ((CGContext) -> Void)? = nil
     ) -> CGImage? {
-        let layout = BeautifyRenderer.layout(for: input)
-        let width = Int(layout.canvasSize.width.rounded(.up))
-        let height = Int(layout.canvasSize.height.rounded(.up))
-        guard width > 0, height > 0,
-              let space = CGColorSpace(name: CGColorSpace.sRGB),
-              let context = CGContext(
-                  data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
-                  space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-              ) else { return nil }
-        context.translateBy(x: 0, y: CGFloat(height))
-        context.scaleBy(x: 1, y: -1)
-        draw(input, in: context, drawAnnotations: drawAnnotations)
-        return context.makeImage()
+        // Checked before the canvas exists, so a provider copy made by the check is not alive beside it.
+        let opaqueBase = input.background.preset != nil && input.background.shadow > 0
+            && autoreleasepool { isOpaque(input.base) }
+        return autoreleasepool {
+            let layout = BeautifyRenderer.layout(for: input)
+            let width = Int(layout.canvasSize.width.rounded(.up))
+            let height = Int(layout.canvasSize.height.rounded(.up))
+            let bytesPerRow = (width * 4 + 15) & ~15
+            let byteCount = bytesPerRow * height
+            guard width > 0, height > 0, byteCount > 0,
+                  let space = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
+            let owned = OwnedBitmap(byteCount: byteCount)
+            guard let context = CGContext(
+                data: owned.baseAddress, width: width, height: height, bitsPerComponent: 8, bytesPerRow: bytesPerRow,
+                space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else { return nil }
+            context.translateBy(x: 0, y: CGFloat(height))
+            context.scaleBy(x: 1, y: -1)
+            draw(input, in: context, opaqueBase: opaqueBase, drawAnnotations: drawAnnotations, overlay: nil)
+            context.flush()
+            let info = Unmanaged.passRetained(owned).toOpaque()
+            guard let provider = CGDataProvider(
+                dataInfo: info, data: owned.baseAddress, size: byteCount,
+                releaseData: { info, _, _ in
+                    guard let info else { return }
+                    Unmanaged<OwnedBitmap>.fromOpaque(info).takeRetainedValue()
+                }
+            ) else {
+                Unmanaged<OwnedBitmap>.fromOpaque(info).takeRetainedValue()
+                return nil
+            }
+            return CGImage(
+                width: width, height: height,
+                bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: bytesPerRow,
+                space: space,
+                bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent
+            )
+        }
     }
 
     /// Draws a CGImage into a y-down context without flipping it upside down.
@@ -137,8 +191,28 @@ public enum BeautifyRenderer {
         context.saveGState()
         context.translateBy(x: rect.minX, y: rect.maxY)
         context.scaleBy(x: 1, y: -1)
-        context.draw(image, in: CGRect(origin: .zero, size: rect.size))
+        let dest = CGRect(origin: .zero, size: rect.size)
+        if isDevicePixelBlit(image, in: dest, context: context) {
+            context.interpolationQuality = .none
+        }
+        context.draw(image, in: dest)
         context.restoreGState()
+    }
+
+    private static func isDevicePixelBlit(_ image: CGImage, in rect: CGRect, context: CGContext) -> Bool {
+        let device = context.convertToDeviceSpace(rect)
+        return abs(abs(device.width) - CGFloat(image.width)) < 0.01
+            && abs(abs(device.height) - CGFloat(image.height)) < 0.01
+    }
+
+    /// True when `base` lands on exactly its own pixels in device space, so no resampling happens.
+    private static func imageIsOneToOneDeviceBlit(_ input: BeautifyInput, context: CGContext) -> Bool {
+        let layout = BeautifyRenderer.layout(for: input)
+        let size = input.baseSize ?? CGSize(width: input.base.width, height: input.base.height)
+        let rect = CGRect(origin: layout.canvasPoint(fromImage: .zero), size: size)
+        let device = context.convertToDeviceSpace(rect)
+        return abs(abs(device.width) - CGFloat(input.base.width)) < 0.01
+            && abs(abs(device.height) - CGFloat(input.base.height)) < 0.01
     }
 
     private static func drawBase(_ input: BeautifyInput, layout: RenderLayout, clip: CGPath, in context: CGContext) {
@@ -151,6 +225,62 @@ public enum BeautifyRenderer {
         context.restoreGState()
     }
 
+    /// Draws only the shadow of `shape`. The shape is filled outside the canvas and the shadow offset
+    /// brings it back, so the fill itself never lands. Same alpha mask as the clipped opaque base.
+    private static func castShapeShadow(
+        _ shape: CGPath,
+        canvas: CGRect,
+        metrics: (offset: CGSize, blur: CGFloat),
+        in context: CGContext
+    ) {
+        let shift = (canvas.width + metrics.blur * 4 + abs(metrics.offset.width)).rounded(.up)
+        let t = context.userSpaceToDeviceSpaceTransform
+        context.saveGState()
+        context.setShadow(
+            offset: CGSize(width: metrics.offset.width - shift * t.a, height: metrics.offset.height - shift * t.b),
+            blur: metrics.blur,
+            color: CGColor(srgbRed: 0.17, green: 0.16, blue: 0.16, alpha: 0.32)
+        )
+        context.translateBy(x: shift, y: 0)
+        context.addPath(shape)
+        context.setFillColor(CGColor(srgbRed: 0, green: 0, blue: 0, alpha: 1))
+        context.fillPath()
+        context.restoreGState()
+    }
+
+    /// True when the image declares no alpha, or is 8-bit RGBA whose alpha bytes are all 255.
+    /// Anything else (window shots with transparent corners, other layouts) is treated as not opaque.
+    static func isOpaque(_ image: CGImage) -> Bool {
+        switch image.alphaInfo {
+        case .none, .noneSkipFirst, .noneSkipLast:
+            return true
+        case .alphaOnly:
+            return false
+        case .premultipliedLast, .premultipliedFirst, .last, .first:
+            break
+        @unknown default:
+            return false
+        }
+        guard image.bitsPerComponent == 8, image.bitsPerPixel == 32,
+              let data = image.dataProvider?.data,
+              let bytes = CFDataGetBytePtr(data) else { return false }
+        let alphaLast = image.alphaInfo == .premultipliedLast || image.alphaInfo == .last
+        let little = image.bitmapInfo.contains(.byteOrder32Little)
+        let alphaOffset = alphaLast != little ? 3 : 0
+        let width = image.width
+        let bytesPerRow = image.bytesPerRow
+        guard CFDataGetLength(data) >= bytesPerRow * (image.height - 1) + width * 4 else { return false }
+        for y in 0..<image.height {
+            let row = bytes + y * bytesPerRow + alphaOffset
+            var x = 0
+            while x < width {
+                if row[x * 4] != 255 { return false }
+                x += 1
+            }
+        }
+        return true
+    }
+
     /// CG shadows are specified in device space (unaffected by the CTM), so derive a consistent
     /// "downwards, proportional" shadow for both the zoomed canvas and the 1:1 bitmap export.
     private static func shadowMetrics(amount: CGFloat, in context: CGContext) -> (offset: CGSize, blur: CGFloat) {
@@ -158,5 +288,21 @@ public enum BeautifyRenderer {
         let deviceScale = max(hypot(t.c, t.d), 0.0001)
         let down: CGFloat = t.d < 0 ? -1 : 1
         return (CGSize(width: 0, height: down * amount * 0.25 * deviceScale), amount * 0.6 * deviceScale)
+    }
+}
+
+/// Backing store for a rendered bitmap. Freed when the CGImage provider releases it.
+final class OwnedBitmap {
+    let baseAddress: UnsafeMutableRawPointer
+    let byteCount: Int
+
+    init(byteCount: Int) {
+        self.byteCount = byteCount
+        baseAddress = UnsafeMutableRawPointer.allocate(byteCount: byteCount, alignment: 16)
+        baseAddress.initializeMemory(as: UInt8.self, repeating: 0, count: byteCount)
+    }
+
+    deinit {
+        baseAddress.deallocate()
     }
 }

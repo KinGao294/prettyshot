@@ -13,23 +13,26 @@ final class StitchModel: ObservableObject {
     @Published var selectedSeam = 0
     @Published var manualAlign = false
     @Published var note = ""
+    @Published var skippedOrdinals: [Int] = []
     @Published var flattened: CGImage?
     @Published var scrollToDuplicate: String?
 
-    func ingest(_ images: [CGImage]) {
+    func ingest(_ images: [CGImage], ordinals: [Int] = []) {
         var stitcher = ScrollStitcher()
-        var skipped = 0
-        for image in images {
+        var skipped: [Int] = []
+        for (index, image) in images.enumerated() {
+            let ordinal = ordinals.count == images.count ? ordinals[index] : index + 1
             guard let frame = RGBAImage.fromCGImage(image) else {
-                skipped += 1
+                skipped.append(ordinal)
                 continue
             }
             if case .ignored = stitcher.ingest(frame) {
-                skipped += 1
+                skipped.append(ordinal)
             }
         }
         session = StitchSession(assembly: stitcher.takeAssembly())
-        note = skipped > 0 ? IOSCopy.stitchSizeMismatch : IOSCopy.stitchPreviewNote
+        skippedOrdinals = skipped
+        note = skipped.isEmpty ? IOSCopy.stitchPreviewNote : IOSCopy.stitchSizeMismatch(ordinals: skipped)
         if let seam = session.assembly.seams.first {
             overlap = seam.editorOverlap
         }
@@ -127,7 +130,9 @@ struct StitchScreen: View {
     var onBeautify: (CGImage) -> Void
     var onExportSegments: ([CGImage]) -> Void
     var missingLine: String?
-    var onReadd: () -> Void = {}
+    var missingOrdinals: [Int] = []
+    var onReadd: (Int) -> Void = { _ in }
+    var readdToastTitle: String? = nil
 
     var body: some View {
         VStack(spacing: 0) {
@@ -152,7 +157,7 @@ struct StitchScreen: View {
                             .scaledToFit()
                             .frame(maxWidth: .infinity)
                     }
-                    if model.note == IOSCopy.stitchSizeMismatch {
+                    if !model.skippedOrdinals.isEmpty {
                         Text(model.note)
                             .font(.system(size: 12))
                             .foregroundStyle(IOSTheme.muted)
@@ -192,9 +197,14 @@ struct StitchScreen: View {
         }
         .background(IOSTheme.paper)
         .overlay(alignment: .top) {
-            if let toast = model.session.toast {
-                StitchToastView(toast: toast, onAction: model.undoDuplicate)
-                    .transition(.move(edge: .top).combined(with: .opacity))
+            VStack(spacing: 8) {
+                if let toast = model.session.toast {
+                    StitchToastView(toast: toast, onAction: model.undoDuplicate)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
+                if ReaddToast.draws(on: .stitch), let readdToastTitle {
+                    SuccessToastBanner(title: readdToastTitle)
+                }
             }
         }
         .task(id: model.session.toast) { await model.expireToast() }
@@ -217,19 +227,24 @@ struct StitchScreen: View {
     }
 
     private func missingBanner(_ line: String) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: "exclamationmark.circle")
-                .foregroundStyle(IOSTheme.warn)
-            Text(line)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(IOSTheme.charcoal)
-            Spacer(minLength: 8)
-            Button(IOSCopy.readdShot, action: onReadd)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(IOSTheme.charcoal)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: "exclamationmark.circle")
+                    .foregroundStyle(IOSTheme.warn)
+                Text(line)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(IOSTheme.charcoal)
+                Spacer(minLength: 8)
+            }
+            ForEach(missingOrdinals, id: \.self) { ordinal in
+                Button(IOSCopy.readdButton(ordinal: ordinal, missingCount: missingOrdinals.count)) { onReadd(ordinal) }
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(IOSTheme.charcoal)
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(IOSTheme.warn.opacity(0.22))
     }
 

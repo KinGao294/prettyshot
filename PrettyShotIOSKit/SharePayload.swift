@@ -55,10 +55,8 @@ struct MissingShotSession: Equatable {
     var expectedTotal: Int
 
     /// `previous` is discarded. Failures from the last stitch do not carry into this pick.
-    static func beginNewPick(replacing previous: MissingShotSession, failedOrdinals: [Int], loadedCount: Int) -> MissingShotSession {
-        let next = remember(failedOrdinals: failedOrdinals, loadedCount: loadedCount)
-        let carried = next.ordinals.filter { previous.ordinals.contains($0) && !failedOrdinals.contains($0) }
-        return MissingShotSession(ordinals: next.ordinals.filter { !carried.contains($0) }, expectedTotal: next.expectedTotal)
+    static func beginNewPick(replacing _: MissingShotSession, failedOrdinals: [Int], loadedCount: Int) -> MissingShotSession {
+        remember(failedOrdinals: failedOrdinals, loadedCount: loadedCount)
     }
 
     static func remember(failedOrdinals: [Int], loadedCount: Int) -> MissingShotSession {
@@ -69,37 +67,47 @@ struct MissingShotSession: Equatable {
     /// Drops the earliest missing ordinal. The banner stays while any remain.
     func addingBackOne() -> (session: MissingShotSession, restored: Int?) {
         guard let restored = ordinals.first else { return (self, nil) }
-        return (
-            MissingShotSession(ordinals: Array(ordinals.dropFirst()), expectedTotal: expectedTotal),
-            restored
-        )
+        return addingBack(ordinal: restored)
+    }
+
+    /// Drops one copy of the ordinal the user actually put back.
+    func addingBack(ordinal: Int) -> (session: MissingShotSession, restored: Int?) {
+        guard let index = ordinals.firstIndex(of: ordinal) else { return (self, nil) }
+        var next = ordinals
+        next.remove(at: index)
+        return (MissingShotSession(ordinals: next, expectedTotal: expectedTotal), ordinal)
     }
 }
 
 struct OrderedShot: Equatable {
     var id: String
     var capturedAt: Date?
+    /// Position in the original share list. Capture time never decides order.
+    var globalOrdinal: Int? = nil
 }
 
 enum ShotOrdering {
-    /// Puts a re-added shot back by capture time. Without a date, it goes in the missing slot.
+    /// Inserts after every image with a smaller original ordinal. Never sorts by capture time.
+    /// Ids that are not ordinals, and shots with no `globalOrdinal`, fall back to the missing slot.
     static func inserting(_ shot: OrderedShot, into shots: [OrderedShot], missingOrdinal: Int) -> [OrderedShot] {
-        if shot.capturedAt != nil {
-            return (shots + [shot]).sorted { lhs, rhs in
-                switch (lhs.capturedAt, rhs.capturedAt) {
-                case let (left?, right?):
-                    return left < right
-                case (.some, .none):
-                    return true
-                case (.none, .some):
-                    return false
-                case (.none, .none):
-                    return false
-                }
+        func resolved(_ item: OrderedShot) -> Int? {
+            if let globalOrdinal = item.globalOrdinal { return globalOrdinal }
+            return Int(item.id)
+        }
+        let known = shots.contains { resolved($0) != nil } || resolved(shot) != nil
+        var next = shots
+        if !known {
+            let index = min(max(missingOrdinal - 1, 0), next.count)
+            next.insert(shot, at: index)
+            return next
+        }
+        let incoming = resolved(shot) ?? missingOrdinal
+        var index = 0
+        for (position, existing) in shots.enumerated() {
+            if let value = resolved(existing), value < incoming {
+                index = position + 1
             }
         }
-        var next = shots
-        let index = min(max(missingOrdinal - 1, 0), next.count)
         next.insert(shot, at: index)
         return next
     }
