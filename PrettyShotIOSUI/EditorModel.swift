@@ -83,6 +83,9 @@ final class EditorModel: ObservableObject {
         openingRemoveStatusBar = removeStatusBar
     }
 
+    /// 11b 「改小边距」. Placeholder until (35) a: does nothing yet.
+    func openPaddingControl() {}
+
     func refreshPreview() {
         let image: CGImage?
         if let sourceURL {
