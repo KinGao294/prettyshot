@@ -543,6 +543,39 @@ final class ExtensionMemoryBudgetTests: XCTestCase {
         )
     }
 
+    func testZZProbeStagePeaks() throws {
+        for (w, h) in [(1320, 2868), (1179, 2556), (1830, 1830)] {
+            let src = try solidImage(width: w, height: h)
+            let b0 = FootprintSampler.current()
+            let s1 = FootprintSampler(); s1.start()
+            let red = Redactor.apply([PixelRedaction(rect: CGRect(x: 40, y: 200, width: 120, height: 80))], to: src, scale: 3)
+            let p1 = s1.stop() - b0
+            let b1 = FootprintSampler.current()
+            let s2 = FootprintSampler(); s2.start()
+            let canvas = try XCTUnwrap(BeautifyRenderer.render(BeautifyInput(
+                base: red, crop: CGRect(x: 0, y: 0, width: red.width, height: red.height),
+                background: BackgroundStyle.default, scale: 3)))
+            let p2 = s2.stop() - b1
+            let b2 = FootprintSampler.current()
+            let s3 = FootprintSampler(); s3.start()
+            let enc = try XCTUnwrap(ShotEncoder.pngData(canvas))
+            let p3 = s3.stop() - b2
+            print("PRETTYSHOT_PROBE \(w)x\(h) srcMB=\(w*h*4/1_000_000) redact=\(p1) render=\(p2) encode=\(p3) totalFromB0=\(FootprintSampler.current() - b0) enc=\(enc.count)")
+            withExtendedLifetime((src, red, canvas)) {}
+        }
+        for (w, h) in [(1179, 2556), (1320, 2868)] {
+            let model = EditorModel()
+            model.load(try png(width: w, height: h))
+            model.addRedaction(rect: CGRect(x: 10, y: 10, width: 50, height: 30), in: CGSize(width: 393, height: 852))
+            let b = FootprintSampler.current()
+            let s = FootprintSampler(); s.start()
+            let attempt = model.exportOriginalResolution()
+            let enc = attempt.flatMap { ShotEncoder.pngData($0) }
+            let p = s.stop() - b
+            print("PRETTYSHOT_PROBE model \(w)x\(h) exportPeakDelta=\(p) ok=\(attempt != nil) enc=\(enc?.count ?? -1)")
+        }
+    }
+
     private final class FootprintSampler: @unchecked Sendable {
         private let lock = NSLock()
         private var running = false
