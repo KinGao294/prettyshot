@@ -576,6 +576,54 @@ final class ExtensionMemoryBudgetTests: XCTestCase {
         withExtendedLifetime(source) {}
     }
 
+    func testZZProbeShadow() throws {
+        let w = 1488, h = 3036
+        let rect = CGRect(x: 84, y: 84, width: 1320, height: 2868)
+        let shape = CGPath(roundedRect: rect, cornerWidth: 36, cornerHeight: 36, transform: nil)
+        let amount: CGFloat = 144, blur = amount * 0.6
+        func run(_ label: String, _ body: (CGContext) -> Void) -> [UInt8] {
+            var data = [UInt8](repeating: 0, count: w * h * 4)
+            let ctx = CGContext(data: &data, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                                space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+            ctx.translateBy(x: 0, y: CGFloat(h)); ctx.scaleBy(x: 1, y: -1)
+            ctx.setFillColor(CGColor(srgbRed: 0.9, green: 0.85, blue: 0.95, alpha: 1)); ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
+            let b = FootprintSampler.current()
+            let s = FootprintSampler(); s.start()
+            body(ctx)
+            let p = s.stop() - b
+            print("PRETTYSHOT_PROBE4 \(label) peak=\(p)")
+            return data
+        }
+        let color = CGColor(srgbRed: 0.17, green: 0.16, blue: 0.16, alpha: 0.32)
+        func shifted(_ ctx: CGContext, shift: CGFloat, clip: CGRect?) {
+            ctx.saveGState()
+            if let clip { ctx.clip(to: clip) }
+            ctx.setShadow(offset: CGSize(width: -shift, height: -amount * 0.25), blur: blur, color: color)
+            ctx.translateBy(x: shift, y: 0); ctx.addPath(shape); ctx.setFillColor(CGColor(srgbRed: 0, green: 0, blue: 0, alpha: 1)); ctx.fillPath()
+            ctx.restoreGState()
+        }
+        let ref = run("A-current") { shifted($0, shift: (CGFloat(w) + blur * 4).rounded(.up), clip: nil) }
+        _ = run("A-again") { shifted($0, shift: (CGFloat(w) + blur * 4).rounded(.up), clip: nil) }
+        let c = run("C-clip-canvas") { shifted($0, shift: (CGFloat(w) + blur * 4).rounded(.up), clip: CGRect(x: 0, y: 0, width: w, height: h)) }
+        let d = run("D-shift-small") { shifted($0, shift: (rect.maxX + blur * 3).rounded(.up), clip: nil) }
+        _ = run("B-noshift-visible") { ctx in
+            ctx.saveGState(); ctx.setShadow(offset: CGSize(width: 0, height: -amount * 0.25), blur: blur, color: color)
+            ctx.addPath(shape); ctx.setFillColor(CGColor(srgbRed: 0, green: 0, blue: 0, alpha: 1)); ctx.fillPath(); ctx.restoreGState()
+        }
+        let e = run("E-ring-clip") { ctx in
+            ctx.saveGState()
+            ctx.addRect(CGRect(x: 0, y: 0, width: w, height: h)); ctx.addPath(CGPath(rect: rect.insetBy(dx: 40, dy: 40), transform: nil))
+            ctx.clip(using: .evenOdd)
+            shifted(ctx, shift: (CGFloat(w) + blur * 4).rounded(.up), clip: nil)
+            ctx.restoreGState()
+        }
+        func cmp(_ n: String, _ x: [UInt8]) { var d = 0; for i in 0..<x.count where x[i] != ref[i] { d += 1 }; print("PRETTYSHOT_PROBE4 diff \(n)=\(d)") }
+        cmp("C", c); cmp("D", d)
+        var ringDiff = 0
+        for y in 0..<h { for x in 0..<w where !(rect.insetBy(dx: 40, dy: 40).contains(CGPoint(x: x, y: y))) { let i = (y * w + x) * 4; if e[i] != ref[i] || e[i+1] != ref[i+1] { ringDiff += 1 } } }
+        print("PRETTYSHOT_PROBE4 diff E-ring-outside-inset=\(ringDiff)")
+    }
+
     private final class FootprintSampler: @unchecked Sendable {
         private let lock = NSLock()
         private var running = false
