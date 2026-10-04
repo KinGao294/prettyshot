@@ -25,6 +25,8 @@ struct ShareFlowView: View {
     var showsReadFailedOpenHint = false
     /// S10f for a multi-image or PDF share that cannot hand files to the app.
     var showsMultiInlineFootnote = false
+    /// Frame 11 / 11a content from `ShareExportRoute.decide`.
+    var largeHandoff: LargeHandoffSheet? = nil
 
     var body: some View {
         ZStack {
@@ -369,8 +371,8 @@ struct ShareFlowView: View {
     /// Frame 11, extension only, and only when the original file can be handed off.
     private var largeSheet: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(IOSCopy.largeTitle).font(.system(size: 21, weight: .bold))
-            Text(LargeHandoff.body(
+            Text(largeHandoff?.title ?? IOSCopy.largeTitle).font(.system(size: 21, weight: .bold))
+            Text(largeHandoff?.body ?? LargeHandoff.body(
                 changedStyle: model.changedStyleThisSession,
                 changedCrop: model.changedCropThisSession,
                 addedArrow: model.addedArrowThisSession,
@@ -434,8 +436,9 @@ enum ShareExportRoute: Equatable {
     case largeSheet(LargeHandoffSheet)
     case reselectInApp
 
-    /// Placeholder matching `ShareViewController` and `ShareFlowView` today: over budget with a transfer
-    /// channel shows `IOSCopy.largeTitle` and `LargeHandoff.body`; without one it asks to reselect in the app.
+    /// The route `ShareViewController` acts on for copy and save. Over budget with a transfer channel it is
+    /// frame 11 (no edits) or 11a (any style, crop, arrow or redaction change), titled `IOSCopy.largeTitle`;
+    /// without a channel it asks to reselect in the app (S10f). The extension never shows 11b.
     static func decide(_ model: EditorModel, canTransferToApp: Bool) -> ShareExportRoute {
         switch ExportFidelityRouter.decide(
             pixelWidth: model.pixelWidth,
