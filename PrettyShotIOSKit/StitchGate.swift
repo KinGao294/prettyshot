@@ -22,38 +22,26 @@ struct StitchGate: Equatable {
     var overLimitLine: String?
     var unresolvedDuplicateIDs: [String]
     var stickyPrompt: String?
+    /// The shared bottom bar. `primaryTitle` and `bottomBar` above are read from it.
+    var bar: StitchBottomBar
 
     static func evaluate(
         _ assembly: ScrollAssembly,
         maxHeight: Int = ScrollOutputLimit.maxHeight,
         maxPixels: Int = ScrollOutputLimit.maxPixels
     ) -> StitchGate {
-        let remainder = assembly.reviewRemainder
+        let bar = StitchBottomBar.evaluate(assembly)
         let unresolvedDuplicates = assembly.duplicateCandidates.filter(\.isUnresolved).map(\.id)
-        let step: Step
-        let title: String
-        if remainder.unaligned > 0 {
-            step = .seams(remainder.unaligned)
-            title = IOSCopy.handleNext(remainder.unaligned)
-        } else if remainder.stickyPending {
-            step = .sticky
-            title = IOSCopy.handleNext(1)
-        } else if remainder.pendingConfirm > 0 {
-            step = .duplicates(remainder.pendingConfirm)
-            title = IOSCopy.confirmDuplicates(remainder.pendingConfirm)
-        } else {
-            step = .ready
-            title = IOSCopy.nextBeautify
-        }
         return StitchGate(
-            step: step,
-            canAdvance: step == .ready,
-            primaryTitle: title,
-            bottomBar: IOSCopy.bottomBar(remainder),
+            step: bar.step,
+            canAdvance: bar.canAdvance,
+            primaryTitle: bar.primaryTitle,
+            bottomBar: bar.line,
             overLimitPrompt: assembly.restoreExportPrompt,
             overLimitLine: assembly.overLimitLine(maxHeight: maxHeight, maxPixels: maxPixels),
             unresolvedDuplicateIDs: unresolvedDuplicates,
-            stickyPrompt: assembly.pendingSticky?.isUnresolved == true ? assembly.pendingSticky?.prompt : nil
+            stickyPrompt: assembly.pendingSticky?.isUnresolved == true ? assembly.pendingSticky?.prompt : nil,
+            bar: bar
         )
     }
 }
@@ -62,6 +50,8 @@ struct StitchSession: Equatable {
     var assembly: ScrollAssembly
     var maxHeight: Int
     var maxPixels: Int
+    /// Toast after a duplicate-segment choice, restore, or undo.
+    var toast: StitchToast?
 
     init(
         assembly: ScrollAssembly,
@@ -75,6 +65,25 @@ struct StitchSession: Equatable {
 
     var gate: StitchGate {
         StitchGate.evaluate(assembly, maxHeight: maxHeight, maxPixels: maxPixels)
+    }
+
+    var bottomBar: StitchBottomBar { gate.bar }
+
+    var duplicateCards: [DuplicateCardState] {
+        assembly.duplicateCandidates.enumerated().map { offset, candidate in
+            DuplicateCardState(
+                id: candidate.id,
+                displayIndex: offset + 1,
+                isPending: candidate.isUnresolved,
+                question: IOSCopy.duplicateQuestion,
+                detail: IOSCopy.duplicateDetail,
+                handledLabel: nil
+            )
+        }
+    }
+
+    func duplicateCard(_ id: String) -> DuplicateCardState? {
+        duplicateCards.first { $0.id == id }
     }
 
     mutating func align(seam index: Int, overlap: Int) {

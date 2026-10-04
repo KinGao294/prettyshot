@@ -104,6 +104,11 @@ final class StitchModel: ObservableObject {
         session.restoreDuplicate(id)
         refresh()
     }
+
+    func undoDuplicate() {
+        session.undoDuplicate()
+        refresh()
+    }
 }
 
 /// Frame 38 L4, plus the sheets behind 39–43 / 51–54.
@@ -152,14 +157,9 @@ struct StitchScreen: View {
                     Text(IOSCopy.exclusionStub).font(.system(size: 12)).foregroundStyle(IOSTheme.muted)
                     Text(IOSCopy.duplicateWiringNote).font(.system(size: 12)).foregroundStyle(IOSTheme.muted)
                     #endif
-                    Toggle(IOSCopy.keepOnce, isOn: Binding(
-                        get: { model.session.assembly.dedupeStickyBars },
-                        set: { model.setDedupe($0) }
-                    ))
-                    Text(IOSCopy.keepOnceDetail).font(.system(size: 12)).foregroundStyle(IOSTheme.muted)
-                    ForEach(model.session.assembly.duplicateCandidates) { candidate in
-                        duplicateCard(candidate)
-                            .id(candidate.id)
+                    ForEach(model.session.duplicateCards, id: \.id) { card in
+                        duplicateCard(card)
+                            .id(card.id)
                     }
                 }
                 .padding(16)
@@ -169,34 +169,40 @@ struct StitchScreen: View {
                 withAnimation { proxy.scrollTo(id, anchor: .center) }
             }
             }
-            VStack(spacing: 10) {
-                if let bar = model.session.gate.bottomBar {
-                    Text(bar)
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(IOSTheme.charcoal)
-                        .padding(12)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(IOSTheme.warn.opacity(0.2), in: RoundedRectangle(cornerRadius: 12))
-                }
-                HStack(spacing: 10) {
-                    Button(IOSCopy.exclusionBands) { }
-                        .buttonStyle(PlainCardButtonStyle())
-                    Button(model.session.gate.primaryTitle) {
-                        model.primaryTapped()
-                        if let image = model.flattened {
-                            onBeautify(image)
-                        }
+            StitchBottomBarView(
+                bar: model.session.bottomBar,
+                onSecondary: {},
+                onPrimary: {
+                    model.primaryTapped()
+                    if let image = model.flattened {
+                        onBeautify(image)
                     }
-                    .buttonStyle(BloomButtonStyle())
-                }
-            }
-            .padding(16)
-            .background(IOSTheme.paper)
+                },
+                sticky: { stickyRow }
+            )
         }
         .background(IOSTheme.paper)
+        .overlay(alignment: .top) {
+            if let toast = model.session.toast {
+                StitchToastView(toast: toast, onAction: model.undoDuplicate)
+            }
+        }
         .sheet(isPresented: $model.showChoices) { choiceSheet }
         .sheet(isPresented: $model.showSticky) { stickySheet }
         .sheet(isPresented: $model.showOverLimit) { overLimitSheet }
+    }
+
+    private var stickyRow: some View {
+        Toggle(isOn: Binding(
+            get: { model.session.assembly.dedupeStickyBars },
+            set: { model.setDedupe($0) }
+        )) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(IOSCopy.keepOnce).font(.system(size: 15, weight: .semibold))
+                Text(IOSCopy.keepOnceDetail).font(.system(size: 12)).foregroundStyle(IOSTheme.muted)
+            }
+        }
+        .tint(IOSTheme.mint)
     }
 
     private func missingBanner(_ line: String) -> some View {
@@ -216,23 +222,53 @@ struct StitchScreen: View {
         .background(IOSTheme.warn.opacity(0.22))
     }
 
-    private func duplicateCard(_ candidate: DuplicateSegmentCandidate) -> some View {
+    /// Pending: amber dashed card with the two choices (L7e). Handled: Mint hairline + 「✓ 已处理 · …｜还原」 (L7f).
+    private func duplicateCard(_ card: DuplicateCardState) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(IOSCopy.duplicateMark).font(.system(size: 12, weight: .semibold)).foregroundStyle(IOSTheme.warn)
-            Text(IOSCopy.duplicateQuestion).font(.system(size: 15, weight: .semibold))
-            Text(IOSCopy.duplicateDetail).font(.system(size: 12)).foregroundStyle(IOSTheme.muted)
-            if candidate.isUnresolved {
-                Button(IOSCopy.duplicateKeepOnce) { model.chooseDuplicate(candidate.id, choice: .keepOnce) }
-                    .buttonStyle(BloomButtonStyle())
-                Button(IOSCopy.duplicateKeepBoth) { model.chooseDuplicate(candidate.id, choice: .keepBoth) }
-                    .buttonStyle(PlainCardButtonStyle())
+            if card.isPending {
+                Text(IOSCopy.duplicateMark)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color(hex: 0x8A5A12))
+                Text(card.question).font(.system(size: 15, weight: .semibold))
+                Text(card.detail).font(.system(size: 12)).foregroundStyle(IOSTheme.muted)
+                HStack(spacing: 10) {
+                    Button(IOSCopy.duplicateKeepOnce) { model.chooseDuplicate(card.id, choice: .keepOnce) }
+                        .buttonStyle(BloomButtonStyle())
+                    Button(IOSCopy.duplicateKeepBoth) { model.chooseDuplicate(card.id, choice: .keepBoth) }
+                        .buttonStyle(PlainCardButtonStyle())
+                }
             } else {
-                Button(IOSCopy.duplicateRestore) { model.restoreDuplicate(candidate.id) }
-                    .buttonStyle(PlainCardButtonStyle())
+                HStack(spacing: 8) {
+                    if let handled = card.handledLabel {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundStyle(Color(hex: 0x4F8F7E))
+                        Text(handled)
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Color(hex: 0x4F8F7E))
+                    }
+                    Button(IOSCopy.duplicateRestore) { model.restoreDuplicate(card.id) }
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Color(hex: 0xB0505E))
+                        .padding(.horizontal, 10)
+                        .frame(height: 28)
+                        .background(IOSTheme.bloom.opacity(0.25), in: Capsule())
+                }
+                .padding(.horizontal, 12)
+                .frame(height: 36)
+                .background(IOSTheme.card, in: Capsule())
+                .overlay(Capsule().stroke(IOSTheme.mint))
             }
         }
         .padding(12)
-        .background(IOSTheme.card, in: RoundedRectangle(cornerRadius: 14))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(card.isPending ? Color(hex: 0xFFFCF5) : Color.clear, in: RoundedRectangle(cornerRadius: 14))
+        .overlay {
+            if card.isPending {
+                RoundedRectangle(cornerRadius: 14)
+                    .stroke(IOSTheme.warn, style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+            }
+        }
     }
 
     /// Frame 51 when a suggestion exists. Frame 39 when the seam has no reliable overlap.
