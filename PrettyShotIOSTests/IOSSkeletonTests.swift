@@ -553,6 +553,10 @@ final class ExtensionMemoryBudgetTests: XCTestCase {
         let source = try solidImage(width: width, height: height)
         let sourceBytes = Int64(width * height * ExtensionMemoryBudget.bytesPerPixel)
         let slack = Int64(2 * 1024 * 1024)
+        // A `makeImage()` source is only charged to this process once its pixels are first read
+        // (CI run 37166713292: +15.1MB whoever reads it). Read it before sampling, so the numbers
+        // below are what redaction itself holds.
+        XCTAssertGreaterThanOrEqual(CFDataGetLength(try XCTUnwrap(source.dataProvider?.data)), Int(sourceBytes))
         let before = FootprintSampler.current()
         let sampler = FootprintSampler()
         sampler.start()
