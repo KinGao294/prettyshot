@@ -81,9 +81,7 @@ public enum Redactor {
             ) else { return image }
             canvas.interpolationQuality = .none
             canvas.setBlendMode(.copy)
-            if !copyRows(of: image, into: owned, bytesPerRow: bytesPerRow) {
-                canvas.draw(image, in: extent)
-            }
+            canvas.draw(image, in: extent)
 
             if !planned.isEmpty {
                 let roi = area.integral.intersection(extent)
@@ -115,26 +113,6 @@ public enum Redactor {
             ) else { return image }
             return detached
         }
-    }
-
-    /// Copies the source rows when they already have the buffer's layout (8-bit premultiplied RGBA, sRGB).
-    /// Drawing the source instead makes Core Graphics keep a cached full-size copy beside it for as long
-    /// as the source lives. Returns false for any other layout; the caller draws it.
-    private static func copyRows(of image: CGImage, into bitmap: OwnedBitmap, bytesPerRow: Int) -> Bool {
-        guard image.bitsPerComponent == 8, image.bitsPerPixel == 32,
-              image.alphaInfo == .premultipliedLast,
-              !image.bitmapInfo.contains(.byteOrder32Little),
-              image.colorSpace?.name == CGColorSpace.sRGB,
-              let data = image.dataProvider?.data,
-              let bytes = CFDataGetBytePtr(data) else { return false }
-        let rowBytes = image.width * 4
-        let sourceRowBytes = image.bytesPerRow
-        guard image.height > 0, sourceRowBytes >= rowBytes,
-              CFDataGetLength(data) >= sourceRowBytes * (image.height - 1) + rowBytes else { return false }
-        for row in 0..<image.height {
-            (bitmap.baseAddress + row * bytesPerRow).copyMemory(from: bytes + row * sourceRowBytes, byteCount: rowBytes)
-        }
-        return true
     }
 
     /// Runs the redaction filters over `roi` only. `roi` covers every redacted rect plus the
