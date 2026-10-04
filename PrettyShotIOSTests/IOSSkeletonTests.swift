@@ -1040,3 +1040,129 @@ final class StitchDuplicateReviewTests: XCTestCase {
         )
     }
 }
+
+/// Frames 59–60 (L7h / L7i). Same bar as L7e–L7g; only its state changes.
+final class StitchBottomBarStateTests: XCTestCase {
+    func testL7hAllHandledHidesTheGateAndOffersBeautify() {
+        var session = StitchSession(assembly: fourShotAssembly(choices: [.keepOnce, nil]))
+        session.resolveDuplicate("dup-b", choice: .keepBoth)
+
+        let bar = session.bottomBar
+        XCTAssertNil(bar.line)
+        XCTAssertTrue(bar.isGateHidden)
+        XCTAssertTrue(bar.items.isEmpty)
+        XCTAssertEqual(bar.count, 0)
+        XCTAssertEqual(bar.step, .ready)
+        XCTAssertEqual(bar.primaryTitle, "下一步 · 美化")
+        XCTAssertTrue(bar.canAdvance)
+        XCTAssertEqual(session.gate.bottomBar, nil)
+        XCTAssertEqual(session.duplicateCard("dup-a")?.handledLabel, "已处理 · 只保留一次")
+        XCTAssertEqual(session.duplicateCard("dup-b")?.handledLabel, "已处理 · 都保留")
+        XCTAssertEqual(session.toast, StitchToast(title: "第 2 处重复段：都保留", detail: "重复段都处理完了", actionTitle: "撤销"))
+    }
+
+    func testL7hUndoBringsTheGateBack() {
+        var session = StitchSession(assembly: fourShotAssembly(choices: [.keepOnce, nil]))
+        session.resolveDuplicate("dup-b", choice: .keepBoth)
+        session.undoDuplicate()
+        XCTAssertEqual(
+            session.bottomBar.line,
+            "⚠ 还有 1 处没处理（待确认 1）。为了不拼错，处理完才能继续——不会静默拼接。"
+        )
+        XCTAssertEqual(session.bottomBar.primaryTitle, "先确认 1 处重复段")
+        XCTAssertEqual(session.toast, StitchToast(title: "已撤销", detail: "待确认还剩 1 处", actionTitle: nil))
+    }
+
+    func testL7hPrimaryTapFlattensOnlyWhenReady() {
+        let model = StitchModel()
+        model.session = StitchSession(assembly: fourShotAssembly(choices: [.keepOnce, .keepBoth]))
+        XCTAssertTrue(model.session.bottomBar.canAdvance)
+        model.primaryTapped()
+        XCTAssertNotNil(model.flattened)
+        XCTAssertNil(model.scrollToDuplicate)
+    }
+
+    func testL7iDuplicateAndStickyAreTwoSeparateItems() {
+        var assembly = fourShotAssembly(choices: [nil])
+        assembly.pendingSticky = PendingStickyConfirmation(headerRows: 8, footerRows: 0, seamCount: 3, keepOnce: nil)
+        var session = StitchSession(assembly: assembly)
+
+        let bar = session.bottomBar
+        XCTAssertEqual(bar.items, [
+            StitchBottomBar.Item(kind: .duplicates, count: 1, label: "待确认 1"),
+            StitchBottomBar.Item(kind: .sticky, count: 1, label: "固定栏待确认 1"),
+        ])
+        XCTAssertEqual(bar.count, 2)
+        XCTAssertEqual(
+            bar.line,
+            "⚠ 还有 2 处没处理（待确认 1 · 固定栏待确认 1）。为了不拼错，处理完才能继续——不会静默拼接。"
+        )
+        XCTAssertEqual(bar.step, .sticky)
+        XCTAssertEqual(bar.primaryTitle, "处理下一处 · 1")
+        XCTAssertFalse(bar.primaryTitle.contains("先确认"))
+        XCTAssertFalse(bar.canAdvance)
+
+        session.confirmSticky(keepOnce: true)
+        XCTAssertEqual(session.bottomBar.items.map(\.kind), [.duplicates])
+        XCTAssertEqual(session.bottomBar.primaryTitle, "先确认 1 处重复段")
+        XCTAssertEqual(
+            session.bottomBar.line,
+            "⚠ 还有 1 处没处理（待确认 1）。为了不拼错，处理完才能继续——不会静默拼接。"
+        )
+    }
+
+    func testL7iChoosingTheDuplicateFirstLeavesOnlyTheStickyItem() {
+        var assembly = fourShotAssembly(choices: [nil])
+        assembly.pendingSticky = PendingStickyConfirmation(headerRows: 8, footerRows: 0, seamCount: 3, keepOnce: nil)
+        var session = StitchSession(assembly: assembly)
+        session.resolveDuplicate("dup-a", choice: .keepOnce)
+
+        XCTAssertEqual(session.bottomBar.items.map(\.label), ["固定栏待确认 1"])
+        XCTAssertEqual(
+            session.bottomBar.line,
+            "⚠ 还有 1 处没处理（固定栏待确认 1）。为了不拼错，处理完才能继续——不会静默拼接。"
+        )
+        XCTAssertEqual(session.bottomBar.primaryTitle, "处理下一处 · 1")
+        // The toast only counts duplicates; the sticky bar stays on the bar.
+        XCTAssertEqual(session.toast, StitchToast(title: "第 1 处重复段：只保留一次", detail: "重复段都处理完了", actionTitle: "撤销"))
+    }
+
+    func testAllFourStatesShareOneBarType() {
+        // L4 / L7e / L7i / L7h all come out of StitchBottomBar.evaluate; the gate just mirrors it.
+        let seams = ScrollAssembly(seams: [ScrollSeam(kind: .needsAlignment, suggestedOverlap: 4)])
+        for assembly in [seams, fourShotAssembly(choices: [nil]), ScrollAssembly()] {
+            let gate = StitchGate.evaluate(assembly)
+            XCTAssertEqual(gate.bar, StitchBottomBar.evaluate(assembly))
+            XCTAssertEqual(gate.primaryTitle, gate.bar.primaryTitle)
+            XCTAssertEqual(gate.bottomBar, gate.bar.line)
+        }
+        XCTAssertEqual(StitchBottomBar.evaluate(seams).items.map(\.label), ["待对齐 1"])
+        XCTAssertEqual(StitchBottomBar.evaluate(seams).primaryTitle, "处理下一处 · 1")
+    }
+
+    /// Same layout as StitchDuplicateReviewTests: shots 1–4 joined at rows 10 / 20 / 30, shot 5 behind an aligned seam.
+    private func fourShotAssembly(choices: [DuplicateSegmentChoice?]) -> ScrollAssembly {
+        let image = RGBAImage(width: 4, height: 40, pixels: [UInt8](repeating: 255, count: 4 * 40 * 4))
+        let tail = RGBAImage(width: 4, height: 8, pixels: [UInt8](repeating: 255, count: 4 * 8 * 4))
+        let ids = ["dup-a", "dup-b"]
+        let rows = [10, 20]
+        let candidates = choices.enumerated().map { index, choice in
+            DuplicateSegmentCandidate(
+                id: ids[index],
+                choice: choice,
+                seamNumber: index + 1,
+                rowCount: 2,
+                segmentIndex: 0,
+                startRow: rows[index]
+            )
+        }
+        return ScrollAssembly(
+            segments: [
+                ScrollSegment(image: image, confidentSeamYs: [10, 20, 30]),
+                ScrollSegment(image: tail, confidentSeamYs: []),
+            ],
+            seams: [ScrollSeam(kind: .aligned(overlap: 0), suggestedOverlap: 0)],
+            duplicateCandidates: candidates
+        )
+    }
+}
