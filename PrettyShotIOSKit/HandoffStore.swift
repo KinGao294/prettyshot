@@ -254,7 +254,6 @@ enum PendingShareResume {
     }
 }
 
-/// Reads every image first, then confirms. A later delete still returns the bytes already read.
 /// What the app opens for `prettyshot://<host>`.
 enum HandoffLaunch {
     static let handoffHost = "handoff"
@@ -269,6 +268,7 @@ enum HandoffLaunch {
     }
 }
 
+/// Reads every image first, then confirms. A later delete still returns the bytes already read.
 enum ReceiptConfirmation {
     static func imageData(of tickets: [HandoffTicket], store: HandoffStore) throws -> [Data] {
         let ordered = PendingShareResume.ordered(tickets)
