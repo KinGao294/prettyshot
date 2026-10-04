@@ -543,6 +543,35 @@ final class ExtensionMemoryBudgetTests: XCTestCase {
         )
     }
 
+    /// (36) Redaction keeps one full-size buffer. Drawing the source through Core Graphics also left
+    /// a cached full-size copy attached to the source for as long as the source lived.
+    func testRedactionHoldsOneFullSizeBuffer() throws {
+        // Core Image setup happens on first use. Do it here so test order does not matter.
+        _ = Redactor.apply([PixelRedaction(rect: CGRect(x: 0, y: 0, width: 8, height: 8))], to: try solidImage(width: 16, height: 16), scale: 1)
+        let width = 1320
+        let height = 2868
+        let source = try solidImage(width: width, height: height)
+        let sourceBytes = Int64(width * height * ExtensionMemoryBudget.bytesPerPixel)
+        let slack = Int64(2 * 1024 * 1024)
+        let before = FootprintSampler.current()
+        let sampler = FootprintSampler()
+        sampler.start()
+        var redacted: CGImage? = Redactor.apply(
+            [PixelRedaction(rect: CGRect(x: 40, y: 200, width: 120, height: 80))],
+            to: source,
+            scale: 3
+        )
+        let peak = sampler.stop() - before
+        XCTAssertEqual(redacted?.width, width)
+        XCTAssertEqual(redacted?.height, height)
+        redacted = nil
+        let retained = FootprintSampler.current() - before
+        print("PRETTYSHOT_REDACT_PEAK 1320x2868 peak=\(peak) retained=\(retained) sourceBytes=\(sourceBytes)")
+        XCTAssertLessThanOrEqual(peak, sourceBytes + slack)
+        XCTAssertLessThanOrEqual(retained, slack)
+        withExtendedLifetime(source) {}
+    }
+
     private final class FootprintSampler: @unchecked Sendable {
         private let lock = NSLock()
         private var running = false
