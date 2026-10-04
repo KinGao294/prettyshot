@@ -224,6 +224,32 @@ enum IOSCopy {
         "\(shotPairTitle(first, second))已对齐 · 重复段已重新识别，\(pending) 处待确认"
     }
 
+    static func duplicateChoiceName(_ choice: DuplicateSegmentChoice) -> String {
+        choice == .keepOnce ? duplicateKeepOnce : duplicateKeepBoth
+    }
+
+    /// L7f 胶囊。✓ 由界面画，不写进文案。
+    static func duplicateHandled(_ choice: DuplicateSegmentChoice) -> String {
+        "已处理 · \(duplicateChoiceName(choice))"
+    }
+
+    /// L7f / L7h toast 标题。n = 卡片顺序（1 起）。
+    static func duplicateChoiceToast(index: Int, choice: DuplicateSegmentChoice) -> String {
+        "第 \(index) 处重复段：\(duplicateChoiceName(choice))"
+    }
+
+    /// L7g toast 标题。
+    static func duplicateRestoredToast(index: Int) -> String {
+        "第 \(index) 处重复段已还原为待确认"
+    }
+
+    /// toast 小字。只数重复段。
+    static func duplicateRemaining(_ pending: Int) -> String {
+        "待确认还剩 \(pending) 处"
+    }
+
+    static let undone = "已撤销"
+
     static let duplicateQuestion = "这一行出现了两次"
     static let duplicateDetail = "程序判断不了是重叠还是本来就重复"
     static let duplicateKeepOnce = "只保留一次"

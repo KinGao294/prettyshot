@@ -71,13 +71,19 @@ struct StitchSession: Equatable {
 
     var duplicateCards: [DuplicateCardState] {
         assembly.duplicateCandidates.enumerated().map { offset, candidate in
-            DuplicateCardState(
+            let detail: String
+            if let pair = shotPair(for: candidate) {
+                detail = IOSCopy.duplicateSeamDetail(first: pair.0, second: pair.1)
+            } else {
+                detail = IOSCopy.duplicateDetail
+            }
+            return DuplicateCardState(
                 id: candidate.id,
                 displayIndex: offset + 1,
                 isPending: candidate.isUnresolved,
                 question: IOSCopy.duplicateQuestion,
-                detail: IOSCopy.duplicateDetail,
-                handledLabel: nil
+                detail: detail,
+                handledLabel: candidate.choice.map(IOSCopy.duplicateHandled)
             )
         }
     }
@@ -86,18 +92,36 @@ struct StitchSession: Equatable {
         duplicateCards.first { $0.id == id }
     }
 
+    /// Absolute shot numbers around the join a candidate sits under.
+    /// Counted from the segments, so an unaligned seam earlier in the stack does not shift them.
+    func shotPair(for candidate: DuplicateSegmentCandidate) -> (Int, Int)? {
+        let segments = assembly.segments
+        if segments.indices.contains(candidate.segmentIndex),
+           let join = segments[candidate.segmentIndex].confidentSeamYs.firstIndex(of: candidate.startRow) {
+            let shotsBefore = segments[..<candidate.segmentIndex].reduce(0) { $0 + $1.confidentSeamYs.count + 1 }
+            let first = shotsBefore + join + 1
+            return (first, first + 1)
+        }
+        guard candidate.seamNumber > 0 else { return nil }
+        return (candidate.seamNumber, candidate.seamNumber + 1)
+    }
+
     mutating func align(seam index: Int, overlap: Int) {
         assembly.align(seam: index, overlap: overlap)
+        toast = nil
     }
 
     mutating func joinAsIs(seam index: Int) {
         assembly.joinAsIs(seam: index)
+        toast = nil
     }
 
     /// Puts the overlap back on the automatic suggestion.
     /// Re-running duplicate detection is left to the stitching PRs; this only calls Core's current API.
     mutating func restoreAuto(seam index: Int) {
         assembly.restoreAutoAlignment(seam: index)
+        // Re-detect clears the undo stack, so an old 「撤销」 must not stay on screen.
+        toast = nil
     }
 
     mutating func confirmSticky(keepOnce: Bool) {
@@ -116,15 +140,40 @@ struct StitchSession: Equatable {
     }
 
     mutating func resolveDuplicate(_ id: String, choice: DuplicateSegmentChoice) {
+        let before = assembly.duplicateUndoCount
         assembly.resolveDuplicateCandidate(id, choice: choice)
+        guard assembly.duplicateUndoCount > before, let index = displayIndex(of: id) else { return }
+        toast = StitchToast(
+            title: IOSCopy.duplicateChoiceToast(index: index, choice: choice),
+            detail: IOSCopy.duplicateRemaining(assembly.pendingDuplicateConfirmCount),
+            actionTitle: IOSCopy.undo
+        )
     }
 
     mutating func restoreDuplicate(_ id: String) {
+        let before = assembly.duplicateUndoCount
         assembly.restoreDuplicateCandidate(id)
+        guard assembly.duplicateUndoCount > before, let index = displayIndex(of: id) else { return }
+        toast = StitchToast(
+            title: IOSCopy.duplicateRestoredToast(index: index),
+            detail: IOSCopy.duplicateRemaining(assembly.pendingDuplicateConfirmCount),
+            actionTitle: IOSCopy.undo
+        )
     }
 
     mutating func undoDuplicate() {
+        let before = assembly.duplicateUndoCount
         assembly.undoLastDuplicateCandidateChoice()
+        guard assembly.duplicateUndoCount < before else { return }
+        toast = StitchToast(
+            title: IOSCopy.undone,
+            detail: IOSCopy.duplicateRemaining(assembly.pendingDuplicateConfirmCount),
+            actionTitle: nil
+        )
+    }
+
+    private func displayIndex(of id: String) -> Int? {
+        assembly.duplicateCandidates.firstIndex { $0.id == id }.map { $0 + 1 }
     }
 }
 

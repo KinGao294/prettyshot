@@ -109,6 +109,15 @@ final class StitchModel: ObservableObject {
         session.undoDuplicate()
         refresh()
     }
+
+    /// Long enough to reach 「撤销」. A newer toast restarts the wait; the undo stack itself stays.
+    @MainActor
+    func expireToast(after seconds: Double = 4) async {
+        guard let shown = session.toast else { return }
+        try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+        guard !Task.isCancelled, session.toast == shown else { return }
+        withAnimation { session.toast = nil }
+    }
 }
 
 /// Frame 38 L4, plus the sheets behind 39–43 / 51–54.
@@ -185,8 +194,10 @@ struct StitchScreen: View {
         .overlay(alignment: .top) {
             if let toast = model.session.toast {
                 StitchToastView(toast: toast, onAction: model.undoDuplicate)
+                    .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
+        .task(id: model.session.toast) { await model.expireToast() }
         .sheet(isPresented: $model.showChoices) { choiceSheet }
         .sheet(isPresented: $model.showSticky) { stickySheet }
         .sheet(isPresented: $model.showOverLimit) { overLimitSheet }
