@@ -57,6 +57,12 @@ final class ShareViewController: UIViewController {
             onDismissLarge: { [weak self] in
                 self?.keepEditsAndDismissLarge()
             },
+            onShrinkPadding: { [weak self] in
+                // 11b: same as 「取消」 (all edits kept), then S5 with the padding slider in view.
+                self?.keepEditsAndDismissLarge()
+                self?.editor.openPaddingControl()
+                self?.refresh()
+            },
             onDismissDenied: { [weak self] in
                 self?.showsDenied = false
                 self?.phase = .editor

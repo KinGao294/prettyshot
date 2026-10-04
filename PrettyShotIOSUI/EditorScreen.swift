@@ -24,7 +24,7 @@ struct EditorScreen: View {
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(IOSTheme.charcoal)
                     ForEach(missingOrdinals, id: \.self) { ordinal in
-                        Button("\(IOSCopy.readdShot) · 第 \(ordinal) 张") { onReadd(ordinal) }
+                        Button(IOSCopy.readdButton(ordinal: ordinal, missingCount: missingOrdinals.count)) { onReadd(ordinal) }
                             .font(.system(size: 13, weight: .semibold))
                     }
                 }

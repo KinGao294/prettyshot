@@ -116,15 +116,15 @@ enum OpenFailure: Equatable {
 }
 
 extension InAppStitchLoader {
-    /// `failedPickCount` for the error page. Placeholder until (35) e: only the two pick paths set it.
+    /// `failedPickCount` for the error page. Every path sets it, so an older failure never picks the copy.
     static func pickedCount(after failure: OpenFailure, previous: Int) -> Int {
         switch failure {
-        case .singlePick:
+        case .singlePick, .editorExport:
             return 1
-        case .multiPick(let picked):
+        case .multiPick(let picked), .stitchStart(let picked):
             return picked
-        case .stitchStart, .pendingResume, .editorExport:
-            return previous
+        case .pendingResume(let staged):
+            return staged
         }
     }
 }
@@ -143,7 +143,8 @@ enum SegmentBeautifier {
 
 /// 「预览已降采样」 is an extension-only chip, and only when this image is over the extension budget.
 enum PreviewDownsampleChip {
-    /// `style` / `scale` are accepted for (35) f; this placeholder still judges the default style.
+    /// Judged by the current style (PRD (35) f). Frame 11 only: an image that the default style already
+    /// pushes over the gate. 11b (only the user's style is over) has no chip, r7 §15 rule 1.
     static func shows(
         inExtension: Bool,
         pixelWidth: Int,
@@ -154,11 +155,20 @@ enum PreviewDownsampleChip {
     ) -> Bool {
         guard inExtension, pixelWidth > 0, pixelHeight > 0 else { return false }
         guard max(pixelWidth, pixelHeight) > ExtensionMemoryBudget.previewMaxLongSide else { return false }
-        return ExtensionMemoryBudget.plan(
+        let overWithDefault = ExtensionMemoryBudget.plan(
             pixelWidth: pixelWidth,
             pixelHeight: pixelHeight,
-            canTransferToApp: canTransferToApp
+            canTransferToApp: canTransferToApp,
+            scale: scale
         ) != .fullResolutionInline
+        let overWithCurrent = ExtensionMemoryBudget.plan(
+            pixelWidth: pixelWidth,
+            pixelHeight: pixelHeight,
+            canTransferToApp: canTransferToApp,
+            style: style,
+            scale: scale
+        ) != .fullResolutionInline
+        return overWithDefault && overWithCurrent
     }
 }
 

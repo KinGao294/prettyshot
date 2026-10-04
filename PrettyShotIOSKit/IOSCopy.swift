@@ -92,6 +92,9 @@ enum IOSCopy {
     static let largeTitle = "图片较大，去 App 里处理"
     static let largeBody = "这张图尺寸很大，在分享菜单里按原分辨率导出可能内存不足。为了不丢图，请在 PrettyShot App 中继续。"
     static let continueInApp = "在 App 中继续"
+    /// 帧 11b。默认样式放得下，用户这次改大的样式放不下。
+    static let largeStyleTitle = "按这个样式导出太大，去 App 里处理"
+    static let shrinkPadding = "改小边距"
     /// S10c。
     static let handoffProgressTitle = "正在交给 PrettyShot…"
     static let handoffProgressBody = "图片只在本机暂存，不上传。App 确认收到之前，暂存的副本不会删；相册里的原图始终不动。"
@@ -292,18 +295,20 @@ enum IOSCopy {
         return "已暂存 \(count) 张 · 来自 \(shares) 次分享"
     }
 
-    /// A1b 主按钮。（35）b 之前一律「继续拼接」。
+    static let continueEditing = "继续编辑"
+
+    /// A1b 主按钮。只暂存 1 张时打开的是编辑页，所以写「继续编辑」（PRD（35）b）。
     static func handoffBannerAction(stagedCount: Int) -> String {
-        continueStitch
+        stagedCount == 1 ? continueEditing : continueStitch
     }
 
     static func handoffBannerAction(for pending: [HandoffTicket]) -> String {
         handoffBannerAction(stagedCount: PendingShareResume.stagedFileCount(pending))
     }
 
-    /// L3m / L9m「重新加入」按钮。（35）c 之前一律带序号。
+    /// L3m / L9m「重新加入」按钮。只缺 1 张时同帧 67 不带序号；缺多张时每个按钮带序号（PRD（35）c）。
     static func readdButton(ordinal: Int, missingCount: Int) -> String {
-        "\(readdShot) · 第 \(ordinal) 张"
+        missingCount <= 1 ? readdShot : "\(readdShot) · 第 \(ordinal) 张"
     }
 
     static func handoffBannerDetail(for pending: [HandoffTicket]) -> String {
@@ -344,29 +349,51 @@ enum LargeHandoff {
         case style
     }
 
-    /// Nil when the export fits in the extension. Placeholder until (35) a: every over-budget export is frame 11.
+    /// Nil when the export fits in the extension. Frame 11 when even the default style is over the gate;
+    /// 11b when only the style the user set is over it.
     static func kind(pixelWidth: Int, pixelHeight: Int, style: BackgroundStyle, scale: CGFloat? = nil) -> Kind? {
-        let plan = ExtensionMemoryBudget.plan(
-            pixelWidth: pixelWidth,
-            pixelHeight: pixelHeight,
-            canTransferToApp: true,
-            style: style,
-            scale: scale
-        )
-        return plan == .fullResolutionInline ? nil : .large
+        guard !fits(pixelWidth, pixelHeight, style: style, scale: scale) else { return nil }
+        return fits(pixelWidth, pixelHeight, style: .default, scale: scale) ? .style : .large
     }
 
     static func title(_ kind: Kind) -> String {
-        IOSCopy.largeTitle
+        switch kind {
+        case .large: return IOSCopy.largeTitle
+        case .style: return IOSCopy.largeStyleTitle
+        }
     }
 
+    /// `padding` is the current padding in pt. Only a padding above the default 28 is named.
     static func body(_ kind: Kind, padding: Int, edited: Bool) -> String {
-        edited ? IOSCopy.largeBody + editedNote : IOSCopy.largeBody
+        let main: String
+        switch kind {
+        case .large:
+            main = IOSCopy.largeBody
+        case .style:
+            let named = padding > defaultPadding ? "（边距 \(padding)）" : ""
+            main = "这张图本身不大，但当前样式\(named)让导出尺寸变得很大，在分享菜单里按原分辨率导出可能内存不足。为了不丢图，请在 PrettyShot App 中继续。"
+        }
+        return edited ? main + editedNote : main
     }
 
-    /// 「改小边距」. Placeholder until (35) a: never shown.
+    /// 「改小边距」 only on 11b, and only when padding 28 with everything else unchanged fits.
     static func showsShrinkPadding(pixelWidth: Int, pixelHeight: Int, style: BackgroundStyle, scale: CGFloat? = nil) -> Bool {
-        false
+        guard kind(pixelWidth: pixelWidth, pixelHeight: pixelHeight, style: style, scale: scale) == .style else { return false }
+        var shrunk = style
+        shrunk.padding = BackgroundStyle.default.padding
+        return fits(pixelWidth, pixelHeight, style: shrunk, scale: scale)
+    }
+
+    private static var defaultPadding: Int { Int(BackgroundStyle.default.padding.rounded()) }
+
+    private static func fits(_ width: Int, _ height: Int, style: BackgroundStyle, scale: CGFloat?) -> Bool {
+        ExtensionMemoryBudget.plan(
+            pixelWidth: width,
+            pixelHeight: height,
+            canTransferToApp: true,
+            style: style,
+            scale: scale
+        ) == .fullResolutionInline
     }
 
     static func showsManualOpenFooter() -> Bool { false }

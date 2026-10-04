@@ -17,6 +17,8 @@ struct ShareFlowView: View {
     var onContinuePartial: () -> Void
     var onCancelHandoff: () -> Void
     var onDismissLarge: () -> Void
+    /// 11b 「改小边距」.
+    var onShrinkPadding: () -> Void = {}
     var onDismissDenied: () -> Void
     var onOpenSettings: () -> Void
     /// S12. Set when the app did not open and nothing was staged. The page stays `.multi`.
@@ -47,7 +49,9 @@ struct ShareFlowView: View {
                         inExtension: true,
                         pixelWidth: model.pixelWidth,
                         pixelHeight: model.pixelHeight,
-                        canTransferToApp: canTransferToApp
+                        canTransferToApp: canTransferToApp,
+                        style: model.style,
+                        scale: exportScale
                     )
                 )
                     .sheet(isPresented: largeBinding) { largeSheet }
@@ -366,22 +370,55 @@ struct ShareFlowView: View {
         Binding(get: { showsDeniedSheet }, set: { if !$0 { onDismissDenied() } })
     }
 
-    /// Frame 11, extension only, and only when the original file can be handed off.
+    /// Same scale the export uses: the status-bar match, else 1.
+    private var exportScale: CGFloat? {
+        model.cropMatch.map { CGFloat($0.scale) }
+    }
+
+    /// Frame 11 / 11a, or 11b when only the style the user set is over the gate.
+    /// Extension only, and only when the original file can be handed off.
     private var largeSheet: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text(IOSCopy.largeTitle).font(.system(size: 21, weight: .bold))
-            Text(LargeHandoff.body(
-                changedStyle: model.changedStyleThisSession,
-                changedCrop: model.changedCropThisSession,
-                addedArrow: model.addedArrowThisSession,
-                addedRedaction: model.addedRedactionThisSession
-            ))
-            .font(.system(size: 15))
+        let kind = LargeHandoff.kind(
+            pixelWidth: model.pixelWidth,
+            pixelHeight: model.pixelHeight,
+            style: model.style,
+            scale: exportScale
+        ) ?? .large
+        let edited = model.changedStyleThisSession
+            || model.changedCropThisSession
+            || model.addedArrowThisSession
+            || model.addedRedactionThisSession
+        let showsShrink = LargeHandoff.showsShrinkPadding(
+            pixelWidth: model.pixelWidth,
+            pixelHeight: model.pixelHeight,
+            style: model.style,
+            scale: exportScale
+        )
+        return VStack(alignment: .leading, spacing: 14) {
+            if kind == .style {
+                Image(systemName: "slider.horizontal.3")
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundStyle(IOSTheme.bloom)
+                    .frame(width: 52, height: 52)
+                    .background(IOSTheme.bloom.opacity(0.16), in: RoundedRectangle(cornerRadius: 14))
+            }
+            Text(LargeHandoff.title(kind)).font(.system(size: 21, weight: .bold))
+            Text(LargeHandoff.body(kind, padding: Int(model.style.padding.rounded()), edited: edited))
+                .font(.system(size: 15))
+                .foregroundStyle(IOSTheme.muted)
             Button(IOSCopy.continueInApp, action: onStitchInApp).buttonStyle(BloomButtonStyle())
-            Button(IOSCopy.cancel, action: onDismissLarge).buttonStyle(PlainCardButtonStyle())
+            if showsShrink {
+                Button(IOSCopy.shrinkPadding, action: onShrinkPadding).buttonStyle(PlainCardButtonStyle())
+            }
+            Button(IOSCopy.cancel, action: onDismissLarge)
+                .font(.system(size: 16, weight: .semibold))
+                .frame(maxWidth: .infinity)
+                .frame(height: 44)
+                .foregroundStyle(IOSTheme.muted)
         }
         .padding(20)
-        .presentationDetents([.medium])
+        .background(IOSTheme.paper)
+        .presentationDetents([.medium, .large])
     }
 
     private func title(_ classification: ShareClassification) -> String {
