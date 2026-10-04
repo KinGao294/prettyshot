@@ -880,3 +880,163 @@ final class ShareAcceptanceTests: XCTestCase {
         return buffer
     }
 }
+
+/// Frames 56–58 (L7e / L7f / L7g) on the shared bottom bar.
+final class StitchDuplicateReviewTests: XCTestCase {
+    func testL7ePendingCardNamesTheShotPairAndGatesTheBar() {
+        let session = StitchSession(assembly: fourShotAssembly(choices: [nil]))
+        let card = session.duplicateCard("dup-a")
+        XCTAssertEqual(card?.isPending, true)
+        XCTAssertEqual(card?.displayIndex, 1)
+        XCTAssertEqual(card?.question, "这一行出现了两次")
+        XCTAssertEqual(card?.detail, "第 1、2 张接缝处 · 程序判断不了是重叠还是本来就重复")
+        XCTAssertNil(card?.handledLabel)
+        XCTAssertEqual(
+            session.bottomBar.line,
+            "⚠ 还有 1 处没处理（待确认 1）。为了不拼错，处理完才能继续——不会静默拼接。"
+        )
+        XCTAssertEqual(session.bottomBar.items.map(\.label), ["待确认 1"])
+        XCTAssertEqual(session.bottomBar.primaryTitle, "先确认 1 处重复段")
+        XCTAssertFalse(session.bottomBar.canAdvance)
+        XCTAssertNil(session.toast)
+    }
+
+    func testL7eCardKeepsAbsoluteShotNumbersAfterAnUnalignedSeam() {
+        let image = RGBAImage(width: 4, height: 40, pixels: [UInt8](repeating: 255, count: 4 * 40 * 4))
+        // Shot 1 | unaligned seam | shots 2–3 joined at row 10. The repeat sits under the 2/3 join.
+        let session = StitchSession(assembly: ScrollAssembly(
+            segments: [
+                ScrollSegment(image: image, confidentSeamYs: []),
+                ScrollSegment(image: image, confidentSeamYs: [10]),
+            ],
+            seams: [ScrollSeam(kind: .needsAlignment, suggestedOverlap: 4)],
+            duplicateCandidates: [
+                DuplicateSegmentCandidate(id: "dup", seamNumber: 1, rowCount: 2, segmentIndex: 1, startRow: 10),
+            ]
+        ))
+        XCTAssertEqual(session.duplicateCard("dup")?.detail, "第 2、3 张接缝处 · 程序判断不了是重叠还是本来就重复")
+        XCTAssertEqual(session.bottomBar.primaryTitle, "处理下一处 · 1")
+        XCTAssertEqual(session.bottomBar.items.map(\.label), ["待对齐 1", "待确认 1"])
+    }
+
+    func testL7eTappingThePrimaryScrollsToTheFirstPendingCard() {
+        let model = StitchModel()
+        model.session = StitchSession(assembly: fourShotAssembly(choices: [.keepOnce, nil]))
+        model.primaryTapped()
+        XCTAssertEqual(model.scrollToDuplicate, "dup-b")
+        XCTAssertNil(model.flattened)
+    }
+
+    func testL7fHandledCardShowsCapsuleAndRestore() {
+        var session = StitchSession(assembly: fourShotAssembly(choices: [nil, nil]))
+        session.resolveDuplicate("dup-a", choice: .keepOnce)
+        let handled = session.duplicateCard("dup-a")
+        XCTAssertEqual(handled?.isPending, false)
+        XCTAssertEqual(handled?.handledLabel, "已处理 · 只保留一次")
+        XCTAssertEqual(session.duplicateCard("dup-b")?.detail, "第 2、3 张接缝处 · 程序判断不了是重叠还是本来就重复")
+        XCTAssertNil(session.duplicateCard("dup-b")?.handledLabel)
+        XCTAssertEqual(
+            session.bottomBar.line,
+            "⚠ 还有 1 处没处理（待确认 1）。为了不拼错，处理完才能继续——不会静默拼接。"
+        )
+        XCTAssertEqual(session.bottomBar.primaryTitle, "先确认 1 处重复段")
+        XCTAssertEqual(session.toast, StitchToast(title: "第 1 处重复段：只保留一次", detail: "待确认还剩 1 处", actionTitle: "撤销"))
+
+        session.resolveDuplicate("dup-b", choice: .keepBoth)
+        XCTAssertEqual(session.duplicateCard("dup-b")?.handledLabel, "已处理 · 都保留")
+    }
+
+    func testL7gRestorePutsOnlyThatCardBackAndCountsUp() {
+        var session = StitchSession(assembly: fourShotAssembly(choices: [nil, nil]))
+        session.resolveDuplicate("dup-a", choice: .keepOnce)
+        session.restoreDuplicate("dup-a")
+
+        XCTAssertEqual(session.duplicateCard("dup-a")?.isPending, true)
+        XCTAssertNil(session.duplicateCard("dup-a")?.handledLabel)
+        XCTAssertEqual(session.duplicateCard("dup-a")?.detail, "第 1、2 张接缝处 · 程序判断不了是重叠还是本来就重复")
+        XCTAssertEqual(
+            session.bottomBar.line,
+            "⚠ 还有 2 处没处理（待确认 2）。为了不拼错，处理完才能继续——不会静默拼接。"
+        )
+        XCTAssertEqual(session.bottomBar.count, 2)
+        XCTAssertEqual(session.bottomBar.primaryTitle, "先确认 2 处重复段")
+        XCTAssertEqual(session.toast, StitchToast(title: "第 1 处重复段已还原为待确认", detail: "待确认还剩 2 处", actionTitle: "撤销"))
+    }
+
+    func testL7gRestoreTouchesOnlyItsOwnID() {
+        var session = StitchSession(assembly: fourShotAssembly(choices: [.keepOnce, .keepBoth]))
+        session.restoreDuplicate("dup-b")
+        XCTAssertEqual(session.duplicateCard("dup-a")?.handledLabel, "已处理 · 只保留一次")
+        XCTAssertEqual(session.duplicateCard("dup-b")?.isPending, true)
+        XCTAssertEqual(session.toast?.title, "第 2 处重复段已还原为待确认")
+        XCTAssertEqual(session.toast?.detail, "待确认还剩 1 处")
+        XCTAssertEqual(session.bottomBar.primaryTitle, "先确认 1 处重复段")
+    }
+
+    func testL7gUndoingARestoreBringsTheChoiceBack() {
+        var session = StitchSession(assembly: fourShotAssembly(choices: [nil, nil]))
+        session.resolveDuplicate("dup-a", choice: .keepOnce)
+        session.restoreDuplicate("dup-a")
+        session.undoDuplicate()
+
+        XCTAssertEqual(session.assembly.duplicateCandidates.first?.choice, .keepOnce)
+        XCTAssertEqual(session.duplicateCard("dup-a")?.handledLabel, "已处理 · 只保留一次")
+        XCTAssertEqual(session.bottomBar.items.map(\.label), ["待确认 1"])
+        XCTAssertEqual(session.bottomBar.primaryTitle, "先确认 1 处重复段")
+        XCTAssertEqual(session.toast, StitchToast(title: "已撤销", detail: "待确认还剩 1 处", actionTitle: nil))
+    }
+
+    func testL7gUndoingAChoicePutsTheCardBackToPending() {
+        var session = StitchSession(assembly: fourShotAssembly(choices: [nil, nil]))
+        session.resolveDuplicate("dup-b", choice: .keepBoth)
+        XCTAssertEqual(session.bottomBar.count, 1)
+        session.undoDuplicate()
+        XCTAssertEqual(session.duplicateCard("dup-b")?.isPending, true)
+        XCTAssertEqual(session.bottomBar.count, 2)
+        XCTAssertEqual(session.bottomBar.primaryTitle, "先确认 2 处重复段")
+        XCTAssertEqual(session.toast, StitchToast(title: "已撤销", detail: "待确认还剩 2 处", actionTitle: nil))
+    }
+
+    func testRestoringAPendingCardIsANoOp() {
+        var session = StitchSession(assembly: fourShotAssembly(choices: [nil]))
+        session.restoreDuplicate("dup-a")
+        XCTAssertNil(session.toast)
+        XCTAssertEqual(session.assembly.duplicateUndoCount, 0)
+        XCTAssertEqual(session.bottomBar.count, 1)
+    }
+
+    func testRestoreAutoDropsTheUndoToast() {
+        var session = StitchSession(assembly: fourShotAssembly(choices: [nil, nil]))
+        session.resolveDuplicate("dup-a", choice: .keepOnce)
+        session.restoreAuto(seam: 0)
+        XCTAssertNil(session.toast?.actionTitle)
+        XCTAssertEqual(session.assembly.duplicateUndoCount, 0)
+    }
+
+    /// Shots 1–4 in one segment (confident joins at rows 10 / 20 / 30), then shot 5 behind an aligned seam
+    /// so 「还原自动」 has a seam to act on. Candidates sit under the 1/2 and 2/3 joins.
+    func fourShotAssembly(choices: [DuplicateSegmentChoice?]) -> ScrollAssembly {
+        let image = RGBAImage(width: 4, height: 40, pixels: [UInt8](repeating: 255, count: 4 * 40 * 4))
+        let tail = RGBAImage(width: 4, height: 8, pixels: [UInt8](repeating: 255, count: 4 * 8 * 4))
+        let ids = ["dup-a", "dup-b"]
+        let rows = [10, 20]
+        let candidates = choices.enumerated().map { index, choice in
+            DuplicateSegmentCandidate(
+                id: ids[index],
+                choice: choice,
+                seamNumber: index + 1,
+                rowCount: 2,
+                segmentIndex: 0,
+                startRow: rows[index]
+            )
+        }
+        return ScrollAssembly(
+            segments: [
+                ScrollSegment(image: image, confidentSeamYs: [10, 20, 30]),
+                ScrollSegment(image: tail, confidentSeamYs: []),
+            ],
+            seams: [ScrollSeam(kind: .aligned(overlap: 0), suggestedOverlap: 0)],
+            duplicateCandidates: candidates
+        )
+    }
+}
