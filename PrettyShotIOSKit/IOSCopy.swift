@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import PrettyShotCore
 
@@ -291,6 +292,20 @@ enum IOSCopy {
         return "已暂存 \(count) 张 · 来自 \(shares) 次分享"
     }
 
+    /// A1b 主按钮。（35）b 之前一律「继续拼接」。
+    static func handoffBannerAction(stagedCount: Int) -> String {
+        continueStitch
+    }
+
+    static func handoffBannerAction(for pending: [HandoffTicket]) -> String {
+        handoffBannerAction(stagedCount: PendingShareResume.stagedFileCount(pending))
+    }
+
+    /// L3m / L9m「重新加入」按钮。（35）c 之前一律带序号。
+    static func readdButton(ordinal: Int, missingCount: Int) -> String {
+        "\(readdShot) · 第 \(ordinal) 张"
+    }
+
     static func handoffBannerDetail(for pending: [HandoffTicket]) -> String {
         let imageShares = pending.filter { $0.kind != .pdf }.count
         return handoffBannerDetail(
@@ -321,6 +336,37 @@ enum LargeHandoff {
     static func body(changedStyle: Bool, changedCrop: Bool, addedArrow: Bool, addedRedaction: Bool) -> String {
         let edited = changedStyle || changedCrop || addedArrow || addedRedaction
         return edited ? IOSCopy.largeBody + editedNote : IOSCopy.largeBody
+    }
+
+    /// Frame 11 (default style is already over the gate) or 11b (only the current style is).
+    enum Kind: Equatable {
+        case large
+        case style
+    }
+
+    /// Nil when the export fits in the extension. Placeholder until (35) a: every over-budget export is frame 11.
+    static func kind(pixelWidth: Int, pixelHeight: Int, style: BackgroundStyle, scale: CGFloat? = nil) -> Kind? {
+        let plan = ExtensionMemoryBudget.plan(
+            pixelWidth: pixelWidth,
+            pixelHeight: pixelHeight,
+            canTransferToApp: true,
+            style: style,
+            scale: scale
+        )
+        return plan == .fullResolutionInline ? nil : .large
+    }
+
+    static func title(_ kind: Kind) -> String {
+        IOSCopy.largeTitle
+    }
+
+    static func body(_ kind: Kind, padding: Int, edited: Bool) -> String {
+        edited ? IOSCopy.largeBody + editedNote : IOSCopy.largeBody
+    }
+
+    /// 「改小边距」. Placeholder until (35) a: never shown.
+    static func showsShrinkPadding(pixelWidth: Int, pixelHeight: Int, style: BackgroundStyle, scale: CGFloat? = nil) -> Bool {
+        false
     }
 
     static func showsManualOpenFooter() -> Bool { false }

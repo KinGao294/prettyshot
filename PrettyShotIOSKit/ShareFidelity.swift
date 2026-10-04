@@ -103,6 +103,32 @@ enum InAppStitchLoader {
     }
 }
 
+/// Every way the app can land on frame 19 / the multi-image error page.
+enum OpenFailure: Equatable {
+    case singlePick
+    case multiPick(picked: Int)
+    /// 「开始拼接」 found fewer than two readable shots.
+    case stitchStart(picked: Int)
+    /// A1b could not read the staged files.
+    case pendingResume(staged: Int)
+    /// Copy or save from the editor could not render.
+    case editorExport
+}
+
+extension InAppStitchLoader {
+    /// `failedPickCount` for the error page. Placeholder until (35) e: only the two pick paths set it.
+    static func pickedCount(after failure: OpenFailure, previous: Int) -> Int {
+        switch failure {
+        case .singlePick:
+            return 1
+        case .multiPick(let picked):
+            return picked
+        case .stitchStart, .pendingResume, .editorExport:
+            return previous
+        }
+    }
+}
+
 /// 「分开导出」 uses the same beautify pass as a merged export, then the caller saves the result.
 enum SegmentBeautifier {
     static func beautify(_ image: CGImage, style: BackgroundStyle = .default, scale: CGFloat = 1) -> CGImage? {
@@ -117,7 +143,15 @@ enum SegmentBeautifier {
 
 /// 「预览已降采样」 is an extension-only chip, and only when this image is over the extension budget.
 enum PreviewDownsampleChip {
-    static func shows(inExtension: Bool, pixelWidth: Int, pixelHeight: Int, canTransferToApp: Bool) -> Bool {
+    /// `style` / `scale` are accepted for (35) f; this placeholder still judges the default style.
+    static func shows(
+        inExtension: Bool,
+        pixelWidth: Int,
+        pixelHeight: Int,
+        canTransferToApp: Bool,
+        style: BackgroundStyle = .default,
+        scale: CGFloat? = nil
+    ) -> Bool {
         guard inExtension, pixelWidth > 0, pixelHeight > 0 else { return false }
         guard max(pixelWidth, pixelHeight) > ExtensionMemoryBudget.previewMaxLongSide else { return false }
         return ExtensionMemoryBudget.plan(
