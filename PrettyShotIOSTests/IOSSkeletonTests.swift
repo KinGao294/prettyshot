@@ -1745,3 +1745,149 @@ final class FollowUp34CopyTests: XCTestCase {
         return try XCTUnwrap(context.makeImage())
     }
 }
+
+/// PRD (35) a (frame 11b), b, c, e, f. v0.3.45 puts all five in the device-test build.
+final class FollowUp35Tests: XCTestCase {
+    private let wideMargins = BackgroundStyle(presetKey: BackgroundStyle.default.presetKey, padding: 64, radius: 12, shadow: 48)
+
+    // MARK: a · frame 11b
+
+    func test11bOnlyWhenTheDefaultStyleFitsButTheCurrentOneDoesNot() {
+        // 1179×2556 matches the 6.1-inch table entry, so scale 3: padding 28 → 84 px, 64 → 192 px.
+        XCTAssertEqual(
+            ExtensionMemoryBudget.plan(pixelWidth: 1179, pixelHeight: 2556, canTransferToApp: true),
+            .fullResolutionInline,
+            "precondition: the default style fits"
+        )
+        XCTAssertEqual(
+            ExtensionMemoryBudget.plan(pixelWidth: 1179, pixelHeight: 2556, canTransferToApp: true, style: wideMargins),
+            .handoffToApp,
+            "precondition: padding 64 does not"
+        )
+        XCTAssertEqual(LargeHandoff.kind(pixelWidth: 1179, pixelHeight: 2556, style: wideMargins), .style)
+        XCTAssertNil(LargeHandoff.kind(pixelWidth: 1179, pixelHeight: 2556, style: .default))
+        XCTAssertEqual(LargeHandoff.kind(pixelWidth: 4000, pixelHeight: 3000, style: .default), .large)
+        XCTAssertEqual(LargeHandoff.kind(pixelWidth: 4000, pixelHeight: 3000, style: wideMargins), .large)
+    }
+
+    func test11bTitleBodyAndLossSentence() {
+        XCTAssertEqual(LargeHandoff.title(.style), "按这个样式导出太大，去 App 里处理")
+        XCTAssertEqual(LargeHandoff.title(.large), "图片较大，去 App 里处理")
+        XCTAssertEqual(
+            LargeHandoff.body(.style, padding: 64, edited: true),
+            "这张图本身不大，但当前样式（边距 64）让导出尺寸变得很大，在分享菜单里按原分辨率导出可能内存不足。为了不丢图，请在 PrettyShot App 中继续。App 会打开原图，样式和标注要重新调一下。"
+        )
+        XCTAssertEqual(
+            LargeHandoff.body(.style, padding: 64, edited: false),
+            "这张图本身不大，但当前样式（边距 64）让导出尺寸变得很大，在分享菜单里按原分辨率导出可能内存不足。为了不丢图，请在 PrettyShot App 中继续。"
+        )
+        // Padding not above the default 28: the bracket goes away.
+        XCTAssertEqual(
+            LargeHandoff.body(.style, padding: 28, edited: false),
+            "这张图本身不大，但当前样式让导出尺寸变得很大，在分享菜单里按原分辨率导出可能内存不足。为了不丢图，请在 PrettyShot App 中继续。"
+        )
+        XCTAssertEqual(LargeHandoff.body(.large, padding: 64, edited: false), IOSCopy.largeBody)
+        XCTAssertEqual(LargeHandoff.body(.large, padding: 64, edited: true), IOSCopy.largeBody + LargeHandoff.editedNote)
+        XCTAssertFalse(LargeHandoff.body(.style, padding: 64, edited: true).contains("预览尺寸"))
+    }
+
+    func test11bShrinkPaddingOnlyWhenPadding28WouldFit() {
+        XCTAssertTrue(LargeHandoff.showsShrinkPadding(pixelWidth: 1179, pixelHeight: 2556, style: wideMargins))
+        // Frame 11: even padding 28 is over, so the button would not help.
+        XCTAssertFalse(LargeHandoff.showsShrinkPadding(pixelWidth: 4000, pixelHeight: 3000, style: wideMargins))
+        // Nothing over budget: no sheet, no button.
+        XCTAssertFalse(LargeHandoff.showsShrinkPadding(pixelWidth: 1179, pixelHeight: 2556, style: .default))
+    }
+
+    func test11bShrinkPaddingOpensTheStylePanelWithoutChangingValues() throws {
+        let model = EditorModel()
+        model.load(try XCTUnwrap(ShotEncoder.pngData(try solid(width: 8, height: 8))))
+        model.style = wideMargins
+        model.tool = .background
+        model.openPaddingControl()
+        XCTAssertEqual(model.tool, .style)
+        XCTAssertEqual(model.style, wideMargins)
+        XCTAssertTrue(model.changedStyleThisSession)
+    }
+
+    // MARK: b · A1b button
+
+    func testA1bSingleStagedShotSaysContinueEditing() {
+        XCTAssertEqual(IOSCopy.handoffBannerAction(stagedCount: 1), "继续编辑")
+        XCTAssertEqual(IOSCopy.handoffBannerAction(stagedCount: 2), "继续拼接")
+        XCTAssertEqual(IOSCopy.handoffBannerAction(stagedCount: 4), "继续拼接")
+
+        let now = Date()
+        let one = HandoffTicket(id: "a", kind: .singleImage, fileNames: ["000.png"], createdAt: now)
+        let pdf = HandoffTicket(id: "p", kind: .pdf, fileNames: ["000.pdf"], createdAt: now.addingTimeInterval(1))
+        let three = HandoffTicket(id: "s", kind: .stitch, fileNames: ["0.png", "1.png", "2.png"], createdAt: now.addingTimeInterval(2))
+        XCTAssertEqual(IOSCopy.handoffBannerAction(for: [one]), "继续编辑")
+        // A PDF is not counted, so one image plus a PDF still opens the editor.
+        XCTAssertEqual(IOSCopy.handoffBannerAction(for: [one, pdf]), "继续编辑")
+        XCTAssertEqual(IOSCopy.handoffBannerAction(for: [one, three]), "继续拼接")
+    }
+
+    // MARK: c · re-add button
+
+    func testReaddButtonDropsTheOrdinalWhenOnlyOneShotIsMissing() {
+        XCTAssertEqual(IOSCopy.readdButton(ordinal: 3, missingCount: 1), "重新加入")
+        XCTAssertEqual(IOSCopy.readdButton(ordinal: 3, missingCount: 2), "重新加入 · 第 3 张")
+        XCTAssertEqual(IOSCopy.readdButton(ordinal: 6, missingCount: 2), "重新加入 · 第 6 张")
+    }
+
+    // MARK: e · every error path resets failedPickCount
+
+    func testEveryErrorPathSetsThePickedCount() {
+        // Start from a stale value on purpose: a previous failure must not pick the copy.
+        XCTAssertEqual(InAppStitchLoader.pickedCount(after: .singlePick, previous: 4), 1)
+        XCTAssertEqual(InAppStitchLoader.pickedCount(after: .multiPick(picked: 3), previous: 1), 3)
+        XCTAssertEqual(InAppStitchLoader.pickedCount(after: .stitchStart(picked: 3), previous: 1), 3)
+        XCTAssertEqual(InAppStitchLoader.pickedCount(after: .pendingResume(staged: 4), previous: 1), 4)
+        XCTAssertEqual(InAppStitchLoader.pickedCount(after: .pendingResume(staged: 1), previous: 4), 1)
+        XCTAssertEqual(InAppStitchLoader.pickedCount(after: .editorExport, previous: 4), 1)
+
+        let afterStart = InAppStitchLoader.pickedCount(after: .stitchStart(picked: 3), previous: 1)
+        XCTAssertEqual(InAppStitchLoader.errorTitle(pickedCount: afterStart), IOSCopy.multiUnreadableTitle)
+        let afterExport = InAppStitchLoader.pickedCount(after: .editorExport, previous: 4)
+        XCTAssertEqual(InAppStitchLoader.errorTitle(pickedCount: afterExport), IOSCopy.memoryFailedTitle)
+    }
+
+    // MARK: f · downsample chip follows the current style
+
+    func testDownsampleChipFollowsTheCurrentStyle() {
+        let narrow = BackgroundStyle(presetKey: BackgroundStyle.default.presetKey, padding: 8, radius: 12, shadow: 48)
+        // 1242×2688 (scale 3): over the gate at padding 28, inside it at padding 8.
+        XCTAssertNotEqual(
+            ExtensionMemoryBudget.plan(pixelWidth: 1242, pixelHeight: 2688, canTransferToApp: true),
+            .fullResolutionInline,
+            "precondition: the default style is over"
+        )
+        XCTAssertEqual(
+            ExtensionMemoryBudget.plan(pixelWidth: 1242, pixelHeight: 2688, canTransferToApp: true, style: narrow),
+            .fullResolutionInline,
+            "precondition: padding 8 fits"
+        )
+        XCTAssertTrue(PreviewDownsampleChip.shows(inExtension: true, pixelWidth: 1242, pixelHeight: 2688, canTransferToApp: true))
+        XCTAssertFalse(PreviewDownsampleChip.shows(
+            inExtension: true, pixelWidth: 1242, pixelHeight: 2688, canTransferToApp: true, style: narrow
+        ))
+        // 11b has no chip (r7 §15 rule 1).
+        XCTAssertFalse(PreviewDownsampleChip.shows(
+            inExtension: true, pixelWidth: 1179, pixelHeight: 2556, canTransferToApp: true, style: wideMargins
+        ))
+        XCTAssertTrue(PreviewDownsampleChip.shows(
+            inExtension: true, pixelWidth: 4000, pixelHeight: 3000, canTransferToApp: true, style: wideMargins
+        ))
+    }
+
+    private func solid(width: Int, height: Int) throws -> CGImage {
+        let space = try XCTUnwrap(CGColorSpace(name: CGColorSpace.sRGB))
+        let context = try XCTUnwrap(CGContext(
+            data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+            space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ))
+        context.setFillColor(CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        return try XCTUnwrap(context.makeImage())
+    }
+}
