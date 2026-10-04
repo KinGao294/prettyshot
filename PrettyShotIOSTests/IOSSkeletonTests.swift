@@ -576,6 +576,48 @@ final class ExtensionMemoryBudgetTests: XCTestCase {
         withExtendedLifetime(source) {}
     }
 
+    func testZZProbeLeak() throws {
+        let marks = [PixelRedaction(rect: CGRect(x: 40, y: 200, width: 120, height: 80))]
+        let base0 = FootprintSampler.current()
+        for i in 0..<3 {
+            let src = try solidImage(width: 1320, height: 2868)
+            let b = FootprintSampler.current()
+            autoreleasepool {
+                var r: CGImage? = Redactor.apply(marks, to: src, scale: 3)
+                print("PRETTYSHOT_PROBE5 redact#\(i) alive=\(FootprintSampler.current() - b) w=\(r?.width ?? 0)")
+                r = nil
+                print("PRETTYSHOT_PROBE5 redact#\(i) released=\(FootprintSampler.current() - b)")
+            }
+            print("PRETTYSHOT_PROBE5 redact#\(i) afterPool=\(FootprintSampler.current() - b) total=\(FootprintSampler.current() - base0)")
+            withExtendedLifetime(src) {}
+        }
+        for i in 0..<3 {
+            let src = try solidImage(width: 1320, height: 2868)
+            let b = FootprintSampler.current()
+            autoreleasepool {
+                var r: CGImage? = BeautifyRenderer.render(BeautifyInput(base: src, crop: CGRect(x: 0, y: 0, width: 1320, height: 2868), background: .default, scale: 3))
+                print("PRETTYSHOT_PROBE5 render#\(i) alive=\(FootprintSampler.current() - b) w=\(r?.width ?? 0)")
+                r = nil
+                print("PRETTYSHOT_PROBE5 render#\(i) released=\(FootprintSampler.current() - b)")
+            }
+            print("PRETTYSHOT_PROBE5 render#\(i) afterPool=\(FootprintSampler.current() - b) total=\(FootprintSampler.current() - base0)")
+            withExtendedLifetime(src) {}
+        }
+        for i in 0..<3 {
+            let b = FootprintSampler.current()
+            autoreleasepool {
+                let src = try? solidImage(width: 1320, height: 2868)
+                print("PRETTYSHOT_PROBE5 solid#\(i) made=\(FootprintSampler.current() - b) w=\(src?.width ?? 0)")
+                let p = UnsafeMutableRawPointer.allocate(byteCount: 1320 * 4 * 2868, alignment: 16)
+                let c = CGContext(data: p, width: 1320, height: 2868, bitsPerComponent: 8, bytesPerRow: 1320 * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+                c.draw(src!, in: CGRect(x: 0, y: 0, width: 1320, height: 2868))
+                print("PRETTYSHOT_PROBE5 solid#\(i) drawn=\(FootprintSampler.current() - b)")
+                p.deallocate()
+            }
+            print("PRETTYSHOT_PROBE5 solid#\(i) gone=\(FootprintSampler.current() - b)")
+        }
+    }
+
     private final class FootprintSampler: @unchecked Sendable {
         private let lock = NSLock()
         private var running = false
