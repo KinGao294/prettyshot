@@ -543,6 +543,69 @@ final class ExtensionMemoryBudgetTests: XCTestCase {
         )
     }
 
+    func testZZProbe36() throws {
+        let w = 1320, h = 2868
+        let src = try solidImage(width: w, height: h)
+        func peak<T>(_ label: String, _ body: () -> T) -> T {
+            let b = FootprintSampler.current()
+            let s = FootprintSampler(); s.start()
+            let out = body()
+            let p = s.stop() - b
+            print("PRETTYSHOT_PROBE3 \(label) peak=\(p) retained=\(FootprintSampler.current() - b)")
+            return out
+        }
+        let marks = [PixelRedaction(rect: CGRect(x: 40, y: 200, width: 120, height: 80))]
+        _ = peak("redactor-warm") { Redactor.apply(marks, to: src, scale: 3) }
+        let red = peak("redactor") { Redactor.apply(marks, to: src, scale: 3) }
+        let bpr = (w * 4 + 15) & ~15
+        _ = peak("alloc-zero") { () -> Int in
+            let p = UnsafeMutableRawPointer.allocate(byteCount: bpr * h, alignment: 16)
+            p.initializeMemory(as: UInt8.self, repeating: 0, count: bpr * h)
+            p.deallocate(); return 0
+        }
+        _ = peak("alloc-draw-copy") { () -> Int in
+            let p = UnsafeMutableRawPointer.allocate(byteCount: bpr * h, alignment: 16)
+            let c = CGContext(data: p, width: w, height: h, bitsPerComponent: 8, bytesPerRow: bpr, space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+            c.setBlendMode(.copy); c.interpolationQuality = .none
+            c.draw(src, in: CGRect(x: 0, y: 0, width: w, height: h))
+            p.deallocate(); return 0
+        }
+        _ = peak("alloc-draw-normal") { () -> Int in
+            let p = UnsafeMutableRawPointer.allocate(byteCount: bpr * h, alignment: 16)
+            let c = CGContext(data: p, width: w, height: h, bitsPerComponent: 8, bytesPerRow: bpr, space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+            c.interpolationQuality = .none
+            c.draw(src, in: CGRect(x: 0, y: 0, width: w, height: h))
+            p.deallocate(); return 0
+        }
+        _ = peak("alloc-draw-ctxowned") { () -> Int in
+            let c = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: bpr, space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+            c.setBlendMode(.copy)
+            c.draw(src, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return c.width
+        }
+        _ = peak("memcpy-providerdata") { () -> Int in
+            let p = UnsafeMutableRawPointer.allocate(byteCount: src.bytesPerRow * h, alignment: 16)
+            if let d = src.dataProvider?.data, let b = CFDataGetBytePtr(d) { p.copyMemory(from: b, byteCount: min(CFDataGetLength(d), src.bytesPerRow * h)) }
+            p.deallocate(); return 0
+        }
+        _ = peak("provider-data-red") { () -> Int in red.dataProvider?.data.map { CFDataGetLength($0) } ?? 0 }
+        _ = peak("provider-data-src") { () -> Int in src.dataProvider?.data.map { CFDataGetLength($0) } ?? 0 }
+        _ = peak("render-red") { BeautifyRenderer.render(BeautifyInput(base: red, crop: CGRect(x: 0, y: 0, width: w, height: h), background: .default, scale: 3)) }
+        for (mw, mh) in [(1179, 2556), (1320, 2868)] {
+            let data = try png(width: mw, height: mh)
+            for redact in [false, true] {
+                let model = EditorModel()
+                model.load(data)
+                if redact { model.addRedaction(rect: CGRect(x: 10, y: 10, width: 50, height: 30), in: CGSize(width: 393, height: 852)) }
+                _ = peak("model-\(mw)-redact\(redact)") { () -> Int in
+                    guard let img = model.exportOriginalResolution() else { return -1 }
+                    return ShotEncoder.pngData(img)?.count ?? -1
+                }
+            }
+        }
+        withExtendedLifetime((src, red)) {}
+    }
+
     private final class FootprintSampler: @unchecked Sendable {
         private let lock = NSLock()
         private var running = false
