@@ -584,6 +584,42 @@ final class ExtensionMemoryBudgetTests: XCTestCase {
         withExtendedLifetime(source) {}
     }
 
+    /// Review eea0efd must-fix 1. One mark near the top and one near the bottom must not make redaction
+    /// copy and render the whole span between them: still one full-size buffer at peak.
+    func testRedactionWithTopAndBottomMarksHoldsOneFullSizeBuffer() throws {
+        _ = Redactor.apply([PixelRedaction(rect: CGRect(x: 0, y: 0, width: 8, height: 8))], to: try solidImage(width: 16, height: 16), scale: 1)
+        let width = 1320
+        let height = 2868
+        let source = try solidImage(width: width, height: height)
+        let sourceBytes = Int64(width * height * ExtensionMemoryBudget.bytesPerPixel)
+        let slack = Int64(2 * 1024 * 1024)
+        // Charge the source's own pages before sampling (see testRedactionHoldsOneFullSizeBuffer).
+        let pixels = try XCTUnwrap(source.dataProvider?.data)
+        let pixelBytes = try XCTUnwrap(CFDataGetBytePtr(pixels))
+        var touched = 0
+        for offset in stride(from: 0, to: CFDataGetLength(pixels), by: 4096) {
+            touched &+= Int(pixelBytes[offset]) + 1
+        }
+        XCTAssertGreaterThan(touched, 0)
+        let marks = [
+            PixelRedaction(rect: CGRect(x: 60, y: 150, width: 400, height: 90)),
+            PixelRedaction(rect: CGRect(x: 700, y: 2650, width: 420, height: 100), kind: .blur),
+        ]
+        let before = FootprintSampler.current()
+        let sampler = FootprintSampler()
+        sampler.start()
+        var redacted: CGImage? = Redactor.apply(marks, to: source, scale: 3)
+        let peak = sampler.stop() - before
+        XCTAssertEqual(redacted?.width, width)
+        XCTAssertEqual(redacted?.height, height)
+        redacted = nil
+        let retained = FootprintSampler.current() - before
+        print("PRETTYSHOT_REDACT_PEAK 1320x2868 two-marks peak=\(peak) retained=\(retained) sourceBytes=\(sourceBytes)")
+        XCTAssertLessThanOrEqual(peak, sourceBytes + slack)
+        XCTAssertLessThanOrEqual(retained, slack)
+        withExtendedLifetime(source) {}
+    }
+
     private final class FootprintSampler: @unchecked Sendable {
         private let lock = NSLock()
         private var running = false
