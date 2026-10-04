@@ -130,11 +130,12 @@ final class EditorModel: ObservableObject {
     private func renderFullResolution() -> CGImage? {
         preview = nil
         let rendered: CGImage? = {
+            // Not cached: the decoded pixels land in the redacted buffer, not beside it.
             let full: CGImage?
             if let sourceURL {
-                full = ImagePrep.fullImage(sourceURL)
+                full = ImagePrep.fullImage(sourceURL, cached: false)
             } else {
-                full = ImagePrep.fullImage(encoded)
+                full = ImagePrep.fullImage(encoded, cached: false)
             }
             guard let full else { return nil }
             return render(full)
