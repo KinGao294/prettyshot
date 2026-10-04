@@ -42,7 +42,7 @@ public enum Redactor {
         let extent = CGRect(x: 0, y: 0, width: width, height: height)
         // Core Image y-up rects, plus how far each filter reads past its rect.
         var planned: [(kind: RedactionKind, rect: CGRect, amount: Float)] = []
-        var area = CGRect.null
+        var reaches: [CGRect] = []
         for region in regions {
             // Image pixels (y-down) → Core Image (y-up).
             let full = region.rect
@@ -62,8 +62,9 @@ public enum Redactor {
                 reach = CGFloat(amount) * 4 + 2
             }
             planned.append((region.kind, ciRect, amount))
-            area = area.union(ciRect.insetBy(dx: -reach, dy: -reach))
+            reaches.append(ciRect.insetBy(dx: -reach, dy: -reach).integral.intersection(extent))
         }
+        let groups = patchGroups(reaches)
 
         return autoreleasepool { () -> CGImage in
             let bytesPerRow = (width * 4 + 15) & ~15
@@ -83,13 +84,16 @@ public enum Redactor {
             canvas.setBlendMode(.copy)
             canvas.draw(image, in: extent)
 
-            if !planned.isEmpty {
-                let roi = area.integral.intersection(extent)
-                if let patch = redactedPatch(planned, roi: roi, from: owned, bytesPerRow: bytesPerRow,
-                                             imageHeight: height, space: space) {
-                    canvas.draw(patch, in: roi)
+            // One patch per group of marks whose filter reach overlaps. Marks far apart (a name at
+            // the top, a number at the bottom) never make a patch that spans the image between them.
+            for group in groups {
+                autoreleasepool {
+                    if let patch = redactedPatch(group.members.map { planned[$0] }, roi: group.roi, from: owned,
+                                                 bytesPerRow: bytesPerRow, imageHeight: height, space: space) {
+                        canvas.draw(patch, in: group.roi)
+                    }
+                    context.clearCaches()
                 }
-                context.clearCaches()
             }
             canvas.flush()
 
@@ -113,6 +117,29 @@ public enum Redactor {
             ) else { return image }
             return detached
         }
+    }
+
+    /// Groups marks whose reach rects overlap, directly or through other marks, so the groups' patches
+    /// are disjoint. Overlapping marks stay together and keep their order, because a later mark filters
+    /// the earlier one's output.
+    private static func patchGroups(_ reaches: [CGRect]) -> [(roi: CGRect, members: [Int])] {
+        var groups: [(roi: CGRect, members: [Int])] = []
+        for (index, reach) in reaches.enumerated() where !reach.isEmpty {
+            var roi = reach
+            var members = [index]
+            var merged = true
+            while merged {
+                merged = false
+                if let hit = groups.firstIndex(where: { $0.roi.intersects(roi) }) {
+                    roi = roi.union(groups[hit].roi)
+                    members += groups[hit].members
+                    groups.remove(at: hit)
+                    merged = true
+                }
+            }
+            groups.append((roi, members.sorted()))
+        }
+        return groups
     }
 
     /// Runs the redaction filters over `roi` only. `roi` covers every redacted rect plus the
