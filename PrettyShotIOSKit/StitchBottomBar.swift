@@ -113,8 +113,33 @@ struct StitchSummary: Equatable {
     var chips: [Chip]
 
     static func evaluate(_ assembly: ScrollAssembly) -> StitchSummary {
-        // Stub: the preview has no summary row yet.
-        StitchSummary(title: nil, chips: [])
+        let shots = assembly.segments.reduce(0) { $0 + $1.confidentSeamYs.count + 1 }
+        guard shots > 0 else { return StitchSummary(title: nil, chips: []) }
+        let seamTotal = assembly.confidentSeamCount + assembly.seams.count
+        var aligned = assembly.confidentSeamCount
+        var unaligned = 0
+        var joined = 0
+        for seam in assembly.seams {
+            switch seam.kind {
+            case .aligned: aligned += 1
+            case .needsAlignment: unaligned += 1
+            case .joinedAsIs: joined += 1
+            }
+        }
+        var chips: [Chip] = []
+        if seamTotal > 0 {
+            chips.append(Chip(kind: .aligned, label: "\(aligned)"))
+        }
+        if unaligned > 0 {
+            chips.append(Chip(kind: .unaligned, label: IOSCopy.summaryUnaligned(unaligned)))
+        }
+        if joined > 0 {
+            chips.append(Chip(kind: .joinedAsIs, label: IOSCopy.summaryJoinedAsIs(joined)))
+        }
+        if assembly.pendingSticky?.isUnresolved == true {
+            chips.append(Chip(kind: .sticky, label: IOSCopy.summaryStickyPending))
+        }
+        return StitchSummary(title: IOSCopy.stitchSummaryTitle(shots: shots, seams: seamTotal), chips: chips)
     }
 }
 
@@ -126,7 +151,10 @@ struct StitchStickyRow: Equatable {
     var restoreTitle: String?
 
     static func evaluate(_ assembly: ScrollAssembly) -> StitchStickyRow {
-        // Stub: today the row is only the switch.
-        StitchStickyRow(title: IOSCopy.keepOnce, detail: IOSCopy.keepOnceDetail, restoreTitle: nil)
+        StitchStickyRow(
+            title: IOSCopy.keepOnce,
+            detail: IOSCopy.keepOnceDetail,
+            restoreTitle: assembly.dedupeStickyBars ? IOSCopy.restoreSticky : nil
+        )
     }
 }

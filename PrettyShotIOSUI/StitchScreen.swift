@@ -145,6 +145,7 @@ struct StitchScreen: View {
             }
             .padding(.horizontal, 16)
             .frame(height: 52)
+            summaryRow
             if let missingLine {
                 missingBanner(missingLine)
             }
@@ -214,16 +215,81 @@ struct StitchScreen: View {
     }
 
     private var stickyRow: some View {
-        Toggle(isOn: Binding(
-            get: { model.session.assembly.dedupeStickyBars },
-            set: { model.setDedupe($0) }
-        )) {
+        let row = StitchStickyRow.evaluate(model.session.assembly)
+        return HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(IOSCopy.keepOnce).font(.system(size: 15, weight: .semibold))
-                Text(IOSCopy.keepOnceDetail).font(.system(size: 12)).foregroundStyle(IOSTheme.muted)
+                Text(row.title).font(.system(size: 15, weight: .semibold))
+                Text(row.detail).font(.system(size: 12)).foregroundStyle(IOSTheme.muted)
             }
+            Spacer(minLength: 8)
+            if let restore = row.restoreTitle {
+                Button(restore) { model.setDedupe(false) }
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(IOSTheme.charcoal)
+                    .padding(.horizontal, 12)
+                    .frame(height: 30)
+                    .background(IOSTheme.card, in: Capsule())
+                    .overlay(Capsule().stroke(IOSTheme.hairline))
+                    .accessibilityIdentifier("stitch.sticky.restore")
+            }
+            Toggle(row.title, isOn: Binding(
+                get: { model.session.assembly.dedupeStickyBars },
+                set: { model.setDedupe($0) }
+            ))
+            .labelsHidden()
+            .tint(IOSTheme.mint)
         }
-        .tint(IOSTheme.mint)
+    }
+
+    /// 「4 张 · 3 处接缝」 + ✓ / 待对齐 / 直接拼 / 固定栏待确认 1 chips (frame 38, L7i frame 60).
+    @ViewBuilder
+    private var summaryRow: some View {
+        let summary = StitchSummary.evaluate(model.session.assembly)
+        if let title = summary.title {
+            HStack(spacing: 8) {
+                Text(title)
+                    .font(.system(size: 13))
+                    .foregroundStyle(IOSTheme.muted)
+                ForEach(Array(summary.chips.enumerated()), id: \.offset) { _, chip in
+                    summaryChip(chip)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 8)
+            .accessibilityIdentifier("stitch.summary")
+        }
+    }
+
+    @ViewBuilder
+    private func summaryChip(_ chip: StitchSummary.Chip) -> some View {
+        switch chip.kind {
+        case .aligned:
+            HStack(spacing: 3) {
+                Image(systemName: "checkmark").font(.system(size: 10, weight: .bold))
+                Text(chip.label)
+            }
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(IOSTheme.stagedCheck)
+            .padding(.horizontal, 8)
+            .frame(height: 22)
+            .background(IOSTheme.mint.opacity(0.18), in: Capsule())
+        case .unaligned, .sticky:
+            Text(chip.label)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Color(uiColor: StitchPalette.warnText))
+                .padding(.horizontal, 8)
+                .frame(height: 22)
+                .background(IOSTheme.warn.opacity(0.18), in: Capsule())
+                .overlay(Capsule().stroke(IOSTheme.warn, style: StrokeStyle(lineWidth: 1, dash: [3, 2])))
+        case .joinedAsIs:
+            Text(chip.label)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(IOSTheme.muted)
+                .padding(.horizontal, 8)
+                .frame(height: 22)
+                .background(IOSTheme.hairline.opacity(0.6), in: Capsule())
+        }
     }
 
     private func missingBanner(_ line: String) -> some View {
@@ -254,7 +320,7 @@ struct StitchScreen: View {
             if card.isPending {
                 Text(IOSCopy.duplicateMark)
                     .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Color(hex: 0x8A5A12))
+                    .foregroundStyle(Color(uiColor: StitchPalette.warnText))
                 Text(card.question).font(.system(size: 15, weight: .semibold))
                 Text(card.detail).font(.system(size: 12)).foregroundStyle(IOSTheme.muted)
                 HStack(spacing: 10) {
@@ -268,10 +334,10 @@ struct StitchScreen: View {
                     if let handled = card.handledLabel {
                         Image(systemName: "checkmark")
                             .font(.system(size: 12, weight: .bold))
-                            .foregroundStyle(Color(hex: 0x4F8F7E))
+                            .foregroundStyle(Color(uiColor: StitchPalette.handledMint))
                         Text(handled)
                             .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(Color(hex: 0x4F8F7E))
+                            .foregroundStyle(Color(uiColor: StitchPalette.handledMint))
                     }
                     Button(IOSCopy.duplicateRestore) { model.restoreDuplicate(card.id) }
                         .font(.system(size: 13, weight: .semibold))
@@ -288,7 +354,7 @@ struct StitchScreen: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(card.isPending ? Color(hex: 0xFFFCF5) : Color.clear, in: RoundedRectangle(cornerRadius: 14))
+        .background(card.isPending ? Color(uiColor: StitchPalette.pendingCardBackground) : Color.clear, in: RoundedRectangle(cornerRadius: 14))
         .overlay {
             if card.isPending {
                 RoundedRectangle(cornerRadius: 14)

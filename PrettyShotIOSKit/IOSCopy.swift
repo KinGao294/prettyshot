@@ -190,6 +190,13 @@ enum IOSCopy {
     static let keepOnce = "固定栏只保留一次"
     static let keepOnceDetail = "顶栏只留第 1 张 · 底栏只留最后 1 张"
     static let exclusionBands = "排除带"
+    /// L4 / L7i mini button next to the 「固定栏只保留一次」 switch.
+    static let restoreSticky = "还原固定栏"
+    /// Summary row above the stitch preview (frame 38 / 60).
+    static func stitchSummaryTitle(shots: Int, seams: Int) -> String { "\(shots) 张 · \(seams) 处接缝" }
+    static func summaryUnaligned(_ count: Int) -> String { "待对齐 \(count)" }
+    static func summaryJoinedAsIs(_ count: Int) -> String { "直接拼 \(count)" }
+    static let summaryStickyPending = "固定栏待确认 1"
     static let exclusionStub = "上下排除带的拖动手柄还是占位，开关和还原已经接上共用模块。"
     static let nextBeautify = "下一步 · 美化"
     static let alignTitle = "手动对齐"

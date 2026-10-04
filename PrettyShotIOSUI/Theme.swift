@@ -12,7 +12,11 @@ enum IOSTheme {
     static let charcoal = dynamic(light: 0x2C2A28, dark: 0xEDE8E1)
     static let muted = dynamic(light: 0x8A857C, dark: 0x9C958B)
     static let hairline = dynamic(light: 0xE2DDD4, dark: 0x3A3735)
-    static let card = dynamic(light: 0xFFFFFF, dark: 0x3A3735)
+    static let card = Color(uiColor: cardColor)
+    static let cardColor = dynamicUIColor(light: 0xFFFFFF, dark: 0x3A3735)
+    /// Amber text. #8A5A12 only on light grounds; dark uses #CDBB9A (prototype `.screen.dk .ldq`).
+    static let warnText = Color(uiColor: warnTextColor)
+    static let warnTextColor = dynamicUIColor(light: 0x8A5A12, dark: 0xCDBB9A)
 
     /// Frame 63b check mark. Light is Mint Deep. Dark is Soft Mint.
     static let stagedCheck = dynamic(light: 0x4F8F7E, dark: 0x7EB8A8)

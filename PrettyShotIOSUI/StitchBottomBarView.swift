@@ -4,11 +4,13 @@ import UIKit
 /// Colours of the stitch preview controls, so tests can resolve them per appearance.
 enum StitchPalette {
     /// ⚠ gate line and 「重复？」.
-    static let warnText = UIColor(hex: 0x8A5A12)
-    /// Pending duplicate card (L7e). The amber dashed border is separate.
-    static let pendingCardBackground = UIColor(hex: 0xFFFCF5)
-    /// 「✓ 已处理 · …」 capsule.
-    static let handledMint = UIColor(hex: 0x4F8F7E)
+    static let warnText = IOSTheme.warnTextColor
+    /// Pending duplicate card (L7e): light #FFFCF5, dark IOSTheme.card. The amber dashed border is separate.
+    static let pendingCardBackground = UIColor { traits in
+        traits.userInterfaceStyle == .dark ? IOSTheme.cardColor.resolvedColor(with: traits) : UIColor(hex: 0xFFFCF5)
+    }
+    /// 「✓ 已处理 · …」 capsule. Same pair as frame 63b: light #4F8F7E, dark #7EB8A8.
+    static let handledMint = IOSTheme.stagedCheckColor
 }
 
 /// The single bottom bar under the stitch preview. L4–L7j only change what `StitchBottomBar` holds.
@@ -23,7 +25,7 @@ struct StitchBottomBarView<Sticky: View>: View {
             if let line = bar.line {
                 Text(line)
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Color(hex: 0x8A5A12))
+                    .foregroundStyle(Color(uiColor: StitchPalette.warnText))
                     .padding(12)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(IOSTheme.warn.opacity(0.18), in: RoundedRectangle(cornerRadius: 12))
