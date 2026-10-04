@@ -314,6 +314,12 @@ enum ExtensionSavedToast {
     static let hasButtons = false
 }
 
+enum LargeHandoffFrame: Equatable {
+    case frame11
+    case frame11a
+    case frame11b
+}
+
 /// Frame 11 / 11a. The grey 「如果没有自动打开」footer is not part of this frame.
 enum LargeHandoff {
     static let editedNote = "App 会打开原图，样式和标注要重新调一下。"
@@ -324,6 +330,13 @@ enum LargeHandoff {
     }
 
     static func showsManualOpenFooter() -> Bool { false }
+
+    /// Which sheet `body` belongs to. Placeholder matching the current sheet: 11, or 11a with edits.
+    /// Frame 11b is (35).
+    static func frame(changedStyle: Bool, changedCrop: Bool, addedArrow: Bool, addedRedaction: Bool) -> LargeHandoffFrame {
+        let edited = changedStyle || changedCrop || addedArrow || addedRedaction
+        return edited ? .frame11a : .frame11
+    }
 
     /// Cancel returns to the editor and keeps the edits from this session.
     static func editsSurviveCancel(
