@@ -2324,3 +2324,104 @@ final class LargeHandoffRoutingTests: XCTestCase {
         return data as Data
     }
 }
+
+/// Designer pre-review must-fixes for PR #17 (dark mode). Each colour is read from the token the view uses.
+final class StitchDarkPaletteTests: XCTestCase {
+    func testWarnTextIsReadableOnDarkBars() {
+        // ⚠ gate line (StitchBottomBarView) and 「重复？」 (StitchScreen).
+        XCTAssertEqual(Self.hex(StitchPalette.warnText, .light), 0x8A5A12)
+        XCTAssertEqual(Self.hex(StitchPalette.warnText, .dark), 0xCDBB9A)
+    }
+
+    func testPendingDuplicateCardUsesCardInDarkMode() {
+        XCTAssertEqual(Self.hex(StitchPalette.pendingCardBackground, .light), 0xFFFCF5)
+        // IOSTheme.card dark.
+        XCTAssertEqual(Self.hex(StitchPalette.pendingCardBackground, .dark), 0x3A3735)
+    }
+
+    func testHandledCapsuleUsesStagedCheckMint() {
+        XCTAssertEqual(Self.hex(StitchPalette.handledMint, .light), 0x4F8F7E)
+        XCTAssertEqual(Self.hex(StitchPalette.handledMint, .dark), 0x7EB8A8)
+        XCTAssertEqual(Self.hex(StitchPalette.handledMint, .dark), Self.hex(IOSTheme.stagedCheckColor, .dark))
+    }
+
+    private static func hex(_ color: UIColor, _ style: UIUserInterfaceStyle) -> UInt32 {
+        let resolved = color.resolvedColor(with: UITraitCollection(userInterfaceStyle: style))
+        var red: CGFloat = 0
+        var green: CGFloat = 0
+        var blue: CGFloat = 0
+        var alpha: CGFloat = 0
+        XCTAssertTrue(resolved.getRed(&red, green: &green, blue: &blue, alpha: &alpha))
+        func channel(_ value: CGFloat) -> UInt32 { UInt32((value * 255).rounded()) }
+        return (channel(red) << 16) | (channel(green) << 8) | channel(blue)
+    }
+}
+
+/// Frame 60 (L7i): the summary row lists 「固定栏待确认 1」 next to ✓ 3, and the sticky row keeps 「还原固定栏」.
+final class StitchL7iSummaryTests: XCTestCase {
+    func testL7iSummaryShowsStickyPendingChip() {
+        let summary = StitchSummary.evaluate(l7iAssembly())
+        XCTAssertEqual(summary.title, "4 张 · 3 处接缝")
+        XCTAssertEqual(summary.chips, [
+            StitchSummary.Chip(kind: .aligned, label: "3"),
+            StitchSummary.Chip(kind: .sticky, label: "固定栏待确认 1"),
+        ])
+    }
+
+    func testStickyChipLeavesOnceTheStickyBarIsChosen() {
+        var session = StitchSession(assembly: l7iAssembly())
+        session.confirmSticky(keepOnce: true)
+        XCTAssertEqual(StitchSummary.evaluate(session.assembly).chips, [StitchSummary.Chip(kind: .aligned, label: "3")])
+        XCTAssertEqual(StitchSummary.evaluate(session.assembly).title, "4 张 · 3 处接缝")
+    }
+
+    func testSummaryCountsEachSeamState() {
+        let image = RGBAImage(width: 4, height: 20, pixels: [UInt8](repeating: 255, count: 4 * 20 * 4))
+        let tail = RGBAImage(width: 4, height: 8, pixels: [UInt8](repeating: 255, count: 4 * 8 * 4))
+        let assembly = ScrollAssembly(
+            segments: [
+                ScrollSegment(image: image, confidentSeamYs: [10]),
+                ScrollSegment(image: tail, confidentSeamYs: []),
+                ScrollSegment(image: tail, confidentSeamYs: []),
+            ],
+            seams: [
+                ScrollSeam(kind: .needsAlignment, suggestedOverlap: 4),
+                ScrollSeam(kind: .joinedAsIs),
+            ]
+        )
+        let summary = StitchSummary.evaluate(assembly)
+        XCTAssertEqual(summary.title, "4 张 · 3 处接缝")
+        XCTAssertEqual(summary.chips, [
+            StitchSummary.Chip(kind: .aligned, label: "1"),
+            StitchSummary.Chip(kind: .unaligned, label: "待对齐 1"),
+            StitchSummary.Chip(kind: .joinedAsIs, label: "直接拼 1"),
+        ])
+    }
+
+    func testL7iStickyRowKeepsRestoreButton() {
+        let row = StitchStickyRow.evaluate(l7iAssembly())
+        XCTAssertEqual(row.title, "固定栏只保留一次")
+        XCTAssertEqual(row.detail, "顶栏只留第 1 张 · 底栏只留最后 1 张")
+        XCTAssertEqual(row.restoreTitle, "还原固定栏")
+    }
+
+    func testStickyRowDropsRestoreButtonOnceRestored() {
+        var assembly = l7iAssembly()
+        assembly.pendingSticky = nil
+        assembly.dedupeStickyBars = false
+        XCTAssertNil(StitchStickyRow.evaluate(assembly).restoreTitle)
+    }
+
+    /// Frame 60: four shots joined at three confident seams, one duplicate candidate, sticky bar uncertain.
+    private func l7iAssembly() -> ScrollAssembly {
+        let image = RGBAImage(width: 4, height: 40, pixels: [UInt8](repeating: 255, count: 4 * 40 * 4))
+        var assembly = ScrollAssembly(
+            segments: [ScrollSegment(image: image, confidentSeamYs: [10, 20, 30])],
+            duplicateCandidates: [
+                DuplicateSegmentCandidate(id: "dup-a", choice: nil, seamNumber: 1, rowCount: 2, segmentIndex: 0, startRow: 10),
+            ]
+        )
+        assembly.pendingSticky = PendingStickyConfirmation(headerRows: 8, footerRows: 0, seamCount: 3, keepOnce: nil)
+        return assembly
+    }
+}

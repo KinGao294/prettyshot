@@ -92,3 +92,41 @@ struct DuplicateCardState: Equatable {
     /// 「已处理 · 只保留一次」 or 「已处理 · 都保留」 once chosen. Nil while pending.
     var handledLabel: String?
 }
+
+/// Summary row above the stitch preview: 「N 张 · M 处接缝」 plus state chips (frame 38; L7i adds 「固定栏待确认 1」).
+/// Chip order follows the prototype: ✓ aligned · 待对齐 · 直接拼 · 固定栏待确认 1.
+struct StitchSummary: Equatable {
+    enum ChipKind: Equatable {
+        case aligned
+        case unaligned
+        case joinedAsIs
+        case sticky
+    }
+
+    struct Chip: Equatable {
+        var kind: ChipKind
+        var label: String
+    }
+
+    /// 「4 张 · 3 处接缝」. Nil when there is nothing to stitch.
+    var title: String?
+    var chips: [Chip]
+
+    static func evaluate(_ assembly: ScrollAssembly) -> StitchSummary {
+        // Stub: the preview has no summary row yet.
+        StitchSummary(title: nil, chips: [])
+    }
+}
+
+/// The 「固定栏只保留一次」 row in the bottom bar (L4 / L7i): switch, detail, and the 「还原固定栏」 mini button.
+struct StitchStickyRow: Equatable {
+    var title: String
+    var detail: String
+    /// 「还原固定栏」 while the sticky bars are kept once. Nil once restored.
+    var restoreTitle: String?
+
+    static func evaluate(_ assembly: ScrollAssembly) -> StitchStickyRow {
+        // Stub: today the row is only the switch.
+        StitchStickyRow(title: IOSCopy.keepOnce, detail: IOSCopy.keepOnceDetail, restoreTitle: nil)
+    }
+}

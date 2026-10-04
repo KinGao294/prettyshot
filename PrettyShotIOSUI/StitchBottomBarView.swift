@@ -1,4 +1,15 @@
 import SwiftUI
+import UIKit
+
+/// Colours of the stitch preview controls, so tests can resolve them per appearance.
+enum StitchPalette {
+    /// ⚠ gate line and 「重复？」.
+    static let warnText = UIColor(hex: 0x8A5A12)
+    /// Pending duplicate card (L7e). The amber dashed border is separate.
+    static let pendingCardBackground = UIColor(hex: 0xFFFCF5)
+    /// 「✓ 已处理 · …」 capsule.
+    static let handledMint = UIColor(hex: 0x4F8F7E)
+}
 
 /// The single bottom bar under the stitch preview. L4–L7j only change what `StitchBottomBar` holds.
 struct StitchBottomBarView<Sticky: View>: View {
