@@ -646,6 +646,8 @@ final class ExtensionMemoryBudgetTests: XCTestCase {
         var peaks: [Int64] = []
         var retainedSamples: [Int64] = []
         for sample in 1...3 {
+            // Settle before every sample (including #1 after prior tests) so `before` is not inflated.
+            waitForFootprintToSettle(timeout: 3.0)
             var samplePeak: Int64 = 0
             var sampleRetained: Int64 = 0
             try autoreleasepool {
@@ -671,13 +673,11 @@ final class ExtensionMemoryBudgetTests: XCTestCase {
                 sampleRetained = FootprintSampler.current() - before
                 source = nil
             }
+            // Extra drain after the measuring pool so the next settle starts from a released state.
+            autoreleasepool { }
             print("PRETTYSHOT_REDACT_PEAK 1320x2868 two-marks sample=\(sample) peak=\(samplePeak) retained=\(sampleRetained) sourceBytes=\(sourceBytes)")
             peaks.append(samplePeak)
             retainedSamples.append(sampleRetained)
-            // Do not start the next sample's `before` while this sample's buffers still inflate the process.
-            if sample < 3 {
-                waitForFootprintToSettle(timeout: 2.0)
-            }
         }
         let picked = peaks.indices.min { peaks[$0] < peaks[$1] } ?? 0
         let peak = peaks[picked]
@@ -687,19 +687,27 @@ final class ExtensionMemoryBudgetTests: XCTestCase {
         XCTAssertLessThanOrEqual(retained, slack)
     }
 
-    /// Poll phys_footprint until it stops dropping (or `timeout`), so the next sample's baseline
-    /// is not still inflated by the previous redaction buffers.
-    private func waitForFootprintToSettle(timeout: TimeInterval = 2.0) {
+    /// Wait for phys_footprint to finish dropping after releasing large CGImages.
+    /// Always sleeps a minimum floor first so a brief plateau at an elevated level is not
+    /// mistaken for "settled", then polls until stable (or `timeout`).
+    private func waitForFootprintToSettle(timeout: TimeInterval = 3.0) {
+        // Floor: give the allocator / purgeable caches a moment before polling stability.
+        Thread.sleep(forTimeInterval: 0.4)
         let deadline = Date().addingTimeInterval(timeout)
         var previous = FootprintSampler.current()
         var stableCount = 0
+        var sawDrop = false
         while Date() < deadline {
             Thread.sleep(forTimeInterval: 0.05)
             let now = FootprintSampler.current()
-            // Settled when footprint is no longer clearly falling (within 64 KiB).
-            if now + (64 * 1024) >= previous {
+            if now + (64 * 1024) < previous {
+                sawDrop = true
+                stableCount = 0
+            } else if abs(now - previous) <= (64 * 1024) {
                 stableCount += 1
-                if stableCount >= 4 {
+                // Prefer stability after observing a drop; otherwise require a longer quiet stretch.
+                let need = sawDrop ? 6 : 12
+                if stableCount >= need {
                     return
                 }
             } else {
