@@ -20,7 +20,11 @@ public protocol Redactable {
 /// Bakes pixelate / blur regions into a copy of the source (destructive in the export —
 /// the original pixels under a redaction never reach the clipboard or PNG).
 public enum Redactor {
-    private static let context = CIContext(options: [.cacheIntermediates: false])
+    private static let context = CIContext(options: [
+        .cacheIntermediates: false,
+        // Avoid an extra working-space conversion buffer beside the ROI scratch.
+        .workingColorSpace: NSNull(),
+    ])
 
     /// `geometryScale` maps annotation geometry (full-size image pixels) onto `image`, which may be a
     /// downscaled preview used while a redaction is being dragged.
@@ -134,23 +138,14 @@ public enum Redactor {
                     roi = roi.union(groups[hit].roi)
                     members += groups[hit].members
                     groups.remove(at: hit)
-                    merged = true
-                }
-            }
-            groups.append((roi, members.sorted()))
-        }
-        return groups
-    }
-
-    /// Runs the redaction filters over `roi` only and writes the redacted rects back into `bitmap`.
+                    m    /// Runs the redaction filters over `roi` only and writes the redacted rects back into `bitmap`.
     /// `roi` covers every redacted rect plus the distance its filter reads, so clamping at the patch
-    /// edge does not reach the redacted pixels.
+    /// edge does not reach the redacted pixels. The patch is copied out of `bitmap` first, so Core
+    /// Image never reads what is being written.
     ///
-    /// Marks in a group are applied one at a time (same order as a single full-ROI pass). Each mark
-    /// is processed in vertical strips so the read-apron scratch stays bounded; strip outputs land
-    /// in a mark-sized side buffer and are blitted only after every strip finishes, so later strips
-    /// still read pristine canvas pixels in their aprons — byte-identical to an untiled pass (and to
-    /// PreRefactor / main). Amount and reach formulas match main.
+    /// Full-ROI (not tiled): CIGaussianBlur must see one contiguous apron to stay byte-identical to
+    /// PreRefactor / main. Vertical strips were tried for peak but disagreed at strip boundaries and
+    /// on overlapping marks. Amount/reach stay amount*4+2 for blur.
     private static func redactPatch(
         _ planned: [(kind: RedactionKind, rect: CGRect, amount: Float)],
         roi: CGRect,
@@ -159,93 +154,13 @@ public enum Redactor {
         imageHeight: Int,
         space: CGColorSpace
     ) {
-        for region in planned {
-            redactMark(region, roi: roi, in: bitmap, bytesPerRow: bytesPerRow,
-                       imageHeight: imageHeight, space: space)
-            context.clearCaches()
-        }
-    }
-
-    private static func redactMark(
-        _ region: (kind: RedactionKind, rect: CGRect, amount: Float),
-        roi: CGRect,
-        in bitmap: OwnedBitmap,
-        bytesPerRow: Int,
-        imageHeight: Int,
-        space: CGColorSpace
-    ) {
-        let writeBounds = region.rect.integral.intersection(roi)
-        guard !writeBounds.isEmpty else { return }
-
-        let reach: CGFloat
-        switch region.kind {
-        case .pixelate: reach = CGFloat(region.amount) + 2
-        case .blur: reach = CGFloat(region.amount) * 4 + 2
-        }
-        let padX = reach
-        let padY = reach
-
-        let outWidth = Int(writeBounds.width)
-        let outHeight = Int(writeBounds.height)
-        let outBytesPerRow = outWidth * 4
-        guard let outBytes = NSMutableData(length: outBytesPerRow * outHeight) else { return }
-
-        // Cap read-apron scratch. Floor write width at 1px — apron still dominates for large blur.
-        let maxScratch = 256 * 1024
-        let writeHeight = outHeight
-        let apronHeight = min(Int(roi.height), writeHeight + Int(ceil(padY)) * 2)
-        let bytesPerWriteCol = max(1, apronHeight) * 4
-        let maxWriteW = max(1, (maxScratch / bytesPerWriteCol) - Int(ceil(padX)) * 2)
-        var col = Int(writeBounds.minX)
-        let colEnd = Int(writeBounds.maxX)
-        let rowMin = writeBounds.minY
-        let rowH = writeBounds.height
-        while col < colEnd {
-            let sliceW = min(maxWriteW, colEnd - col)
-            let slice = CGRect(x: CGFloat(col), y: rowMin, width: CGFloat(sliceW), height: rowH)
-            col += sliceW
-            autoreleasepool {
-                redactStrip(region, write: slice, writeBounds: writeBounds, outBytes: outBytes,
-                            outBytesPerRow: outBytesPerRow, roi: roi, padX: padX, padY: padY,
-                            in: bitmap, bytesPerRow: bytesPerRow, imageHeight: imageHeight, space: space)
-                context.clearCaches()
-            }
-        }
-
-        // Blit the finished mark once — canvas was pristine for every strip read above.
-        let outTop = imageHeight - Int(writeBounds.maxY)
-        let outLeft = Int(writeBounds.minX)
-        let outBase = outBytes.mutableBytes
-        for row in 0..<outHeight {
-            let dest = bitmap.baseAddress + (outTop + row) * bytesPerRow + outLeft * 4
-            dest.copyMemory(from: outBase + row * outBytesPerRow, byteCount: outBytesPerRow)
-        }
-    }
-
-    /// One vertical strip: copy read apron from canvas → filter → write into the mark side buffer.
-    /// Uses `CIImage(cgImage:)` (same path as main / PreRefactor goldens). `bitmapData` alone was
-    /// off-by-one on channel values vs the frozen path.
-    private static func redactStrip(
-        _ region: (kind: RedactionKind, rect: CGRect, amount: Float),
-        write: CGRect,
-        writeBounds: CGRect,
-        outBytes: NSMutableData,
-        outBytesPerRow: Int,
-        roi: CGRect,
-        padX: CGFloat,
-        padY: CGFloat,
-        in bitmap: OwnedBitmap,
-        bytesPerRow: Int,
-        imageHeight: Int,
-        space: CGColorSpace
-    ) {
-        let read = write.insetBy(dx: -padX, dy: -padY).integral.intersection(roi)
-        let patchWidth = Int(read.width)
-        let patchHeight = Int(read.height)
+        let patchWidth = Int(roi.width)
+        let patchHeight = Int(roi.height)
         guard patchWidth > 0, patchHeight > 0 else { return }
         let patchBytesPerRow = patchWidth * 4
-        let top = imageHeight - Int(read.maxY)
-        let left = Int(read.minX)
+        let top = imageHeight - Int(roi.maxY)
+        let left = Int(roi.minX)
+        // Filled in place and handed over toll-free: bridging a Swift `Data` may copy the patch again.
         guard let bytes = NSMutableData(length: patchBytesPerRow * patchHeight) else { return }
         let base = bytes.mutableBytes
         for row in 0..<patchHeight {
@@ -262,38 +177,45 @@ public enum Redactor {
               ) else { return }
 
         let source = CIImage(cgImage: patch)
-            .transformed(by: CGAffineTransform(translationX: read.minX, y: read.minY))
-
-        let effect: CIImage?
-        switch region.kind {
-        case .pixelate:
-            let filter = CIFilter.pixellate()
-            filter.inputImage = source.clampedToExtent()
-            filter.scale = region.amount
-            filter.center = region.rect.origin
-            effect = filter.outputImage
-        case .blur:
-            let filter = CIFilter.gaussianBlur()
-            filter.inputImage = source.clampedToExtent()
-            filter.radius = region.amount
-            effect = filter.outputImage
+            .transformed(by: CGAffineTransform(translationX: roi.minX, y: roi.minY))
+        var output = source
+        for region in planned {
+            let effect: CIImage?
+            switch region.kind {
+            case .pixelate:
+                let filter = CIFilter.pixellate()
+                filter.inputImage = output.clampedToExtent()
+                filter.scale = region.amount
+                filter.center = region.rect.origin
+                effect = filter.outputImage
+            case .blur:
+                let filter = CIFilter.gaussianBlur()
+                filter.inputImage = output.clampedToExtent()
+                filter.radius = region.amount
+                effect = filter.outputImage
+            }
+            if let effect {
+                output = effect.cropped(to: region.rect).composited(over: output)
+            }
         }
-        guard let effect else { return }
-        let markSlice = region.rect.intersection(write)
-        guard !markSlice.isEmpty else { return }
-        // Same composite as main / dd21e6a: keep apron source under the cropped effect.
-        let output = effect.cropped(to: markSlice).composited(over: source)
-
-        // Local coords inside the mark side buffer.
-        let local = CGRect(
-            x: write.minX - writeBounds.minX,
-            y: write.minY - writeBounds.minY,
-            width: write.width,
-            height: write.height
-        )
-        let outPtr = outBytes.mutableBytes + Int(local.minY) * outBytesPerRow + Int(local.minX) * 4
+        // Only mark pixels change; apron was input context and stays as drawn on the canvas.
+        var writeBounds = CGRect.null
+        for region in planned {
+            writeBounds = writeBounds.union(region.rect)
+        }
+        writeBounds = writeBounds.integral.intersection(roi)
+        guard !writeBounds.isEmpty else { return }
+        let outTop = imageHeight - Int(writeBounds.maxY)
+        let outLeft = Int(writeBounds.minX)
+        let target = bitmap.baseAddress + outTop * bytesPerRow + outLeft * 4
         context.render(
-            output, toBitmap: outPtr, rowBytes: outBytesPerRow,
+            output, toBitmap: target, rowBytes: bytesPerRow,
+            bounds: writeBounds, format: .RGBA8, colorSpace: space
+        )
+        withExtendedLifetime(bytes) {}
+    }
+
+     output, toBitmap: outPtr, rowBytes: outBytesPerRow,
             bounds: write, format: .RGBA8, colorSpace: space
         )
     }
