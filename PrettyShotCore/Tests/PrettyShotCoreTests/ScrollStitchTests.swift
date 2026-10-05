@@ -2368,3 +2368,95 @@ extension CoreScrollFixtures {
         return RGBAImage(width: width, height: colors.count, pixels: pixels)
     }
 }
+
+// ④ Stitch core P1: design ML6b (four options), ML6c (dedupe on, band label), ML6d (restored bars).
+extension ScrollStitchTests {
+    func testML6bPendingSeamOffersFourOptions() throws {
+        let assembly = try openShiftTie()
+        XCTAssertEqual(StitchCopy.confirmCurrentShift, "确认当前位移")
+        XCTAssertEqual(StitchCopy.manualAlignOption, "手动对齐")
+        XCTAssertEqual(StitchCopy.joinAsIsOption, "直接拼")
+        XCTAssertEqual(StitchCopy.splitExportOption, "分开导出")
+        XCTAssertEqual(assembly.seams[0].confirmationOptions, ["确认当前位移", "手动对齐", "直接拼", "分开导出"])
+        XCTAssertEqual(assembly.previewPrimaryStep, .seam)
+        XCTAssertEqual(assembly.previewPrimaryTitle, "处理下一处 · 1")
+    }
+
+    func testML6bConfirmCurrentShiftAlignsOnTheSelectedShift() throws {
+        var assembly = try openShiftTie()
+        let selected = try XCTUnwrap(assembly.seams[0].selectedShift)
+        assembly.confirmCurrentShift(seam: 0)
+        XCTAssertEqual(assembly.seams[0].alignedShift, selected)
+        XCTAssertEqual(assembly.seams[0].card(number: 1).label, "✓ 已确认")
+        XCTAssertEqual(assembly.seams[0].confirmationOptions, [])
+        XCTAssertEqual(assembly.unalignedSeamCount, 0)
+        XCTAssertEqual(assembly.previewPrimaryTitle, "下一步 · 美化 →")
+    }
+
+    func testML6bConfirmCurrentShiftOnLoneReverseKeepsTheSign() throws {
+        var stitcher = ScrollStitcher()
+        XCTAssertEqual(stitcher.ingest(CoreScrollFixtures.page(scroll: 0, height: 48, slot: 0)), .seeded)
+        XCTAssertEqual(stitcher.ingest(CoreScrollFixtures.page(scroll: 12, height: 48, slot: 0)), .appended(12))
+        XCTAssertEqual(stitcher.ingest(CoreScrollFixtures.falseReverse()), .unmatched)
+        var assembly = stitcher.takeAssembly()
+        XCTAssertEqual(assembly.seams[0].confirmationOptions.count, 4)
+        let selected = try XCTUnwrap(assembly.seams[0].selectedShift)
+        XCTAssertLessThan(selected, 0)
+        assembly.confirmCurrentShift(seam: 0)
+        XCTAssertEqual(assembly.seams[0].alignedShift, selected)
+        XCTAssertEqual(assembly.seams[0].card(number: 1).label, "✓ 已确认")
+    }
+
+    /// An ordinary failed seam is not a confirmation seam and has no ML6b options.
+    func testML6bPlainSeamHasNoConfirmationOptions() throws {
+        var stitcher = ScrollStitcher()
+        XCTAssertEqual(stitcher.ingest(CoreScrollFixtures.page(scroll: 0, slot: 0)), .seeded)
+        XCTAssertEqual(stitcher.ingest(CoreScrollFixtures.page(scroll: 0, slot: 40)), .unmatched)
+        let assembly = stitcher.takeAssembly()
+        XCTAssertEqual(assembly.seams[0].confirmationOptions, [])
+    }
+
+    /// ML6c: trusted bars are deduped by default, do not block 下一步, and the long image labels the removed band.
+    func testML6cDedupeOnLabelsTheRemovedBandAndAllowsNext() throws {
+        let assembly = try stickyAssembly()
+        XCTAssertTrue(assembly.dedupeStickyBars)
+        XCTAssertEqual(assembly.previewPrimaryStep, .beautify)
+        let footer = CoreScrollFixtures.footer
+        let header = CoreScrollFixtures.header
+        XCTAssertEqual(StitchCopy.dedupedBand(footer: footer, header: header), "− 底栏 \(footer) · 顶栏 \(header)")
+        XCTAssertEqual(assembly.stickyBandLabel, "− 底栏 \(footer) · 顶栏 \(header)")
+    }
+
+    /// ML6d: restoring puts the bars back on every seam, height grows, 下一步 stays available.
+    func testML6dRestoreLabelsReattachedBarsAndKeepsNext() throws {
+        var assembly = try stickyAssembly()
+        let before = assembly.stackedHeight(deduping: true)
+        guard case .restored(let height) = assembly.restoreStickyBars() else {
+            return XCTFail("expected restore")
+        }
+        XCTAssertGreaterThan(height, before)
+        XCTAssertEqual(StitchCopy.stickyReattached, "固定栏已接回")
+        XCTAssertEqual(StitchCopy.stickyRestoredToast, "已还原固定栏：固定栏接回每条接缝")
+        XCTAssertEqual(assembly.stickyBandLabel, "固定栏已接回")
+        XCTAssertEqual(assembly.previewPrimaryStep, .beautify)
+        XCTAssertEqual(assembly.previewPrimaryTitle, "下一步 · 美化 →")
+        assembly.confirmStickyBars(keepOnce: true)
+        XCTAssertEqual(assembly.stickyBandLabel, StitchCopy.dedupedBand(footer: CoreScrollFixtures.footer, header: CoreScrollFixtures.header))
+    }
+
+    /// No sticky bars, no band label.
+    func testNoStickyBarsMeansNoBandLabel() throws {
+        let assembly = try openShiftTie()
+        XCTAssertNil(assembly.stickyBandLabel)
+    }
+
+    private func stickyAssembly() throws -> ScrollAssembly {
+        var stitcher = ScrollStitcher()
+        XCTAssertEqual(stitcher.ingest(CoreScrollFixtures.viewport(scroll: 0)), .seeded)
+        XCTAssertEqual(stitcher.ingest(CoreScrollFixtures.viewport(scroll: 15)), .appended(15))
+        XCTAssertEqual(stitcher.ingest(CoreScrollFixtures.viewport(scroll: 30)), .appended(15))
+        let assembly = stitcher.takeAssembly()
+        XCTAssertTrue(assembly.hasStickyRepeats)
+        return assembly
+    }
+}
