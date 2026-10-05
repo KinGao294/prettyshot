@@ -90,7 +90,7 @@ public enum Redactor {
             for group in groups {
                 autoreleasepool {
                     redactPatch(group.members.map { planned[$0] }, roi: group.roi, in: owned,
-                                bytesPerRow: bytesPerRow, imageHeight: height, space: space)
+                                bytesPerRow: bytesPerRow, imageWidth: width, imageHeight: height, space: space)
                     context.clearCaches()
                 }
             }
@@ -145,9 +145,9 @@ public enum Redactor {
     /// `roi` covers every redacted rect plus the distance its filter reads, so clamping at the patch
     /// edge does not reach the redacted pixels.
     ///
-    /// The input is a no-copy `CIImage` view of `bitmap`'s ROI (same RGBA8 layout, full-canvas
-    /// `bytesPerRow`). Filters run against that view; the render target is a small buffer covering
-    /// only the union of the mark rects — not a second full-ROI copy beside the canvas. Writing into
+    /// The input is a no-copy `CIImage` view of the whole canvas, cropped to `roi` (same RGBA8
+    /// layout). Filters run against that crop; the render target is a small buffer covering only
+    /// the union of the mark rects — not a second full-ROI memcpy beside the canvas. Writing into
     /// a separate buffer (rather than into `bitmap` while Core Image still reads it) keeps the
     /// read/write stores apart without paying for an ROI-sized scratch at peak.
     private static func redactPatch(
@@ -155,25 +155,24 @@ public enum Redactor {
         roi: CGRect,
         in bitmap: OwnedBitmap,
         bytesPerRow: Int,
+        imageWidth: Int,
         imageHeight: Int,
         space: CGColorSpace
     ) {
         let patchWidth = Int(roi.width)
         let patchHeight = Int(roi.height)
-        guard patchWidth > 0, patchHeight > 0 else { return }
-        let top = imageHeight - Int(roi.maxY)
-        let left = Int(roi.minX)
-        // bytesNoCopy + .none: CIImage keeps the Data alive for the render; the canvas owns the bytes.
-        let roiByteCount = (patchHeight - 1) * bytesPerRow + patchWidth * 4
-        let roiStart = bitmap.baseAddress + top * bytesPerRow + left * 4
-        let roiData = Data(bytesNoCopy: roiStart, count: roiByteCount, deallocator: .none)
+        guard patchWidth > 0, patchHeight > 0, imageWidth > 0, imageHeight > 0 else { return }
+        // Full-canvas bytesNoCopy view (CIImage requires length >= height * bytesPerRow; an inset
+        // ROI origin would read past the buffer on the last row). Cropping to `roi` keeps filter
+        // intermediates patch-sized without memcpy'ing the apron into a second buffer.
+        let canvasData = Data(bytesNoCopy: bitmap.baseAddress, count: bytesPerRow * imageHeight, deallocator: .none)
         let source = CIImage(
-            bitmapData: roiData,
+            bitmapData: canvasData,
             bytesPerRow: bytesPerRow,
-            size: CGSize(width: patchWidth, height: patchHeight),
+            size: CGSize(width: imageWidth, height: imageHeight),
             format: .RGBA8,
             colorSpace: space
-        ).transformed(by: CGAffineTransform(translationX: roi.minX, y: roi.minY))
+        ).cropped(to: roi)
         var output = source
         for region in planned {
             let effect: CIImage?
