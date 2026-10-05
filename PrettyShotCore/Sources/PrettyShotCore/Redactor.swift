@@ -223,6 +223,8 @@ public enum Redactor {
     }
 
     /// One vertical strip: copy read apron from canvas → filter → write into the mark side buffer.
+    /// Uses `CIImage(cgImage:)` (same path as main / PreRefactor goldens). `bitmapData` alone was
+    /// off-by-one on channel values vs the frozen path.
     private static func redactStrip(
         _ region: (kind: RedactionKind, rect: CGRect, amount: Float),
         write: CGRect,
@@ -250,15 +252,17 @@ public enum Redactor {
             let from = bitmap.baseAddress + (top + row) * bytesPerRow + left * 4
             (base + row * patchBytesPerRow).copyMemory(from: from, byteCount: patchBytesPerRow)
         }
-        // CIImage(bitmapData:) — skip CGImage wrapper so we do not hold a second decoded copy.
-        let bitmapData = Data(bytesNoCopy: base, count: patchBytesPerRow * patchHeight, deallocator: .none)
-        let source = CIImage(
-            bitmapData: bitmapData,
-            bytesPerRow: patchBytesPerRow,
-            size: CGSize(width: patchWidth, height: patchHeight),
-            format: .RGBA8,
-            colorSpace: space
-        ).transformed(by: CGAffineTransform(translationX: read.minX, y: read.minY))
+        guard let provider = CGDataProvider(data: bytes as CFData),
+              let patch = CGImage(
+                width: patchWidth, height: patchHeight,
+                bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: patchBytesPerRow,
+                space: space,
+                bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent
+              ) else { return }
+
+        let source = CIImage(cgImage: patch)
+            .transformed(by: CGAffineTransform(translationX: read.minX, y: read.minY))
 
         let effect: CIImage?
         switch region.kind {
@@ -277,7 +281,8 @@ public enum Redactor {
         guard let effect else { return }
         let markSlice = region.rect.intersection(write)
         guard !markSlice.isEmpty else { return }
-        let output = effect.cropped(to: markSlice)
+        // Same composite as main / dd21e6a: keep apron source under the cropped effect.
+        let output = effect.cropped(to: markSlice).composited(over: source)
 
         // Local coords inside the mark side buffer.
         let local = CGRect(
@@ -291,8 +296,6 @@ public enum Redactor {
             output, toBitmap: outPtr, rowBytes: outBytesPerRow,
             bounds: write, format: .RGBA8, colorSpace: space
         )
-        // Keep `bytes` alive for the bytesNoCopy CIImage through render.
-        withExtendedLifetime(bytes) {}
     }
 
     /// Downscaled copy of `image` for cheap live previews.
