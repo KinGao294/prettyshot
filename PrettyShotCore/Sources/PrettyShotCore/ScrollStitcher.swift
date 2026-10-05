@@ -110,6 +110,8 @@ public enum PendingSeamStyle {
     public static let labelBorderWidth: Int = 1
     /// Dashed stroke thickness of the seam line on the long image.
     public static let seamLineWidth: Int = 3
+    /// Dash on / off of the seam line when a view draws it in points (Mac preview window).
+    public static let seamLineDash: [Double] = [6, 4]
 
     public static var warnRGB: (UInt8, UInt8, UInt8) {
         (UInt8((warn >> 16) & 0xFF), UInt8((warn >> 8) & 0xFF), UInt8(warn & 0xFF))
@@ -134,10 +136,14 @@ public enum ResolvedSeamStyle {
     public static let mintDark: UInt32 = 0x7EB8A8
     /// Neutral gray for 「直接拼」.
     public static let direct: UInt32 = 0x5C5751
+    /// 「直接拼」 in dark mode: about 5:1 on the #262422 card (ML6b-r r2).
+    public static let directDark: UInt32 = 0x9C958B
     /// Tag fill for 「✓ 已确认」 and 「✓ 手动对齐」.
     public static let handledFillOpacity: Double = 0.22
     /// Tag fill for 「直接拼」.
     public static let directFillOpacity: Double = 0.12
+    /// Tag fill for 「直接拼」 in dark mode.
+    public static let directDarkFillOpacity: Double = 0.16
     /// Solid tag border.
     public static let labelBorderWidth: Int = 1
 
@@ -327,6 +333,7 @@ public struct ScrollSeam: Equatable {
                     label: "直接拼",
                     chrome: .plain,
                     labelColor: ResolvedSeamStyle.direct,
+                    labelColorDark: ResolvedSeamStyle.directDark,
                     fillOpacity: ResolvedSeamStyle.directFillOpacity,
                     borderWidth: ResolvedSeamStyle.labelBorderWidth
                 )
@@ -1153,7 +1160,12 @@ public struct ScrollAssembly: Equatable {
 
     /// Downscaled stack for the review window, plus one mark per seam (OK and unresolved).
     /// Resolved overlaps are applied; unresolved segments are stacked in full so nothing is hidden by a guess.
-    public func renderPreview(maxLongSide: Int = 1200) -> (image: RGBAImage, marks: [SeamMark])? {
+    /// `paintsPendingSeamLine` false leaves the 「待确认」 amber line out of the pixels, for a caller that
+    /// scales the image and draws that line itself in view points (the Mac window). iOS keeps the default.
+    public func renderPreview(
+        maxLongSide: Int = 1200,
+        paintsPendingSeamLine: Bool = true
+    ) -> (image: RGBAImage, marks: [SeamMark])? {
         let layout = layoutPieces()
         guard let width = layout.pieces.first?.image.width, width > 0 else { return nil }
         let fullHeight = layout.fullHeight
@@ -1230,6 +1242,7 @@ public struct ScrollAssembly: Equatable {
                     note: card.reason
                 ))
                 if card.chrome == .amberDashed {
+                    guard paintsPendingSeamLine else { continue }
                     paintLine(
                         at: y,
                         fullHeight: fullHeight,
