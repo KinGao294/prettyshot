@@ -2804,3 +2804,147 @@ extension ScrollStitcherTests {
         }
     }
 }
+
+// MARK: - Design review pr22 @ 949dd44: dark 「待确认」 text, pending seam line in view points
+
+extension ScrollStitcherTests {
+    /// 「待确认」 text: Warn #E3B26B in dark (about 5.5:1 on its fill), light stays #8A5A12.
+    @MainActor
+    func testML6bPendingTagDarkTextIsWarn() throws {
+        let model = try ml6bFourTagModel()
+        let tag = try XCTUnwrap(model.seamTag(boundary: 0))
+        XCTAssertEqual(tag.text, "待确认")
+        XCTAssertEqual(String(tag.ink(.dark).text, radix: 16), String(UInt32(0xE3B26B), radix: 16), "dark text")
+        XCTAssertEqual(String(tag.ink(.light).text, radix: 16), String(UInt32(0x8A5A12), radix: 16), "light text")
+        assertInk(tag.ink(.dark), text: 0xE3B26B, border: 0xE3B26B, fill: 0xE3B26B, fillOpacity: 0.18, dashed: true)
+        assertInk(tag.ink(.light), text: 0x8A5A12, border: 0xE3B26B, fill: 0xE3B26B, fillOpacity: 0.18, dashed: true)
+    }
+
+    /// The long image the window scales up must not carry the pending seam line in its pixels,
+    /// or the line grows with the zoom. The window draws it in view points instead.
+    @MainActor
+    func testPendingSeamLineIsNotPaintedIntoTheScaledLongImage() throws {
+        for (width, rows) in [(40, 60), (160, 240)] {
+            let model = try pendingSeamZoomModel(width: width, rowsPerSegment: rows)
+            let cg = try XCTUnwrap(model.preview?.cgImage(forProposedRect: nil, context: nil, hints: nil), "width \(width)")
+            let bytes = TestImages.bytes(cg)
+            var warn = 0
+            for i in stride(from: 0, to: bytes.count, by: 4)
+            where abs(Int(bytes[i]) - 0xE3) <= 3 && abs(Int(bytes[i + 1]) - 0xB2) <= 3 && abs(Int(bytes[i + 2]) - 0x6B) <= 3 {
+                warn += 1
+            }
+            XCTAssertEqual(warn, 0, "Warn pixels in the \(cg.width)×\(cg.height) long image (width \(width))")
+        }
+    }
+
+    /// 「待确认」 seam line on the long image: 3 pt thick, dashed 6 pt on / 4 pt off, at any image zoom.
+    /// Measured on the real window at 2x (6 px thick, 12 px dashes, 8 px gaps). The two fixtures put the
+    /// seam at the same view point but zoom the image 8× and 2×.
+    @MainActor
+    func testPendingSeamLineIsThreePointsDashedSixFourAtAnyZoom() throws {
+        let size = CGSize(width: 1180, height: 1400)
+        // The long-image pane is left of the 340 pt seam list; stay clear of the list's amber chip.
+        let paneLimit = Int(size.width - 360) * 2
+        var thicknesses: [Int] = []
+        for (width, rows) in [(40, 60), (160, 240)] {
+            let model = try pendingSeamZoomModel(width: width, rowsPerSegment: rows)
+            let png = try XCTUnwrap(StitchPreviewSnapshot.renderPNG(model: model, dark: false, size: size), "width \(width)")
+            let stroke = try XCTUnwrap(pendingSeamStroke(png: png, paneLimit: paneLimit), "no amber seam line (width \(width))")
+            XCTAssertEqual(Double(stroke.thickness), 6, accuracy: 1, "line thickness px at 2x (width \(width))")
+            XCTAssertEqual(Double(stroke.dashOn), 12, accuracy: 2, "dash px at 2x (width \(width))")
+            XCTAssertEqual(Double(stroke.dashOff), 8, accuracy: 2, "gap px at 2x (width \(width))")
+            thicknesses.append(stroke.thickness)
+        }
+        XCTAssertLessThanOrEqual(abs(thicknesses[0] - thicknesses[1]), 1, "thickness follows the zoom: \(thicknesses)")
+    }
+
+    /// Two plain grey segments of `width` px and one pending tie seam between them.
+    /// The window shows the image 320 pt wide, so `width` 40 zooms 8× and 160 zooms 2×.
+    @MainActor
+    func pendingSeamZoomModel(width: Int, rowsPerSegment: Int) throws -> StitchPreviewModel {
+        let grey = [UInt8](repeating: 128, count: width * rowsPerSegment * 4)
+        let image = RGBAImage(width: width, height: rowsPerSegment, pixels: grey)
+        let seam = ScrollSeam(
+            kind: .needsAlignment,
+            suggestedOverlap: 58,
+            note: Self.ml6bTieReason,
+            pendingTitle: "接缝 1 · 待确认：位移无法唯一确定",
+            candidateLines: ["位移 A · +32 px · 当前", "位移 B · −28 px"],
+            candidateShifts: [32, -28],
+            selectedShift: 32
+        )
+        let assembly = ScrollAssembly(
+            segments: [
+                ScrollSegment(image: image, confidentSeamYs: []),
+                ScrollSegment(image: image, confidentSeamYs: []),
+            ],
+            seams: [seam]
+        )
+        XCTAssertEqual(assembly.seams[0].card(number: 1).chrome, .amberDashed)
+        let model = StitchPreviewModel(assembly: assembly, notice: nil)
+        model.refresh()
+        return model
+    }
+
+    /// Median thickness, dash and gap (px) of the amber line in the long-image pane of a window PNG.
+    /// The row with the most amber is the line's centre; the dashes at either end may be clipped and are skipped.
+    func pendingSeamStroke(png: Data, paneLimit: Int) -> (thickness: Int, dashOn: Int, dashOff: Int)? {
+        guard let provider = CGDataProvider(data: png as CFData),
+              let cg = CGImage(pngDataProviderSource: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent)
+        else { return nil }
+        let w = cg.width
+        let h = cg.height
+        let limit = min(paneLimit, w)
+        let bytes = TestImages.bytes(cg)
+        func amber(_ x: Int, _ y: Int) -> Bool {
+            let i = (y * w + x) * 4
+            let r = Int(bytes[i]), g = Int(bytes[i + 1]), b = Int(bytes[i + 2])
+            return r >= 200 && (150...210).contains(g) && b <= 140 && r - b >= 80
+        }
+        func median(_ values: [Int]) -> Int? {
+            values.isEmpty ? nil : values.sorted()[values.count / 2]
+        }
+        var centre = -1
+        var best = 0
+        for y in 0..<h {
+            var count = 0
+            for x in 0..<limit where amber(x, y) { count += 1 }
+            if count > best {
+                best = count
+                centre = y
+            }
+        }
+        guard centre >= 0 else { return nil }
+
+        var on: [Int] = []
+        var off: [Int] = []
+        var x = 0
+        while x < limit, !amber(x, centre) { x += 1 }
+        while x < limit {
+            let isAmber = amber(x, centre)
+            var run = 0
+            while x < limit, amber(x, centre) == isAmber {
+                run += 1
+                x += 1
+            }
+            // A gap counts only when another dash follows it, so the pane right of the image is not a gap.
+            if isAmber {
+                on.append(run)
+            } else if x < limit {
+                off.append(run)
+            }
+        }
+        let interiorOn = on.count > 2 ? Array(on.dropFirst().dropLast()) : on
+
+        var heights: [Int] = []
+        for x in 0..<limit where amber(x, centre) {
+            var top = centre
+            while top > 0, amber(x, top - 1) { top -= 1 }
+            var bottom = centre
+            while bottom < h - 1, amber(x, bottom + 1) { bottom += 1 }
+            heights.append(bottom - top + 1)
+        }
+        guard let thickness = median(heights), let dashOn = median(interiorOn), let dashOff = median(off) else { return nil }
+        return (thickness, dashOn, dashOff)
+    }
+}
