@@ -384,6 +384,21 @@ private enum StitchArchive {
         var pending: Pending?
         var segments: [Segment]
         var seams: [Seam]
+        /// Missing on stitches saved before duplicate candidates existed.
+        var duplicateCandidates: [DuplicateRecord]?
+    }
+
+    struct DuplicateRecord: Codable {
+        var id: String
+        var choice: String?
+        var seamNumber: Int
+        var rowCount: Int
+        var segmentIndex: Int
+        var startRow: Int
+        /// Missing on stitches saved before the seam-offset identity existed.
+        var offset: Int?
+        var seamMoved: Bool?
+        var movedSeamNumber: Int?
     }
 
     struct Pending: Codable {
@@ -462,7 +477,32 @@ private enum StitchArchive {
         let pending = assembly.pendingSticky.map {
             Pending(headerRows: $0.headerRows, footerRows: $0.footerRows, seamCount: $0.seamCount, keepOnce: $0.keepOnce)
         }
-        return Manifest(dedupeStickyBars: assembly.dedupeStickyBars, pending: pending, segments: segments, seams: seams)
+        let duplicates = assembly.duplicateCandidates.map { candidate -> DuplicateRecord in
+            let choice: String?
+            switch candidate.choice {
+            case .keepOnce: choice = "keepOnce"
+            case .keepBoth: choice = "keepBoth"
+            case nil: choice = nil
+            }
+            return DuplicateRecord(
+                id: candidate.id,
+                choice: choice,
+                seamNumber: candidate.seamNumber,
+                rowCount: candidate.rowCount,
+                segmentIndex: candidate.segmentIndex,
+                startRow: candidate.startRow,
+                offset: candidate.offset,
+                seamMoved: candidate.seamMoved,
+                movedSeamNumber: candidate.movedSeamNumber
+            )
+        }
+        return Manifest(
+            dedupeStickyBars: assembly.dedupeStickyBars,
+            pending: pending,
+            segments: segments,
+            seams: seams,
+            duplicateCandidates: duplicates
+        )
     }
 
     static func load(from folder: URL) -> ScrollAssembly? {
@@ -507,7 +547,32 @@ private enum StitchArchive {
         let pending = manifest.pending.map {
             PendingStickyConfirmation(headerRows: $0.headerRows, footerRows: $0.footerRows, seamCount: $0.seamCount, keepOnce: $0.keepOnce)
         }
-        return ScrollAssembly(segments: segments, seams: seams, dedupeStickyBars: manifest.dedupeStickyBars, pendingSticky: pending)
+        let duplicates = (manifest.duplicateCandidates ?? []).map { record -> DuplicateSegmentCandidate in
+            let choice: DuplicateSegmentChoice?
+            switch record.choice {
+            case "keepOnce": choice = .keepOnce
+            case "keepBoth": choice = .keepBoth
+            default: choice = nil
+            }
+            return DuplicateSegmentCandidate(
+                id: record.id,
+                choice: choice,
+                seamNumber: record.seamNumber,
+                rowCount: record.rowCount,
+                segmentIndex: record.segmentIndex,
+                startRow: record.startRow,
+                offset: record.offset ?? 0,
+                seamMoved: record.seamMoved ?? false,
+                movedSeamNumber: record.movedSeamNumber
+            )
+        }
+        return ScrollAssembly(
+            segments: segments,
+            seams: seams,
+            dedupeStickyBars: manifest.dedupeStickyBars,
+            pendingSticky: pending,
+            duplicateCandidates: duplicates
+        )
     }
 
     private static func loadRGBA(_ url: URL) -> RGBAImage? {

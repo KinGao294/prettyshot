@@ -117,6 +117,115 @@ public enum StitchCopy {
         return "⚠ 还有 \(remainder.count) 处没处理（\(remainder.detail)）。为了不拼错，处理完才能继续——不会静默拼接。"
     }
 
+    /// Preview primary while a seam or the sticky bar is the current step. N is that step's own count.
+    public static func handleNext(_ count: Int) -> String {
+        "处理下一处 · \(max(0, count))"
+    }
+
+    public static func confirmDuplicates(_ count: Int) -> String {
+        "先确认 \(max(0, count)) 处重复段"
+    }
+
+    public static let nextBeautify = "下一步 · 美化 →"
+
+    public static func duplicatePendingTitle(_ index: Int) -> String {
+        "重复段 \(index) · 待确认"
+    }
+
+    public static let duplicateSeamMovedSuffix = "接缝动过，需要重选"
+
+    public static func duplicateLocation(seam: Int, rows: Int, seamMoved: Bool = false) -> String {
+        let line = "接缝 \(seam) 下方 · \(rows) 行"
+        guard seamMoved else { return line }
+        return line + joiner + duplicateSeamMovedSuffix
+    }
+
+    /// Lead sentence on a card whose choice was cleared because its boundary moved.
+    public static func duplicateSeamMovedNote(seam: Int) -> String {
+        "接缝 \(seam) 动过，这里之前的选择已清掉，需要重选。"
+    }
+
+    public static let duplicateDetail = "这段内容出现了两次"
+    public static let keepDuplicateOnce = "只保留一次"
+    public static let keepDuplicateBoth = "都保留"
+    public static let restoreDuplicate = "还原"
+    public static let undoDuplicate = "撤销"
+
+    public static func duplicateHandled(_ choice: DuplicateSegmentChoice) -> String {
+        switch choice {
+        case .keepOnce: return "✓ 已处理 · 只保留一次"
+        case .keepBoth: return "✓ 已处理 · 都保留"
+        }
+    }
+
+    public static func duplicateRestoredToast(index: Int, remaining: Int) -> String {
+        "重复段 \(index) 已还原为待确认 · 待确认还剩 \(remaining) 处"
+    }
+
+    /// Shown with 「撤销」 right after 「只保留一次」 or 「都保留」.
+    public static func duplicateChoiceToast(index: Int, choice: DuplicateSegmentChoice, remaining: Int) -> String {
+        let name = choice == .keepOnce ? keepDuplicateOnce : keepDuplicateBoth
+        return "重复段 \(index) 已改为\(name) · 待确认还剩 \(remaining) 处"
+    }
+
+    public static func duplicatesRedetected(_ count: Int) -> String {
+        "重复段已重新识别，\(count) 处待确认"
+    }
+
+    /// Second half of the re-detect toast. Nil when there is nothing to report.
+    /// A moved seam replaces the kept-count sentence. Every choice kept uses its own sentence.
+    public static func duplicateRedetectDetail(kept: Int, pending: Int, clearedSeam: Int?, clearedCount: Int) -> String? {
+        if let clearedSeam, clearedCount > 0 {
+            return "接缝 \(clearedSeam) 动过，那里的 \(clearedCount) 处选择已清掉，需要重选"
+        }
+        if pending == 0, kept > 0 {
+            return "重复段的选择都保留了"
+        }
+        if pending > 0, kept > 0 {
+            return "重复段已重新识别，保留了 \(kept) 处选择，\(pending) 处待确认"
+        }
+        if pending > 0 {
+            return duplicatesRedetected(pending)
+        }
+        return nil
+    }
+
+    /// ML6l / ML6l-b, after manual alignment 「完成」. Nil when re-detect found nothing to say.
+    /// Re-detect still drops the undo stack, so this toast has no 「撤销」.
+    public static func manualAlignmentRedetected(
+        seam: Int,
+        overlap: Int,
+        kept: Int,
+        pending: Int,
+        clearedSeam: Int?,
+        clearedCount: Int
+    ) -> String? {
+        guard let detail = duplicateRedetectDetail(
+            kept: kept,
+            pending: pending,
+            clearedSeam: clearedSeam,
+            clearedCount: clearedCount
+        ) else { return nil }
+        return "接缝 \(seam) 已对齐（手动 +\(overlap) px）" + joiner + detail
+    }
+
+    /// After 「还原自动」. Same second half as 「完成」. Nil when re-detect found nothing to say.
+    public static func restoreAutoRedetected(
+        seam: Int,
+        kept: Int,
+        pending: Int,
+        clearedSeam: Int?,
+        clearedCount: Int
+    ) -> String? {
+        guard let detail = duplicateRedetectDetail(
+            kept: kept,
+            pending: pending,
+            clearedSeam: clearedSeam,
+            clearedCount: clearedCount
+        ) else { return nil }
+        return "接缝 \(seam) 已还原自动" + joiner + detail
+    }
+
     public static func savedSegments(_ count: Int) -> String {
         "已把 \(count) 段分别放进历史"
     }
