@@ -22,7 +22,6 @@ public protocol Redactable {
 public enum Redactor {
     private static let context = CIContext(options: [
         .cacheIntermediates: false,
-        // Avoid an extra working-space conversion buffer beside the ROI scratch.
         .workingColorSpace: NSNull(),
     ])
 
@@ -64,7 +63,6 @@ public enum Redactor {
                 reach = CGFloat(amount) + 2
             case .blur:
                 amount = Float(max(14 * scale * geometryScale, min(ciRect.width, ciRect.height) / 10))
-                // Must stay amount*4+2: smaller reach changes gaussian edge pixels vs main/PreRefactor.
                 reach = CGFloat(amount) * 4 + 2
             }
             planned.append((region.kind, ciRect, amount))
@@ -138,14 +136,19 @@ public enum Redactor {
                     roi = roi.union(groups[hit].roi)
                     members += groups[hit].members
                     groups.remove(at: hit)
-                    m    /// Runs the redaction filters over `roi` only and writes the redacted rects back into `bitmap`.
+                    merged = true
+                }
+            }
+            groups.append((roi, members.sorted()))
+        }
+        return groups
+    }
+
+    /// Runs the redaction filters over `roi` only and writes the result straight back into `bitmap`.
     /// `roi` covers every redacted rect plus the distance its filter reads, so clamping at the patch
     /// edge does not reach the redacted pixels. The patch is copied out of `bitmap` first, so Core
-    /// Image never reads what is being written.
-    ///
-    /// Full-ROI (not tiled): CIGaussianBlur must see one contiguous apron to stay byte-identical to
-    /// PreRefactor / main. Vertical strips were tried for peak but disagreed at strip boundaries and
-    /// on overlapping marks. Amount/reach stay amount*4+2 for blur.
+    /// Image never reads what is being written. Full-ROI (not tiled): CIGaussianBlur needs one
+    /// contiguous apron for byte-identity vs PreRefactor / main. Render only the mark writeBounds.
     private static func redactPatch(
         _ planned: [(kind: RedactionKind, rect: CGRect, amount: Float)],
         roi: CGRect,
@@ -213,11 +216,6 @@ public enum Redactor {
             bounds: writeBounds, format: .RGBA8, colorSpace: space
         )
         withExtendedLifetime(bytes) {}
-    }
-
-     output, toBitmap: outPtr, rowBytes: outBytesPerRow,
-            bounds: write, format: .RGBA8, colorSpace: space
-        )
     }
 
     /// Downscaled copy of `image` for cheap live previews.
