@@ -23,14 +23,15 @@ enum ShotEncoder {
     }
 }
 
-/// Holds the original bytes plus one downscaled preview. The preview is released before a full-size export.
+/// Holds the original bytes plus one downscaled source. The on-screen preview is that source
+/// composited with the current background, crop, and marks. Both are released before a full-size export.
 /// Touch it on the main thread.
 final class EditorModel: ObservableObject {
-    @Published var style = BackgroundStyle.default
+    @Published var style = BackgroundStyle.default { didSet { redrawPreviewIfShowing() } }
     @Published var tool: EditorTool = .background
-    @Published var removeStatusBar = true
-    @Published var arrows: [ArrowMark] = []
-    @Published var redactions: [PixelRedaction] = []
+    @Published var removeStatusBar = true { didSet { redrawPreviewIfShowing() } }
+    @Published var arrows: [ArrowMark] = [] { didSet { redrawPreviewIfShowing() } }
+    @Published var redactions: [PixelRedaction] = [] { didSet { redrawPreviewIfShowing() } }
     @Published var preview: UIImage?
     @Published var toastTitle: String?
     @Published var toastDetail: String?
@@ -54,6 +55,14 @@ final class EditorModel: ObservableObject {
     var addedRedactionThisSession: Bool { !redactions.isEmpty }
     private var undoStack: [Snapshot] = []
     private var redoStack: [Snapshot] = []
+    /// Downscaled source. The canvas shows `preview`, which is this bitmap after beautify.
+    private var previewBase: CGImage?
+    private var suspendPreviewRedraw = 0
+    /// DPI scale for files that are not a known iPhone screenshot. Retina Mac shots are 2.
+    private var fileScale: CGFloat = 1
+
+    /// Same point scale the Mac editor uses: iPhone table first, otherwise the file DPI.
+    var renderScale: CGFloat { cropMatch?.scale ?? fileScale }
 
     var pixelCount: Int { max(0, pixelWidth) * max(0, pixelHeight) }
 
@@ -64,6 +73,7 @@ final class EditorModel: ObservableObject {
     func load(_ data: Data) {
         sourceURL = nil
         encoded = data
+        fileScale = ImagePrep.pointScale(data)
         applySize(ImagePrep.pixelSize(data))
         refreshPreview()
         markSessionBaseline()
@@ -73,6 +83,7 @@ final class EditorModel: ObservableObject {
     func load(fileURL: URL) {
         sourceURL = fileURL
         encoded = Data()
+        fileScale = ImagePrep.pointScale(fileURL)
         applySize(ImagePrep.pixelSize(fileURL))
         refreshPreview()
         markSessionBaseline()
@@ -89,15 +100,28 @@ final class EditorModel: ObservableObject {
     }
 
     func refreshPreview() {
-        let image: CGImage?
         if let sourceURL {
-            image = ImagePrep.downsample(sourceURL, maxLongSide: ExtensionMemoryBudget.previewMaxLongSide)
+            previewBase = ImagePrep.downsample(sourceURL, maxLongSide: ExtensionMemoryBudget.previewMaxLongSide)
         } else if !encoded.isEmpty {
-            image = ImagePrep.downsample(encoded, maxLongSide: ExtensionMemoryBudget.previewMaxLongSide)
+            previewBase = ImagePrep.downsample(encoded, maxLongSide: ExtensionMemoryBudget.previewMaxLongSide)
         } else {
-            image = nil
+            previewBase = nil
         }
-        preview = image.map { UIImage(cgImage: $0) }
+        redrawPreview()
+    }
+
+    /// Style, crop, and marks changed. Reuses the downscaled source already in memory.
+    private func redrawPreviewIfShowing() {
+        guard suspendPreviewRedraw == 0 else { return }
+        redrawPreview()
+    }
+
+    private func redrawPreview() {
+        guard let previewBase else {
+            preview = nil
+            return
+        }
+        preview = render(previewBase).map { UIImage(cgImage: $0) }
     }
 
     /// Original file for handoff. Copies encoded bytes out only when there is no file yet.
@@ -115,7 +139,7 @@ final class EditorModel: ObservableObject {
             pixelHeight: pixelHeight,
             canTransferToApp: canTransferToApp,
             style: style,
-            scale: cropMatch.map { CGFloat($0.scale) }
+            scale: renderScale
         ) {
         case .handOffOriginal:
             return .handoff
@@ -134,6 +158,7 @@ final class EditorModel: ObservableObject {
 
     private func renderFullResolution() -> CGImage? {
         preview = nil
+        previewBase = nil
         let rendered: CGImage? = {
             // Not cached: the decoded pixels land in the redacted buffer, not beside it.
             let full: CGImage?
@@ -248,14 +273,14 @@ final class EditorModel: ObservableObject {
 
     private func render(_ base: CGImage) -> CGImage? {
         let geometryScale = CGFloat(base.width) / CGFloat(max(pixelWidth, 1))
-        let baked = Redactor.apply(redactions, to: base, scale: cropMatch?.scale ?? 1, geometryScale: geometryScale)
+        let baked = Redactor.apply(redactions, to: base, scale: renderScale, geometryScale: geometryScale)
         let crop = activeCrop(width: baked.width, height: baked.height).integral
         guard crop.width >= 1, crop.height >= 1 else { return nil }
         let input = BeautifyInput(
             base: baked,
             crop: crop,
             background: style,
-            scale: (cropMatch?.scale ?? 1) * geometryScale,
+            scale: renderScale * geometryScale,
             baseSize: CGSize(width: baked.width, height: baked.height)
         )
         return BeautifyRenderer.render(input) { context in
@@ -281,7 +306,7 @@ final class EditorModel: ObservableObject {
         context.saveGState()
         context.setStrokeColor(CGColor(srgbRed: 232 / 255, green: 160 / 255, blue: 168 / 255, alpha: 1))
         context.setFillColor(CGColor(srgbRed: 232 / 255, green: 160 / 255, blue: 168 / 255, alpha: 1))
-        let width = max(2, 7 * (cropMatch?.scale ?? 1) * CGFloat(image.width) / CGFloat(max(pixelWidth, 1)))
+        let width = max(2, 7 * renderScale * CGFloat(image.width) / CGFloat(max(pixelWidth, 1)))
         context.setLineWidth(width)
         context.setLineCap(.round)
         for arrow in arrows where arrow.isMeaningful {
@@ -323,9 +348,12 @@ final class EditorModel: ObservableObject {
     }
 
     private func apply(_ snapshot: Snapshot) {
+        suspendPreviewRedraw += 1
         arrows = snapshot.arrows
         redactions = snapshot.redactions
         removeStatusBar = snapshot.removeStatusBar
+        suspendPreviewRedraw -= 1
+        redrawPreview()
         canUndo = !undoStack.isEmpty
         canRedo = !redoStack.isEmpty
     }

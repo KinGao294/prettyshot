@@ -155,6 +155,19 @@ enum ImagePrep {
         return pixelSize(source)
     }
 
+    /// Pixels per point from the file DPI. A Retina Mac screenshot is 144 dpi, so padding and the
+    /// gradient margin use the same 2× scale as the Mac editor. 72 dpi and missing DPI stay at 1×.
+    /// Known iPhone screenshot sizes still take their scale from `StatusBarCropTable`.
+    static func pointScale(_ data: Data) -> CGFloat {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return 1 }
+        return pointScale(source)
+    }
+
+    static func pointScale(_ url: URL) -> CGFloat {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return 1 }
+        return pointScale(source)
+    }
+
     static func downsample(_ data: Data, maxLongSide: Int) -> CGImage? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
         return downsample(source, maxLongSide: maxLongSide)
@@ -181,6 +194,15 @@ enum ImagePrep {
     private static func decodeOptions(cached: Bool) -> CFDictionary? {
         guard !cached else { return nil }
         return [kCGImageSourceShouldCache: false, kCGImageSourceShouldCacheImmediately: false] as CFDictionary
+    }
+
+    private static func pointScale(_ source: CGImageSource) -> CGFloat {
+        guard let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let dpi = (props[kCGImagePropertyDPIWidth] as? NSNumber)?.doubleValue,
+              dpi > 0 else { return 1 }
+        let scale = dpi / 72
+        guard scale >= 1.5, scale <= 4 else { return 1 }
+        return CGFloat(scale)
     }
 
     private static func pixelSize(_ source: CGImageSource) -> (width: Int, height: Int)? {

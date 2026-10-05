@@ -2199,6 +2199,40 @@ final class FollowUp35Tests: XCTestCase {
         XCTAssertFalse(LargeHandoff.showsShrinkPadding(pixelWidth: 1179, pixelHeight: 2556, style: .default))
     }
 
+    func testSelectedPhotoPreviewShowsTheCurrentBackground() throws {
+        let model = EditorModel()
+        model.load(try XCTUnwrap(ShotEncoder.pngData(try solid(width: 80, height: 80))))
+        let first = try XCTUnwrap(model.preview?.cgImage)
+        let padded = Int((BackgroundStyle.default.padding * 2).rounded())
+        XCTAssertEqual(first.width, 80 + padded)
+        XCTAssertEqual(first.height, 80 + padded)
+        let cream = rgba(first, x: 2, y: 2)
+        let photo = rgba(first, x: first.width / 2, y: first.height / 2)
+        XCTAssertGreaterThan(photo.red, 240)
+        XCTAssertGreaterThan(photo.blue, 240)
+
+        model.style.presetKey = "night-ink"
+        let next = try XCTUnwrap(model.preview?.cgImage)
+        let ink = rgba(next, x: 2, y: 2)
+        XCTAssertGreaterThan(Int(cream.red), Int(ink.red) + 80)
+        XCTAssertLessThan(ink.red, 80)
+    }
+
+    /// A Retina Mac screenshot is 144 dpi. The gradient margin uses that 2× scale, same as the Mac editor.
+    func testRetinaScreenshotUsesTheSamePointScaleAsMac() throws {
+        let model = EditorModel()
+        model.load(try png(width: 80, height: 80, dpi: 144))
+        XCTAssertEqual(model.renderScale, 2, accuracy: 0.001)
+        let preview = try XCTUnwrap(model.preview?.cgImage)
+        let margin = Int((BackgroundStyle.default.padding * 2 * 2).rounded())
+        XCTAssertEqual(preview.width, 80 + margin)
+        XCTAssertEqual(preview.height, 80 + margin)
+        let corner = rgba(preview, x: 4, y: 4)
+        let photo = rgba(preview, x: preview.width / 2, y: preview.height / 2)
+        XCTAssertGreaterThan(Int(corner.red), 160)
+        XCTAssertGreaterThan(photo.blue, 240)
+    }
+
     func test11bShrinkPaddingOpensTheStylePanelWithoutChangingValues() throws {
         let model = EditorModel()
         model.load(try XCTUnwrap(ShotEncoder.pngData(try solid(width: 8, height: 8))))
@@ -2278,6 +2312,24 @@ final class FollowUp35Tests: XCTestCase {
         XCTAssertTrue(PreviewDownsampleChip.shows(
             inExtension: true, pixelWidth: 4000, pixelHeight: 3000, canTransferToApp: true, style: wideMargins
         ))
+    }
+
+    private func png(width: Int, height: Int, dpi: Double) throws -> Data {
+        let image = try solid(width: width, height: height)
+        let data = NSMutableData()
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithData(data, "public.png" as CFString, 1, nil))
+        let props = [kCGImagePropertyDPIWidth: dpi, kCGImagePropertyDPIHeight: dpi] as CFDictionary
+        CGImageDestinationAddImage(destination, image, props)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        return data as Data
+    }
+
+    private func rgba(_ image: CGImage, x: Int, y: Int) -> (red: UInt8, green: UInt8, blue: UInt8) {
+        guard let cf = image.dataProvider?.data else { return (0, 0, 0) }
+        let data = cf as Data
+        let index = y * image.bytesPerRow + x * 4
+        guard index + 2 < data.count else { return (0, 0, 0) }
+        return (data[index], data[index + 1], data[index + 2])
     }
 
     private func solid(width: Int, height: Int) throws -> CGImage {
