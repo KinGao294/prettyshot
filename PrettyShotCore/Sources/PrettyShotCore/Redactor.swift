@@ -141,11 +141,15 @@ public enum Redactor {
         return groups
     }
 
-    /// Runs the redaction filters over `roi` only and writes the result straight back into `bitmap`.
+    /// Runs the redaction filters over `roi` only and writes the redacted rects back into `bitmap`.
     /// `roi` covers every redacted rect plus the distance its filter reads, so clamping at the patch
-    /// edge does not reach the redacted pixels. The patch is copied out of `bitmap` first, so Core
-    /// Image never reads what is being written. Rendering into `bitmap` (rather than into a new
-    /// CGImage drawn back over it) keeps a second patch-sized copy out of the peak.
+    /// edge does not reach the redacted pixels.
+    ///
+    /// The input is a no-copy `CIImage` view of `bitmap`'s ROI (same RGBA8 layout, full-canvas
+    /// `bytesPerRow`). Filters run against that view; the render target is a small buffer covering
+    /// only the union of the mark rects — not a second full-ROI copy beside the canvas. Writing into
+    /// a separate buffer (rather than into `bitmap` while Core Image still reads it) keeps the
+    /// read/write stores apart without paying for an ROI-sized scratch at peak.
     private static func redactPatch(
         _ planned: [(kind: RedactionKind, rect: CGRect, amount: Float)],
         roi: CGRect,
@@ -157,27 +161,19 @@ public enum Redactor {
         let patchWidth = Int(roi.width)
         let patchHeight = Int(roi.height)
         guard patchWidth > 0, patchHeight > 0 else { return }
-        let patchBytesPerRow = patchWidth * 4
         let top = imageHeight - Int(roi.maxY)
         let left = Int(roi.minX)
-        // Filled in place and handed over toll-free: bridging a Swift `Data` may copy the patch again.
-        guard let bytes = NSMutableData(length: patchBytesPerRow * patchHeight) else { return }
-        let base = bytes.mutableBytes
-        for row in 0..<patchHeight {
-            let from = bitmap.baseAddress + (top + row) * bytesPerRow + left * 4
-            (base + row * patchBytesPerRow).copyMemory(from: from, byteCount: patchBytesPerRow)
-        }
-        guard let provider = CGDataProvider(data: bytes as CFData),
-              let patch = CGImage(
-                width: patchWidth, height: patchHeight,
-                bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: patchBytesPerRow,
-                space: space,
-                bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
-                provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent
-              ) else { return }
-
-        let source = CIImage(cgImage: patch)
-            .transformed(by: CGAffineTransform(translationX: roi.minX, y: roi.minY))
+        // bytesNoCopy + .none: CIImage keeps the Data alive for the render; the canvas owns the bytes.
+        let roiByteCount = (patchHeight - 1) * bytesPerRow + patchWidth * 4
+        let roiStart = bitmap.baseAddress + top * bytesPerRow + left * 4
+        let roiData = Data(bytesNoCopy: roiStart, count: roiByteCount, deallocator: .none)
+        let source = CIImage(
+            bitmapData: roiData,
+            bytesPerRow: bytesPerRow,
+            size: CGSize(width: patchWidth, height: patchHeight),
+            format: .RGBA8,
+            colorSpace: space
+        ).transformed(by: CGAffineTransform(translationX: roi.minX, y: roi.minY))
         var output = source
         for region in planned {
             let effect: CIImage?
@@ -198,10 +194,28 @@ public enum Redactor {
                 output = effect.cropped(to: region.rect).composited(over: output)
             }
         }
-        // Core Image writes the top row of `roi` first, at the patch's top-left pixel in `bitmap`.
-        let target = bitmap.baseAddress + top * bytesPerRow + left * 4
-        context.render(output, toBitmap: target, rowBytes: bytesPerRow, bounds: roi,
-                       format: .RGBA8, colorSpace: space)
+        // Only the mark pixels change; the reach apron was input context and stays as drawn.
+        var writeBounds = CGRect.null
+        for region in planned {
+            writeBounds = writeBounds.union(region.rect)
+        }
+        writeBounds = writeBounds.integral.intersection(roi)
+        guard !writeBounds.isEmpty else { return }
+        let outWidth = Int(writeBounds.width)
+        let outHeight = Int(writeBounds.height)
+        let outBytesPerRow = outWidth * 4
+        guard let outBytes = NSMutableData(length: outBytesPerRow * outHeight) else { return }
+        context.render(
+            output, toBitmap: outBytes.mutableBytes, rowBytes: outBytesPerRow,
+            bounds: writeBounds, format: .RGBA8, colorSpace: space
+        )
+        let outTop = imageHeight - Int(writeBounds.maxY)
+        let outLeft = Int(writeBounds.minX)
+        let base = outBytes.mutableBytes
+        for row in 0..<outHeight {
+            let dest = bitmap.baseAddress + (outTop + row) * bytesPerRow + outLeft * 4
+            dest.copyMemory(from: base + row * outBytesPerRow, byteCount: outBytesPerRow)
+        }
     }
 
     /// Downscaled copy of `image` for cheap live previews.
