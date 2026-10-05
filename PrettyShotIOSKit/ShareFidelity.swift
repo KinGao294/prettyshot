@@ -11,11 +11,20 @@ enum ExportFidelity: Equatable {
 }
 
 enum ExportFidelityRouter {
-    static func decide(pixelWidth: Int, pixelHeight: Int, canTransferToApp: Bool) -> ExportFidelity {
+    /// `style` is the user's current padding, radius, and shadow. The default style is only the fallback.
+    static func decide(
+        pixelWidth: Int,
+        pixelHeight: Int,
+        canTransferToApp: Bool,
+        style: BackgroundStyle = .default,
+        scale: CGFloat? = nil
+    ) -> ExportFidelity {
         switch ExtensionMemoryBudget.plan(
             pixelWidth: pixelWidth,
             pixelHeight: pixelHeight,
-            canTransferToApp: canTransferToApp
+            canTransferToApp: canTransferToApp,
+            style: style,
+            scale: scale
         ) {
         case .fullResolutionInline:
             return .fullResolutionPNG
@@ -78,6 +87,19 @@ enum InAppStitchLoader {
             return .missing(ordinals: missing)
         }
         return .failed
+    }
+
+    /// Two or more picked images use the multi-image error page and reopen the multi-image picker.
+    static func reselectOpensMultiPicker(pickedCount: Int) -> Bool {
+        pickedCount >= 2
+    }
+
+    static func errorTitle(pickedCount: Int) -> String {
+        reselectOpensMultiPicker(pickedCount: pickedCount) ? IOSCopy.multiUnreadableTitle : IOSCopy.memoryFailedTitle
+    }
+
+    static func errorBody(pickedCount: Int) -> String {
+        reselectOpensMultiPicker(pickedCount: pickedCount) ? IOSCopy.multiUnreadableBody : IOSCopy.memoryFailedBody
     }
 }
 

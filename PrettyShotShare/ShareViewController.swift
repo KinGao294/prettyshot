@@ -6,6 +6,8 @@ final class ShareViewController: UIViewController {
     private let store: HandoffStore = HandoffStoreFactory.live()
     private var phase: SharePhase = .loading
     private var showsLarge = false
+    /// Frame 11 or 11a, as `ShareExportRoute` decided on the last copy or save.
+    private var largeHandoff: LargeHandoffSheet?
     private var showsDenied = false
     private var host: UIHostingController<ShareFlowView>?
     private var providers: [NSItemProvider] = []
@@ -15,6 +17,12 @@ final class ShareViewController: UIViewController {
     /// Temp copies from this attempt. Cancel deletes these, not the photo-library originals.
     private var attemptCopies: [URL] = []
     private var gathered: GatheredShareFiles?
+    /// S12. True after a multi-image open failed and nothing was staged.
+    private var showsS12OpenHint = false
+    /// Frame 13. The picker failed to open while the read-failed page was showing.
+    private var showsReadFailedOpenHint = false
+    /// S10f body for a multi-image or PDF share.
+    private var showsMultiInlineFootnote = false
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -49,15 +57,18 @@ final class ShareViewController: UIViewController {
             onContinuePartial: { [weak self] in self?.continuePartial() },
             onCancelHandoff: { [weak self] in self?.cancelHandoff() },
             onDismissLarge: { [weak self] in
-                self?.showsLarge = false
-                self?.refresh()
+                self?.keepEditsAndDismissLarge()
             },
             onDismissDenied: { [weak self] in
                 self?.showsDenied = false
                 self?.phase = .editor
                 self?.refresh()
             },
-            onOpenSettings: { [weak self] in self?.openSettings() }
+            onOpenSettings: { [weak self] in self?.openSettings() },
+            showsS12OpenHint: showsS12OpenHint,
+            showsReadFailedOpenHint: showsReadFailedOpenHint,
+            showsMultiInlineFootnote: showsMultiInlineFootnote,
+            largeHandoff: largeHandoff
         )
     }
 
@@ -123,63 +134,84 @@ final class ShareViewController: UIViewController {
     }
 
     private func copyOut() {
-        switch editor.export(canTransferToApp: store.canTransferToApp) {
-        case .image(let image):
-            PhotoLibrarySaver.copyToPasteboard(image)
-            phase = .saved(title: IOSCopy.toastCopied, detail: IOSCopy.toastCopiedDetail)
-            refresh()
-            finishSoon()
-        case .handoff:
-            presentOverBudget()
-        case .reselectInApp, nil:
-            presentCannotHandOff()
-        }
+        guard let image = inlineExport() else { return }
+        PhotoLibrarySaver.copyToPasteboard(image)
+        phase = .saved(title: IOSCopy.toastCopied, detail: IOSCopy.toastCopiedDetail)
+        refresh()
+        finishSoon()
     }
 
     private func saveOut() {
-        switch editor.export(canTransferToApp: store.canTransferToApp) {
-        case .image(let image):
-            guard let data = ShotEncoder.pngData(image) else {
-                phase = .failed
-                refresh()
+        guard let image = inlineExport() else { return }
+        guard let data = ShotEncoder.pngData(image) else {
+            phase = .failed
+            refresh()
+            return
+        }
+        PhotoLibrarySaver.savePNG(data) { [weak self] status in
+            guard let self else { return }
+            if PhotoSaveRouter.route(for: status) == .offerCopy {
+                self.showsDenied = true
+                self.phase = .editor
+                self.refresh()
                 return
             }
-            PhotoLibrarySaver.savePNG(data) { [weak self] status in
-                guard let self else { return }
-                if PhotoSaveRouter.route(for: status) == .offerCopy {
-                    self.showsDenied = true
-                    self.phase = .editor
-                    self.refresh()
-                    return
-                }
-                self.phase = .saved(title: IOSCopy.toastSaved, detail: IOSCopy.toastSavedDetail)
-                self.refresh()
-                self.finishSoon()
-            }
-        case .handoff:
-            presentOverBudget()
-        case .reselectInApp, nil:
-            presentCannotHandOff()
+            self.phase = .saved(title: IOSCopy.toastSaved, detail: IOSCopy.toastSavedDetail)
+            self.refresh()
+            self.finishSoon()
         }
     }
 
-    /// Frame 11 when the original file can move to the app. Otherwise S10f. Never a smaller bitmap.
-    private func presentOverBudget() {
+    /// Copy and save act on `ShareExportRoute`: frame 11 / 11a when the original can move to the
+    /// app, S10f when it cannot, and a full-resolution render only on `.inline`. Never 11b, never
+    /// a smaller bitmap. Returns nil after presenting the sheet or page it chose.
+    private func inlineExport() -> CGImage? {
+        switch ShareExportRoute.decide(editor, canTransferToApp: store.canTransferToApp) {
+        case .largeSheet(let sheet):
+            presentLarge(sheet)
+            return nil
+        case .reselectInApp:
+            presentCannotHandOff()
+            return nil
+        case .inline:
+            if case .image(let image) = editor.export(canTransferToApp: store.canTransferToApp) {
+                return image
+            }
+            presentCannotHandOff()
+            return nil
+        }
+    }
+
+    /// Frame 11 / 11a. Only reached with a transfer channel; without one the route is S10f.
+    private func presentLarge(_ sheet: LargeHandoffSheet) {
         pendingKind = .singleImage
         showsDenied = false
-        if store.canTransferToApp {
-            showsLarge = true
-        } else {
-            showsLarge = false
-            phase = .cannotHandOff(manualOpenHint: false)
-        }
+        largeHandoff = sheet
+        showsLarge = true
         refresh()
     }
 
-    private func presentCannotHandOff() {
+    private func presentCannotHandOff(multiFootnote: Bool = false) {
         showsLarge = false
         showsDenied = false
+        showsS12OpenHint = false
+        showsMultiInlineFootnote = multiFootnote
         phase = .cannotHandOff(manualOpenHint: false)
+        refresh()
+    }
+
+    private func keepEditsAndDismissLarge() {
+        let kept = Frame11Cancel.preserved(
+            padding: editor.style.padding,
+            arrowCount: editor.arrows.count,
+            redactionCount: editor.redactions.count,
+            removeStatusBar: editor.removeStatusBar
+        )
+        editor.style.padding = kept.padding
+        editor.removeStatusBar = kept.removeStatusBar
+        editor.arrows = Array(editor.arrows.prefix(kept.arrowCount))
+        editor.redactions = Array(editor.redactions.prefix(kept.redactionCount))
+        showsLarge = false
         refresh()
     }
 
@@ -193,7 +225,17 @@ final class ShareViewController: UIViewController {
 
     private func beginMultiHandoff() {
         if !store.canTransferToApp {
-            presentCannotHandOff()
+            let stagedCount = stagedTicket?.fileNames.count ?? 0
+            switch S12Launch.afterOpenFailed(stagedFileCount: stagedCount) {
+            case .stayOnMultiPage:
+                showsS12OpenHint = true
+                refresh()
+            case .notThisPage:
+                phase = .stagedAwaitingApp(count: stagedCount)
+                refresh()
+            case .reselectOnS10f:
+                presentCannotHandOff(multiFootnote: pendingKind != .singleImage)
+            }
             return
         }
         showsLarge = false
@@ -343,22 +385,39 @@ final class ShareViewController: UIViewController {
     /// Opens the in-app photo picker. Does not discard a staged ticket or the shared photo.
     /// Failure stays on S10f. It does not stage a file and does not switch to S10d.
     private func openPicker() {
+        let fromReadFailedPage = phase == .failed
         guard let url = URL(string: "prettyshot://pick") else {
-            phase = .cannotHandOff(manualOpenHint: true)
-            refresh()
+            applyPickerOutcome(.stayAndAskToOpenApp, fromReadFailedPage: fromReadFailedPage)
             return
         }
         extensionContext?.open(url) { [weak self] success in
             DispatchQueue.main.async {
                 guard let self else { return }
-                switch ExtensionLaunchRouter.afterPickerOpen(succeeded: success) {
-                case .opened:
-                    self.finishSoon()
-                case .stayAndAskToOpenApp:
-                    self.phase = .cannotHandOff(manualOpenHint: true)
-                    self.refresh()
-                }
+                let outcome = ExtensionLaunchRouter.afterPickerOpen(
+                    succeeded: success,
+                    fromReadFailedPage: fromReadFailedPage
+                )
+                self.applyPickerOutcome(outcome, fromReadFailedPage: fromReadFailedPage)
             }
+        }
+    }
+
+    private func applyPickerOutcome(_ outcome: PickerLaunchOutcome, fromReadFailedPage: Bool) {
+        switch outcome {
+        case .opened:
+            finishSoon()
+        case .stayOnReadFailedPage:
+            phase = .failed
+            showsReadFailedOpenHint = true
+            refresh()
+        case .stayAndAskToOpenApp:
+            if fromReadFailedPage {
+                phase = .failed
+                showsReadFailedOpenHint = true
+            } else {
+                phase = .cannotHandOff(manualOpenHint: true)
+            }
+            refresh()
         }
     }
 
@@ -383,7 +442,7 @@ final class ShareViewController: UIViewController {
     }
 
     private func finishSoon() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + ExtensionSavedToast.dismissAfter) { [weak self] in
             self?.extensionContext?.completeRequest(returningItems: nil)
         }
     }

@@ -98,6 +98,30 @@ final class RenderingGoldenTests: XCTestCase {
         }
     }
 
+    /// Review of e5afc07: marks far apart are redacted in separate patches. One mark near the top and
+    /// one near the bottom must still match the frozen whole-image path pixel for pixel.
+    /// At scale 1 the top pixelate reads 10 + 2 px past its rect (rows 0–38, y down) and the bottom blur
+    /// 14 × 4 + 2 px (rows 142–240), so the two never share a patch.
+    func testRedactionTopAndBottomMarksMatchPreRefactor() {
+        let image = TestImages.make(width: 96, height: 240, striped: true)
+        let top = CGRect(x: 8, y: 6, width: 60, height: 20)
+        let bottom = CGRect(x: 20, y: 200, width: 50, height: 30)
+        let live = Redactor.apply(
+            [Mark(kind: .pixelate, rect: top), Mark(kind: .blur, rect: bottom)],
+            to: image, scale: 1
+        )
+        let frozen = PreRefactorSnapshot.redact(
+            [
+                PreRefactorSnapshot.Region(pixelate: true, rect: top),
+                PreRefactorSnapshot.Region(pixelate: false, rect: bottom),
+            ],
+            image: image, scale: 1
+        )
+        XCTAssertFalse(live === image)
+        XCTAssertSamePixels(live, frozen, "top-and-bottom")
+        XCTAssertNotEqual(TestImages.bytes(live), TestImages.bytes(image))
+    }
+
     func testTinyRedactionReturnsTheSameImage() {
         let image = TestImages.make(width: 32, height: 16, striped: true)
         let redacted = Redactor.apply([
