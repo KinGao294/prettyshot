@@ -628,93 +628,53 @@ final class ExtensionMemoryBudgetTests: XCTestCase {
 
     /// Review eea0efd must-fix 1. One mark near the top and one near the bottom must not make redaction
     /// copy and render the whole span between them: still one full-size buffer at peak.
+    ///
+    /// PRD v0.3.47 / AC-I17: this test takes exactly one cold sample per process and logs it. It does
+    /// NOT assert the production gate. CI runs it on its own with
+    /// `-test-iterations 3 -test-repetition-relaunch-enabled YES`, so the three samples come from three
+    /// independent test processes, and `.github/scripts/judge-redact-peak.py` is the real gate: it needs
+    /// exactly three samples, picks the process with the lowest peak, and judges peak and retained on
+    /// that same process against the unchanged limits (sourceBytes + 2MB = 17,240,192 bytes; retained
+    /// ≤ 2MB). It fails only if that picked process fails, i.e. only if all three exceed the peak limit.
+    /// The asserts below are a soft local ceiling (peak ≤ 30MB, retained ≤ 8MB): a whole extra
+    /// full-size buffer (15.1MB) still fails here, normal jitter (16.5–17.8MB peak) never does.
+    /// Do not loop inside this test: later samples in one process read low (warm caches / reused pages).
     func testRedactionWithTopAndBottomMarksHoldsOneFullSizeBuffer() throws {
         _ = Redactor.apply([PixelRedaction(rect: CGRect(x: 0, y: 0, width: 8, height: 8))], to: try solidImage(width: 16, height: 16), scale: 1)
         let width = 1320
         let height = 2868
+        let source = try solidImage(width: width, height: height)
         let sourceBytes = Int64(width * height * ExtensionMemoryBudget.bytesPerPixel)
-        let slack = Int64(2 * 1024 * 1024)
+        let softPeakCeiling = Int64(30 * 1024 * 1024)
+        let softRetainedCeiling = Int64(8 * 1024 * 1024)
+        // Charge the source's own pages before sampling (see testRedactionHoldsOneFullSizeBuffer).
+        let pixels = try XCTUnwrap(source.dataProvider?.data)
+        let pixelBytes = try XCTUnwrap(CFDataGetBytePtr(pixels))
+        var touched = 0
+        for offset in stride(from: 0, to: CFDataGetLength(pixels), by: 4096) {
+            touched &+= Int(pixelBytes[offset]) + 1
+        }
+        XCTAssertGreaterThan(touched, 0)
         let marks = [
             PixelRedaction(rect: CGRect(x: 60, y: 150, width: 400, height: 90)),
             PixelRedaction(rect: CGRect(x: 700, y: 2650, width: 420, height: 100), kind: .blur),
         ]
-        // PRD v0.3.46: measure 3 times, pick the one sample with the lowest peak, and judge both checks on it.
-        // The limit is unchanged; the peak check fails only if all 3 samples exceed it.
-        // Each sample uses a fresh source + page touch + autoreleasepool, then waits for footprint to
-        // settle before the next `before` — so later samples are not quietly lower from warm cache /
-        // leftover buffers in the same process (PM / 司令部 gate concern on 02739cf).
-        var peaks: [Int64] = []
-        var retainedSamples: [Int64] = []
-        for sample in 1...3 {
-            // Settle before every sample (including #1 after prior tests) so `before` is not inflated.
-            waitForFootprintToSettle(timeout: 3.0)
-            var samplePeak: Int64 = 0
-            var sampleRetained: Int64 = 0
-            try autoreleasepool {
-                // Fresh source per sample (do not reuse across iterations).
-                var source: CGImage? = try solidImage(width: width, height: height)
-                // Charge this sample's own pages before sampling (see testRedactionHoldsOneFullSizeBuffer).
-                let pixels = try XCTUnwrap(source?.dataProvider?.data)
-                let pixelBytes = try XCTUnwrap(CFDataGetBytePtr(pixels))
-                var touched = 0
-                for offset in stride(from: 0, to: CFDataGetLength(pixels), by: 4096) {
-                    touched &+= Int(pixelBytes[offset]) + 1
-                }
-                XCTAssertGreaterThan(touched, 0)
-                let before = FootprintSampler.current()
-                let sampler = FootprintSampler()
-                sampler.start()
-                var redacted: CGImage? = Redactor.apply(marks, to: try XCTUnwrap(source), scale: 3)
-                samplePeak = sampler.stop() - before
-                XCTAssertEqual(redacted?.width, width)
-                XCTAssertEqual(redacted?.height, height)
-                redacted = nil
-                // Retained is measured while the source is still held (same as the one-mark test).
-                sampleRetained = FootprintSampler.current() - before
-                source = nil
-            }
-            // Extra drain after the measuring pool so the next settle starts from a released state.
-            autoreleasepool { }
-            print("PRETTYSHOT_REDACT_PEAK 1320x2868 two-marks sample=\(sample) peak=\(samplePeak) retained=\(sampleRetained) sourceBytes=\(sourceBytes)")
-            peaks.append(samplePeak)
-            retainedSamples.append(sampleRetained)
-        }
-        let picked = peaks.indices.min { peaks[$0] < peaks[$1] } ?? 0
-        let peak = peaks[picked]
-        let retained = retainedSamples[picked]
-        print("PRETTYSHOT_REDACT_PEAK 1320x2868 two-marks picked=\(picked + 1) peak=\(peak) retained=\(retained) sourceBytes=\(sourceBytes) peaks=\(peaks) retained=\(retainedSamples)")
-        XCTAssertLessThanOrEqual(peak, sourceBytes + slack)
-        XCTAssertLessThanOrEqual(retained, slack)
-    }
-
-    /// Wait for phys_footprint to finish dropping after releasing large CGImages.
-    /// Always sleeps a minimum floor first so a brief plateau at an elevated level is not
-    /// mistaken for "settled", then polls until stable (or `timeout`).
-    private func waitForFootprintToSettle(timeout: TimeInterval = 3.0) {
-        // Floor: give the allocator / purgeable caches a moment before polling stability.
-        Thread.sleep(forTimeInterval: 0.4)
-        let deadline = Date().addingTimeInterval(timeout)
-        var previous = FootprintSampler.current()
-        var stableCount = 0
-        var sawDrop = false
-        while Date() < deadline {
-            Thread.sleep(forTimeInterval: 0.05)
-            let now = FootprintSampler.current()
-            if now + (64 * 1024) < previous {
-                sawDrop = true
-                stableCount = 0
-            } else if abs(now - previous) <= (64 * 1024) {
-                stableCount += 1
-                // Prefer stability after observing a drop; otherwise require a longer quiet stretch.
-                let need = sawDrop ? 6 : 12
-                if stableCount >= need {
-                    return
-                }
-            } else {
-                stableCount = 0
-            }
-            previous = now
-        }
+        let before = FootprintSampler.current()
+        let sampler = FootprintSampler()
+        sampler.start()
+        var redacted: CGImage? = Redactor.apply(marks, to: source, scale: 3)
+        let peak = sampler.stop() - before
+        XCTAssertEqual(redacted?.width, width)
+        XCTAssertEqual(redacted?.height, height)
+        redacted = nil
+        let retained = FootprintSampler.current() - before
+        let process = ProcessInfo.processInfo.processIdentifier
+        // One machine-parseable line per process; judge-redact-peak.py reads exactly these fields.
+        print("PRETTYSHOT_REDACT_PEAK 1320x2868 two-marks process=\(process) peak=\(peak) retained=\(retained) sourceBytes=\(sourceBytes) before=\(before)")
+        // Soft local ceiling only; the 17,240,192-byte gate lives in judge-redact-peak.py (PRD v0.3.47).
+        XCTAssertLessThanOrEqual(peak, softPeakCeiling, "an extra full-size buffer at redaction peak")
+        XCTAssertLessThanOrEqual(retained, softRetainedCeiling, "a full-size buffer left behind after redaction")
+        withExtendedLifetime(source) {}
     }
 
     private final class FootprintSampler: @unchecked Sendable {
