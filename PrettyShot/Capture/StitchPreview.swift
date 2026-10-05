@@ -725,7 +725,8 @@ struct StitchPreviewView: View {
                     .foregroundStyle(Palette.charcoal)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            if let reason = card?.reason ?? mark.note {
+            // A seam with a card shows only the card's reason. A handled tie has none.
+            if let reason = (card != nil ? card?.reason : mark.note) {
                 Text(reason)
                     .font(.system(size: 11))
                     .foregroundStyle(Palette.charcoal)
