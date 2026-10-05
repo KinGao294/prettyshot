@@ -2443,3 +2443,313 @@ extension ScrollStitcherTests {
         XCTAssertEqual(model.assembly.seams[0].alignedShift, shift)
     }
 }
+
+// MARK: - Mac UI PR: ML6b options, ML6b-r seam tags, ML6c / ML6d sticky band labels on the Mac review window
+
+extension ScrollStitcherTests {
+    private static let ml6bTieReason = "找到 2 个都说得通的位移，自动对齐没法确定是哪一个——为了不拼错，先停下来请你确认。"
+    private static let ml6bOptionTitles = ["确认当前位移", "手动对齐", "直接拼", "分开导出"]
+
+    // ML6b: a pending seam offers the four options, 确认当前位移 goes through alignToSuggestion.
+
+    @MainActor
+    func testML6bPendingSeamListsFourOptionsInCoreOrder() throws {
+        let model = StitchPreviewModel(assembly: try openShiftTie(), notice: nil)
+        model.refresh()
+        let options = model.confirmationOptions(boundary: 0)
+        XCTAssertEqual(options, [.confirmCurrentShift, .manualAlign, .joinAsIs, .splitExport])
+        XCTAssertEqual(options.map(\.title), Self.ml6bOptionTitles)
+        XCTAssertEqual(options.map(\.title), model.assembly.seams[0].confirmationOptions)
+        XCTAssertEqual(model.confirmationOptions(boundary: 7), [])
+    }
+
+    @MainActor
+    func testML6bConfirmCurrentShiftAlignsOnSuggestionAndTagsConfirmed() throws {
+        let model = StitchPreviewModel(assembly: try openShiftTie(), notice: nil)
+        model.refresh()
+        var expected = model.assembly
+        expected.alignToSuggestion(seam: 0)
+        model.confirmCurrentShift(boundary: 0)
+        XCTAssertEqual(model.selectedBoundary, 0)
+        XCTAssertEqual(model.assembly.seams[0], expected.seams[0])
+        XCTAssertEqual(model.assembly.seams[0].alignedShift, 32)
+        XCTAssertEqual(model.assembly.seams[0].kind, .aligned(overlap: 58))
+        XCTAssertEqual(Int(model.overlap.rounded()), 58)
+        XCTAssertEqual(model.seamTag(boundary: 0)?.text, "✓ 已确认")
+        XCTAssertEqual(model.confirmationOptions(boundary: 0), [])
+        XCTAssertEqual(model.primaryTitle, "下一步 · 美化 →")
+        XCTAssertEqual(model.marks.first { $0.boundaryIndex == 0 }?.state, .aligned)
+    }
+
+    @MainActor
+    func testML6bConfirmCurrentShiftOnLoneReverseKeepsTheSign() throws {
+        var stitcher = ScrollStitcher()
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.page(scroll: 0, height: 48, slot: 0)), .seeded)
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.page(scroll: 12, height: 48, slot: 0)), .appended(12))
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.falseReverse()), .unmatched)
+        let model = StitchPreviewModel(assembly: stitcher.takeAssembly(), notice: nil)
+        model.refresh()
+        XCTAssertEqual(model.confirmationOptions(boundary: 0).map(\.title), Self.ml6bOptionTitles)
+        let shift = try XCTUnwrap(model.assembly.seams[0].suggestedShift)
+        XCTAssertLessThan(shift, 0)
+        model.confirmCurrentShift(boundary: 0)
+        XCTAssertEqual(model.assembly.seams[0].alignedShift, shift)
+        XCTAssertEqual(model.seamTag(boundary: 0)?.text, "✓ 已确认")
+        XCTAssertEqual(model.confirmationOptions(boundary: 0), [])
+    }
+
+    /// 「手动对齐」 opens the slider on that seam; the seam stays 「待确认」 until the user aligns it.
+    @MainActor
+    func testML6bManualAlignOptionOpensTheSliderWithoutResolving() throws {
+        let model = StitchPreviewModel(assembly: try ml6bFourTagAssembly(), notice: nil)
+        model.refresh()
+        model.select(boundary: 3)
+        model.beginManualAlignment(boundary: 0)
+        XCTAssertEqual(model.selectedBoundary, 0)
+        XCTAssertEqual(model.manualAlignmentBoundary, 0)
+        XCTAssertEqual(model.assembly.seams[0].kind, .needsAlignment)
+        XCTAssertEqual(model.seamTag(boundary: 0)?.text, "待确认")
+        XCTAssertEqual(model.confirmationOptions(boundary: 0).count, 4)
+        XCTAssertEqual(Int(model.overlap.rounded()), 58)
+    }
+
+    /// The Mac primary button reads the core title at every step and is only disabled when 下一步 cannot commit.
+    @MainActor
+    func testML6bPrimaryButtonFollowsCorePreviewPrimaryTitle() throws {
+        let model = StitchPreviewModel(assembly: try ml6bFourTagAssembly(), notice: nil)
+        model.refresh()
+        XCTAssertEqual(model.primaryTitle, "处理下一处 · 4")
+        XCTAssertEqual(model.primaryTitle, model.assembly.previewPrimaryTitle)
+        XCTAssertTrue(model.primaryEnabled)
+        model.confirmCurrentShift(boundary: 0)
+        XCTAssertEqual(model.primaryTitle, "处理下一处 · 3")
+        model.confirmCurrentShift(boundary: 1)
+        model.confirmCurrentShift(boundary: 2)
+        XCTAssertEqual(model.primaryTitle, "处理下一处 · 1")
+        XCTAssertTrue(model.primaryEnabled)
+        model.select(boundary: 3)
+        model.joinSelectedAsIs()
+        XCTAssertEqual(model.primaryTitle, "下一步 · 美化 →")
+        XCTAssertEqual(model.primaryTitle, model.assembly.previewPrimaryTitle)
+        XCTAssertTrue(model.primaryEnabled)
+        XCTAssertTrue(model.canCommit)
+    }
+
+    @MainActor
+    func testML6bPlainSeamOffersNoConfirmationOptions() {
+        var stitcher = ScrollStitcher()
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.page(scroll: 0, slot: 0)), .seeded)
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.page(scroll: 0, slot: 40)), .unmatched)
+        let model = StitchPreviewModel(assembly: stitcher.takeAssembly(), notice: nil)
+        model.refresh()
+        XCTAssertEqual(model.assembly.seams[0].kind, .needsAlignment)
+        XCTAssertEqual(model.confirmationOptions(boundary: 0), [])
+    }
+
+    // ML6b-r: one tag per seam, exact text and paint in light and dark.
+
+    @MainActor
+    func testML6brTagTextsForAllFourStates() throws {
+        let model = try ml6bFourTagModel()
+        XCTAssertEqual(model.seamTag(boundary: 0)?.text, "待确认")
+        XCTAssertEqual(model.seamTag(boundary: 1)?.text, "✓ 已确认")
+        XCTAssertEqual(model.seamTag(boundary: 2)?.text, "✓ 手动对齐 · \u{2212}28 px")
+        XCTAssertEqual(model.seamTag(boundary: 3)?.text, "直接拼")
+        XCTAssertFalse(model.seamTag(boundary: 2)?.text.contains("-") ?? true, "hyphen-minus instead of U+2212")
+        XCTAssertNil(model.seamTag(boundary: 4))
+    }
+
+    /// 「待确认」: 1 px dashed Warn #E3B26B border, Warn fill at 18%, text #8A5A12 (light).
+    @MainActor
+    func testML6brPendingTagColours() throws {
+        let model = try ml6bFourTagModel()
+        let tag = try XCTUnwrap(model.seamTag(boundary: 0))
+        assertInk(tag.ink(.light), text: 0x8A5A12, border: 0xE3B26B, fill: 0xE3B26B, fillOpacity: 0.18, dashed: true)
+        // Dark text is not specified yet (PLAN.md Q1); border and fill are.
+        assertInk(tag.ink(.dark), text: nil, border: 0xE3B26B, fill: 0xE3B26B, fillOpacity: 0.18, dashed: true)
+        XCTAssertEqual(tag.light, tag.ink(.light))
+        XCTAssertEqual(tag.dark, tag.ink(.dark))
+    }
+
+    /// 「✓ 已确认」 and 「✓ 手动对齐」: Mint #4F8F7E (dark Soft Mint #7EB8A8), 1 px solid, fill 22%.
+    @MainActor
+    func testML6brHandledTagColoursLightAndDark() throws {
+        let model = try ml6bFourTagModel()
+        for boundary in [1, 2] {
+            let tag = try XCTUnwrap(model.seamTag(boundary: boundary), "seam \(boundary)")
+            assertInk(tag.ink(.light), text: 0x4F8F7E, border: 0x4F8F7E, fill: 0x4F8F7E, fillOpacity: 0.22, dashed: false)
+            assertInk(tag.ink(.dark), text: 0x7EB8A8, border: 0x7EB8A8, fill: 0x7EB8A8, fillOpacity: 0.22, dashed: false)
+        }
+    }
+
+    /// 「直接拼」: light #5C5751 at 12%; dark #9C958B text and border, #9C958B at 16% (r2 2026-10-05).
+    @MainActor
+    func testML6brDirectTagColoursLightAndDark() throws {
+        let model = try ml6bFourTagModel()
+        let tag = try XCTUnwrap(model.seamTag(boundary: 3))
+        assertInk(tag.ink(.light), text: 0x5C5751, border: 0x5C5751, fill: 0x5C5751, fillOpacity: 0.12, dashed: false)
+        assertInk(tag.ink(.dark), text: 0x9C958B, border: 0x9C958B, fill: 0x9C958B, fillOpacity: 0.16, dashed: false)
+    }
+
+    /// The seam card the Mac row reads carries the dark 「直接拼」 ink; light stays #5C5751 at 12%.
+    func testML6brDirectCardCarriesTheDarkInk() throws {
+        var assembly = try openShiftTie()
+        assembly.joinAsIs(seam: 0)
+        let card = assembly.seams[0].card(number: 1)
+        XCTAssertEqual(card.label, "直接拼")
+        XCTAssertEqual(card.labelColor, 0x5C5751)
+        XCTAssertEqual(card.fillOpacity, 0.12, accuracy: 0.0001)
+        XCTAssertEqual(card.borderWidth, 1)
+        XCTAssertEqual(card.labelColorDark, 0x9C958B)
+    }
+
+    /// The reason line shows while the seam waits and goes away once it is handled, whichever way.
+    @MainActor
+    func testML6brReasonLineOnlyWhilePending() throws {
+        let model = try ml6bFourTagModel()
+        XCTAssertEqual(model.seamReason(boundary: 0), Self.ml6bTieReason)
+        XCTAssertNil(model.seamReason(boundary: 1))
+        XCTAssertNil(model.seamReason(boundary: 2))
+        XCTAssertNil(model.seamReason(boundary: 3))
+
+        let single = StitchPreviewModel(assembly: try openShiftTie(), notice: nil)
+        single.refresh()
+        XCTAssertEqual(single.seamReason(boundary: 0), Self.ml6bTieReason)
+        single.confirmCurrentShift(boundary: 0)
+        XCTAssertNil(single.seamReason(boundary: 0))
+        single.restoreAutoAlignment()
+        XCTAssertEqual(single.seamTag(boundary: 0)?.text, "待确认")
+        XCTAssertEqual(single.seamReason(boundary: 0), Self.ml6bTieReason)
+        single.pickCandidate(seam: 0, index: 1)
+        XCTAssertNil(single.seamReason(boundary: 0))
+        single.restoreAutoAlignment()
+        single.joinSelectedAsIs()
+        XCTAssertNil(single.seamReason(boundary: 0))
+    }
+
+    // ML6c / ML6d: the core band label is drawn on the left of every deduped join.
+
+    @MainActor
+    func testML6cDedupedBandLabelsEveryJoinAndAllowsNext() throws {
+        let model = try ml6StickyModel()
+        XCTAssertTrue(model.assembly.dedupeStickyBars)
+        let label = "− 底栏 \(ScrollFixtures.footer) · 顶栏 \(ScrollFixtures.header)"
+        XCTAssertEqual(model.assembly.stickyBandLabel, label)
+        let bands = model.stickyBandMarks
+        XCTAssertEqual(bands.count, 2)
+        XCTAssertEqual(bands.map(\.label), [label, label])
+        XCTAssertEqual(bands.map(\.reattached), [false, false])
+        XCTAssertEqual(Set(bands.map(\.id)).count, bands.count)
+        XCTAssertEqual(bands.map(\.y), model.marks.filter { $0.boundaryIndex == nil }.map(\.y))
+        XCTAssertNil(model.stickyRestoredNotice)
+        XCTAssertEqual(model.primaryTitle, "下一步 · 美化 →")
+        XCTAssertTrue(model.primaryEnabled)
+    }
+
+    @MainActor
+    func testML6dRestoredBarsAreLabelledWithNotice() throws {
+        let model = try ml6StickyModel()
+        let dedupedHeight = model.previewFullHeight
+        model.setDedupeStickyBars(false)
+        XCTAssertNil(model.restoreLimitMessage)
+        XCTAssertFalse(model.assembly.dedupeStickyBars)
+        XCTAssertEqual(model.previewFullHeight, dedupedHeight + 2 * (ScrollFixtures.header + ScrollFixtures.footer))
+        let bands = model.stickyBandMarks
+        XCTAssertEqual(bands.count, 2)
+        XCTAssertEqual(bands.map(\.label), ["固定栏已接回", "固定栏已接回"])
+        XCTAssertEqual(bands.map(\.reattached), [true, true])
+        XCTAssertEqual(bands.map(\.y), model.marks.filter { $0.boundaryIndex == nil }.map(\.y))
+        XCTAssertEqual(model.stickyRestoredNotice, "已还原固定栏：固定栏接回每条接缝")
+        XCTAssertEqual(model.primaryTitle, "下一步 · 美化 →")
+        XCTAssertTrue(model.primaryEnabled)
+
+        model.setDedupeStickyBars(true)
+        XCTAssertNil(model.stickyRestoredNotice)
+        XCTAssertEqual(model.stickyBandMarks.map(\.reattached), [false, false])
+        XCTAssertEqual(model.stickyBandMarks.first?.label, "− 底栏 \(ScrollFixtures.footer) · 顶栏 \(ScrollFixtures.header)")
+    }
+
+    @MainActor
+    func testML6cNoStickyBarsMeansNoBandMarks() throws {
+        let model = StitchPreviewModel(assembly: try openShiftTie(), notice: nil)
+        model.refresh()
+        XCTAssertNil(model.assembly.stickyBandLabel)
+        XCTAssertEqual(model.stickyBandMarks, [])
+        XCTAssertNil(model.stickyRestoredNotice)
+    }
+
+    // Fixtures, shared with the phase-3 render helper.
+
+    /// Five 90-row segments and four tie seams (+32 current, −28 other), all still 「待确认」.
+    func ml6bFourTagAssembly() throws -> ScrollAssembly {
+        let segments = (0..<5).map { index in
+            ScrollSegment(image: ScrollFixtures.page(scroll: index * 90, height: 90, slot: 0), confidentSeamYs: [])
+        }
+        let seams = (1...4).map { number in
+            ScrollSeam(
+                kind: .needsAlignment,
+                suggestedOverlap: 58,
+                note: Self.ml6bTieReason,
+                pendingTitle: "接缝 \(number) · 待确认：位移无法唯一确定",
+                candidateLines: ["位移 A · +32 px · 当前", "位移 B · −28 px"],
+                candidateShifts: [32, -28],
+                selectedShift: 32
+            )
+        }
+        let assembly = ScrollAssembly(segments: segments, seams: seams)
+        XCTAssertEqual(assembly.unalignedSeamCount, 4)
+        return assembly
+    }
+
+    /// Seam 1 待确认, seam 2 ✓ 已确认, seam 3 ✓ 手动对齐 · −28 px, seam 4 直接拼. Seam 1 stays selected.
+    @MainActor
+    func ml6bFourTagModel() throws -> StitchPreviewModel {
+        let model = StitchPreviewModel(assembly: try ml6bFourTagAssembly(), notice: nil)
+        model.refresh()
+        model.confirmCurrentShift(boundary: 1)
+        model.pickCandidate(seam: 2, index: 1)
+        model.select(boundary: 3)
+        model.joinSelectedAsIs()
+        model.select(boundary: 0)
+        XCTAssertEqual(model.assembly.seams[1].alignedShift, 32)
+        XCTAssertEqual(model.assembly.seams[2].alignedShift, -28)
+        XCTAssertEqual(model.assembly.seams[3].kind, .joinedAsIs)
+        XCTAssertEqual(model.assembly.unalignedSeamCount, 1)
+        return model
+    }
+
+    /// Three frames with a 10-row header and an 8-row footer: two confident joins, bars kept once.
+    @MainActor
+    func ml6StickyModel() throws -> StitchPreviewModel {
+        var stitcher = ScrollStitcher()
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.viewport(scroll: 0)), .seeded)
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.viewport(scroll: 15)), .appended(15))
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.viewport(scroll: 30)), .appended(15))
+        let assembly = stitcher.takeAssembly()
+        XCTAssertTrue(assembly.hasStickyRepeats)
+        XCTAssertFalse(assembly.needsReview)
+        let model = StitchPreviewModel(assembly: assembly, notice: nil)
+        model.refresh()
+        return model
+    }
+
+    private func assertInk(
+        _ ink: SeamTagInk,
+        text: UInt32?,
+        border: UInt32,
+        fill: UInt32,
+        fillOpacity: Double,
+        dashed: Bool,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        if let text {
+            XCTAssertEqual(String(ink.text, radix: 16), String(text, radix: 16), "text", file: file, line: line)
+        }
+        XCTAssertEqual(String(ink.border, radix: 16), String(border, radix: 16), "border", file: file, line: line)
+        XCTAssertEqual(String(ink.fill, radix: 16), String(fill, radix: 16), "fill", file: file, line: line)
+        XCTAssertEqual(ink.fillOpacity, fillOpacity, accuracy: 0.0001, "fill opacity", file: file, line: line)
+        XCTAssertEqual(ink.borderWidth, 1, "border width", file: file, line: line)
+        XCTAssertEqual(ink.dashed, dashed, "dashed", file: file, line: line)
+    }
+}
