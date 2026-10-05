@@ -703,6 +703,12 @@ final class ExtensionMemoryBudgetTests: XCTestCase {
         }
 
         func stop() -> Int64 {
+            // Final sample on the caller's thread, taken before the background thread stops. Memory
+            // the measured call allocated in its last millisecond (between two background samples)
+            // is still alive here, so the peak can never read below the footprint at the moment the
+            // measured call returned. Only ever raises the reported peak (P1 #37: the full-size
+            // canvas is now allocated at the end of `Redactor.apply`).
+            let final = Self.current()
             lock.lock()
             running = false
             let value = high
@@ -711,7 +717,7 @@ final class ExtensionMemoryBudgetTests: XCTestCase {
             lock.lock()
             let latest = high
             lock.unlock()
-            return max(value, latest)
+            return max(value, latest, final)
         }
 
         static func current() -> Int64 {
