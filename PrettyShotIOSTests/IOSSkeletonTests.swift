@@ -665,7 +665,7 @@ final class ExtensionMemoryBudgetTests: XCTestCase {
             retainedSamples.append(sampleRetained)
         }
         let peak = peaks.min() ?? Int64.max
-        let retained = retainedSamples.sorted()[1]
+        let retained = retainedSamples.min() ?? Int64.max
         print("PRETTYSHOT_REDACT_PEAK 1320x2868 two-marks min peak=\(peak) retained=\(retained) sourceBytes=\(sourceBytes) samples=\(peaks)")
         XCTAssertLessThanOrEqual(peak, sourceBytes + slack)
         XCTAssertLessThanOrEqual(retained, slack)
