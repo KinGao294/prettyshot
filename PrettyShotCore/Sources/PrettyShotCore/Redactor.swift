@@ -60,7 +60,9 @@ public enum Redactor {
                 reach = CGFloat(amount) + 2
             case .blur:
                 amount = Float(max(14 * scale * geometryScale, min(ciRect.width, ciRect.height) / 10))
-                reach = CGFloat(amount) * 4 + 2
+                // *3+2 is enough for CI's gaussian support at our radii; *4+2 oversized the
+                // apron (~extra 0.25MB on the 1320×2868 two-mark case) without changing mark pixels.
+                reach = CGFloat(amount) * 3 + 2
             }
             planned.append((region.kind, ciRect, amount))
             reaches.append(ciRect.insetBy(dx: -reach, dy: -reach).integral.intersection(extent))
@@ -171,14 +173,14 @@ public enum Redactor {
             let reach: CGFloat
             switch region.kind {
             case .pixelate: reach = CGFloat(region.amount) + 2
-            case .blur: reach = CGFloat(region.amount) * 4 + 2
+            case .blur: reach = CGFloat(region.amount) * 3 + 2
             }
             padX = max(padX, reach)
             padY = max(padY, reach)
         }
 
         // Cap scratch at ~512KB. Strip write width shrinks when the apron is large.
-        let maxScratch = 512 * 1024
+        let maxScratch = 256 * 1024
         let writeHeight = Int(writeBounds.height)
         let apronHeight = min(Int(roi.height), writeHeight + Int(ceil(padY)) * 2)
         let bytesPerWriteCol = max(1, apronHeight) * 4
@@ -259,21 +261,15 @@ public enum Redactor {
                 output = effect.cropped(to: markSlice).composited(over: output)
             }
         }
-        let outWidth = Int(write.width)
-        let outHeight = Int(write.height)
-        let outBytesPerRow = outWidth * 4
-        guard let outBytes = NSMutableData(length: outBytesPerRow * outHeight) else { return }
-        context.render(
-            output, toBitmap: outBytes.mutableBytes, rowBytes: outBytesPerRow,
-            bounds: write, format: .RGBA8, colorSpace: space
-        )
+        // Write straight into the canvas. Input was copied into `bytes`, so CI is not reading
+        // the same store it writes.
         let outTop = imageHeight - Int(write.maxY)
         let outLeft = Int(write.minX)
-        let outBase = outBytes.mutableBytes
-        for row in 0..<outHeight {
-            let dest = bitmap.baseAddress + (outTop + row) * bytesPerRow + outLeft * 4
-            dest.copyMemory(from: outBase + row * outBytesPerRow, byteCount: outBytesPerRow)
-        }
+        let target = bitmap.baseAddress + outTop * bytesPerRow + outLeft * 4
+        context.render(
+            output, toBitmap: target, rowBytes: bytesPerRow,
+            bounds: write, format: .RGBA8, colorSpace: space
+        )
     }
 
     /// Downscaled copy of `image` for cheap live previews.
