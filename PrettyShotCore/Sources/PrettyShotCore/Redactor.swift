@@ -20,10 +20,7 @@ public protocol Redactable {
 /// Bakes pixelate / blur regions into a copy of the source (destructive in the export —
 /// the original pixels under a redaction never reach the clipboard or PNG).
 public enum Redactor {
-    private static let context = CIContext(options: [
-        .cacheIntermediates: false,
-        .workingColorSpace: NSNull(),
-    ])
+    private static let context = CIContext(options: [.cacheIntermediates: false])
 
     /// `geometryScale` maps annotation geometry (full-size image pixels) onto `image`, which may be a
     /// downscaled preview used while a redaction is being dragged.
@@ -75,9 +72,27 @@ public enum Redactor {
             let byteCount = bytesPerRow * height
             guard width > 0, height > 0, byteCount > 0,
                   let space = CGColorSpace(name: CGColorSpace.sRGB) else { return image }
-            // The only full-size buffer. The source is drawn into it once, and Core Image
-            // only renders the redacted area back over it. A full-extent Core Image render
-            // would add its own full-size result and intermediates beside this copy.
+
+            // Phase 1, before the full-size buffer exists: run Core Image on each patch and keep only
+            // the bytes it changed. Core Image's patch copies, intermediates and kernel set-up then
+            // peak on top of the source alone, not on top of the source plus a full-size canvas.
+            // One patch per group of marks whose filter reach overlaps. Marks far apart (a name at
+            // the top, a number at the bottom) never make a patch that spans the image between them.
+            // Groups' patches are disjoint, so no patch reads pixels another patch writes.
+            var patches: [RedactedPatch] = []
+            for group in groups {
+                autoreleasepool {
+                    if let patch = redactPatch(group.members.map { planned[$0] }, roi: group.roi,
+                                               from: image, imageHeight: height, space: space) {
+                        patches.append(patch)
+                    }
+                    context.clearCaches()
+                }
+            }
+
+            // Phase 2: the only full-size buffer. The source is drawn into it once, then each patch's
+            // changed bytes are copied over it. A full-extent Core Image render would add its own
+            // full-size result and intermediates beside this copy.
             let owned = OwnedBitmap(byteCount: byteCount)
             guard let canvas = CGContext(
                 data: owned.baseAddress, width: width, height: height,
@@ -87,17 +102,11 @@ public enum Redactor {
             canvas.interpolationQuality = .none
             canvas.setBlendMode(.copy)
             canvas.draw(image, in: extent)
-
-            // One patch per group of marks whose filter reach overlaps. Marks far apart (a name at
-            // the top, a number at the bottom) never make a patch that spans the image between them.
-            for group in groups {
-                autoreleasepool {
-                    redactPatch(group.members.map { planned[$0] }, roi: group.roi, in: owned,
-                                bytesPerRow: bytesPerRow, imageHeight: height, space: space)
-                    context.clearCaches()
-                }
-            }
             canvas.flush()
+            for patch in patches {
+                patch.write(into: owned, bytesPerRow: bytesPerRow)
+            }
+            patches.removeAll()
 
             let info = Unmanaged.passRetained(owned).toOpaque()
             guard let provider = CGDataProvider(
@@ -144,78 +153,133 @@ public enum Redactor {
         return groups
     }
 
-    /// Runs the redaction filters over `roi` only and writes the result straight back into `bitmap`.
+    /// The bytes one patch changed: RGBA8 premultiplied sRGB rows, `width` × `height` pixels, whose
+    /// top-left pixel sits at (`left`, `top`) in the image (y down).
+    private struct RedactedPatch {
+        let left: Int
+        let top: Int
+        let width: Int
+        let height: Int
+        let bytes: NSMutableData
+
+        func write(into bitmap: OwnedBitmap, bytesPerRow: Int) {
+            let rowBytes = width * 4
+            let base = UnsafeRawPointer(bytes.mutableBytes)
+            for row in 0..<height {
+                let dest = bitmap.baseAddress + (top + row) * bytesPerRow + left * 4
+                dest.copyMemory(from: base + row * rowBytes, byteCount: rowBytes)
+            }
+        }
+    }
+
+    /// Runs the redaction filters over `roi` only and returns the pixels that differ from the source.
     /// `roi` covers every redacted rect plus the distance its filter reads, so clamping at the patch
-    /// edge does not reach the redacted pixels. The patch is copied out of `bitmap` first, so Core
-    /// Image never reads what is being written. Full-ROI (not tiled): CIGaussianBlur needs one
-    /// contiguous apron for byte-identity vs PreRefactor / main. Render only the mark writeBounds.
+    /// edge does not reach the redacted pixels.
+    ///
+    /// Byte-identical to the canvas path it replaces (main): the patch is drawn from `image` with the
+    /// same CG call, format and colour space the full-size canvas uses, shifted by the integral ROI
+    /// origin, so it holds the same bytes main copied out of the canvas. Core Image then runs the same
+    /// graph and renders the same `roi` bounds main rendered. Only the bounding box of pixels whose
+    /// rendered bytes differ from the drawn bytes is kept; every pixel outside it is already equal to
+    /// what the canvas holds once the source is drawn into it.
     private static func redactPatch(
         _ planned: [(kind: RedactionKind, rect: CGRect, amount: Float)],
         roi: CGRect,
-        in bitmap: OwnedBitmap,
-        bytesPerRow: Int,
+        from image: CGImage,
         imageHeight: Int,
         space: CGColorSpace
-    ) {
+    ) -> RedactedPatch? {
         let patchWidth = Int(roi.width)
         let patchHeight = Int(roi.height)
-        guard patchWidth > 0, patchHeight > 0 else { return }
+        guard patchWidth > 0, patchHeight > 0 else { return nil }
         let patchBytesPerRow = patchWidth * 4
         let top = imageHeight - Int(roi.maxY)
         let left = Int(roi.minX)
         // Filled in place and handed over toll-free: bridging a Swift `Data` may copy the patch again.
-        guard let bytes = NSMutableData(length: patchBytesPerRow * patchHeight) else { return }
-        let base = bytes.mutableBytes
-        for row in 0..<patchHeight {
-            let from = bitmap.baseAddress + (top + row) * bytesPerRow + left * 4
-            (base + row * patchBytesPerRow).copyMemory(from: from, byteCount: patchBytesPerRow)
-        }
-        guard let provider = CGDataProvider(data: bytes as CFData),
-              let patch = CGImage(
-                width: patchWidth, height: patchHeight,
-                bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: patchBytesPerRow,
-                space: space,
-                bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
-                provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent
-              ) else { return }
+        guard let input = NSMutableData(length: patchBytesPerRow * patchHeight),
+              let drawn = CGContext(
+                data: input.mutableBytes, width: patchWidth, height: patchHeight,
+                bitsPerComponent: 8, bytesPerRow: patchBytesPerRow,
+                space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+              ) else { return nil }
+        drawn.interpolationQuality = .none
+        drawn.setBlendMode(.copy)
+        drawn.draw(image, in: CGRect(x: -roi.minX, y: -roi.minY,
+                                     width: CGFloat(image.width), height: CGFloat(image.height)))
+        drawn.flush()
 
-        let source = CIImage(cgImage: patch)
-            .transformed(by: CGAffineTransform(translationX: roi.minX, y: roi.minY))
-        var output = source
-        for region in planned {
-            let effect: CIImage?
-            switch region.kind {
-            case .pixelate:
-                let filter = CIFilter.pixellate()
-                filter.inputImage = output.clampedToExtent()
-                filter.scale = region.amount
-                filter.center = region.rect.origin
-                effect = filter.outputImage
-            case .blur:
-                let filter = CIFilter.gaussianBlur()
-                filter.inputImage = output.clampedToExtent()
-                filter.radius = region.amount
-                effect = filter.outputImage
+        guard let output = NSMutableData(length: patchBytesPerRow * patchHeight) else { return nil }
+        // Main left the canvas untouched when the patch image could not be built; so does this.
+        var rendered = false
+        autoreleasepool {
+            guard let provider = CGDataProvider(data: input as CFData),
+                  let patch = CGImage(
+                    width: patchWidth, height: patchHeight,
+                    bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: patchBytesPerRow,
+                    space: space,
+                    bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                    provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent
+                  ) else { return }
+
+            let source = CIImage(cgImage: patch)
+                .transformed(by: CGAffineTransform(translationX: roi.minX, y: roi.minY))
+            var result = source
+            for region in planned {
+                let effect: CIImage?
+                switch region.kind {
+                case .pixelate:
+                    let filter = CIFilter.pixellate()
+                    filter.inputImage = result.clampedToExtent()
+                    filter.scale = region.amount
+                    filter.center = region.rect.origin
+                    effect = filter.outputImage
+                case .blur:
+                    let filter = CIFilter.gaussianBlur()
+                    filter.inputImage = result.clampedToExtent()
+                    filter.radius = region.amount
+                    effect = filter.outputImage
+                }
+                if let effect {
+                    result = effect.cropped(to: region.rect).composited(over: result)
+                }
             }
-            if let effect {
-                output = effect.cropped(to: region.rect).composited(over: output)
-            }
+            // Same bounds main rendered; Core Image writes the top row of `roi` first.
+            context.render(result, toBitmap: output.mutableBytes, rowBytes: patchBytesPerRow,
+                           bounds: roi, format: .RGBA8, colorSpace: space)
+            rendered = true
         }
-        // Only mark pixels change; apron was input context and stays as drawn on the canvas.
-        var writeBounds = CGRect.null
-        for region in planned {
-            writeBounds = writeBounds.union(region.rect)
+        guard rendered else { return nil }
+
+        // Bounding box of the pixels the render changed.
+        let before = UnsafeRawPointer(input.mutableBytes)
+        let after = UnsafeRawPointer(output.mutableBytes)
+        var minRow = patchHeight, maxRow = -1, minCol = patchWidth, maxCol = -1
+        for row in 0..<patchHeight {
+            let a = before + row * patchBytesPerRow
+            let b = after + row * patchBytesPerRow
+            guard memcmp(a, b, patchBytesPerRow) != 0 else { continue }
+            minRow = min(minRow, row)
+            maxRow = row
+            let pa = a.assumingMemoryBound(to: UInt32.self)
+            let pb = b.assumingMemoryBound(to: UInt32.self)
+            var first = 0
+            while first < patchWidth, pa[first] == pb[first] { first += 1 }
+            var last = patchWidth - 1
+            while last > first, pa[last] == pb[last] { last -= 1 }
+            minCol = min(minCol, first)
+            maxCol = max(maxCol, last)
         }
-        writeBounds = writeBounds.integral.intersection(roi)
-        guard !writeBounds.isEmpty else { return }
-        let outTop = imageHeight - Int(writeBounds.maxY)
-        let outLeft = Int(writeBounds.minX)
-        let target = bitmap.baseAddress + outTop * bytesPerRow + outLeft * 4
-        context.render(
-            output, toBitmap: target, rowBytes: bytesPerRow,
-            bounds: writeBounds, format: .RGBA8, colorSpace: space
-        )
-        withExtendedLifetime(bytes) {}
+        guard maxRow >= 0, maxCol >= minCol else { return nil }
+        let keptWidth = maxCol - minCol + 1
+        let keptHeight = maxRow - minRow + 1
+        let keptRowBytes = keptWidth * 4
+        guard let kept = NSMutableData(length: keptRowBytes * keptHeight) else { return nil }
+        for row in 0..<keptHeight {
+            (kept.mutableBytes + row * keptRowBytes).copyMemory(
+                from: after + (minRow + row) * patchBytesPerRow + minCol * 4, byteCount: keptRowBytes)
+        }
+        return RedactedPatch(left: left + minCol, top: top + minRow,
+                             width: keptWidth, height: keptHeight, bytes: kept)
     }
 
     /// Downscaled copy of `image` for cheap live previews.
