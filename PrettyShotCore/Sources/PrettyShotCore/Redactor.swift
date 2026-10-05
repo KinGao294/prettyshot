@@ -90,7 +90,7 @@ public enum Redactor {
             for group in groups {
                 autoreleasepool {
                     redactPatch(group.members.map { planned[$0] }, roi: group.roi, in: owned,
-                                bytesPerRow: bytesPerRow, imageWidth: width, imageHeight: height, space: space)
+                                bytesPerRow: bytesPerRow, imageHeight: height, space: space)
                     context.clearCaches()
                 }
             }
@@ -145,34 +145,97 @@ public enum Redactor {
     /// `roi` covers every redacted rect plus the distance its filter reads, so clamping at the patch
     /// edge does not reach the redacted pixels.
     ///
-    /// The input is a no-copy `CIImage` view of the whole canvas, cropped to `roi` (same RGBA8
-    /// layout). Filters run against that crop; the render target is a small buffer covering only
-    /// the union of the mark rects — not a second full-ROI memcpy beside the canvas. Writing into
-    /// a separate buffer (rather than into `bitmap` while Core Image still reads it) keeps the
-    /// read/write stores apart without paying for an ROI-sized scratch at peak.
+    /// Large patches (a scale-3 blur reach apron is ~1MB) are processed in vertical strips so the
+    /// scratch beside the canvas stays bounded. Each strip copies its own read apron, runs the same
+    /// filters, and writes only its mark slice — overlapping reads by the filter reach keeps the
+    /// output byte-identical to a single full-ROI pass. Amount/reach formulas are unchanged.
     private static func redactPatch(
         _ planned: [(kind: RedactionKind, rect: CGRect, amount: Float)],
         roi: CGRect,
         in bitmap: OwnedBitmap,
         bytesPerRow: Int,
-        imageWidth: Int,
         imageHeight: Int,
         space: CGColorSpace
     ) {
-        let patchWidth = Int(roi.width)
-        let patchHeight = Int(roi.height)
-        guard patchWidth > 0, patchHeight > 0, imageWidth > 0, imageHeight > 0 else { return }
-        // Full-canvas bytesNoCopy view (CIImage requires length >= height * bytesPerRow; an inset
-        // ROI origin would read past the buffer on the last row). Cropping to `roi` keeps filter
-        // intermediates patch-sized without memcpy'ing the apron into a second buffer.
-        let canvasData = Data(bytesNoCopy: bitmap.baseAddress, count: bytesPerRow * imageHeight, deallocator: .none)
-        let source = CIImage(
-            bitmapData: canvasData,
-            bytesPerRow: bytesPerRow,
-            size: CGSize(width: imageWidth, height: imageHeight),
-            format: .RGBA8,
-            colorSpace: space
-        ).cropped(to: roi)
+        var writeBounds = CGRect.null
+        for region in planned {
+            writeBounds = writeBounds.union(region.rect)
+        }
+        writeBounds = writeBounds.integral.intersection(roi)
+        guard !writeBounds.isEmpty else { return }
+
+        // How far filters read past a write column. Matches the reach used to build `roi`.
+        var padX: CGFloat = 0
+        var padY: CGFloat = 0
+        for region in planned {
+            let reach: CGFloat
+            switch region.kind {
+            case .pixelate: reach = CGFloat(region.amount) + 2
+            case .blur: reach = CGFloat(region.amount) * 4 + 2
+            }
+            padX = max(padX, reach)
+            padY = max(padY, reach)
+        }
+
+        // Cap scratch at ~512KB. Strip write width shrinks when the apron is large.
+        let maxScratch = 512 * 1024
+        let writeHeight = Int(writeBounds.height)
+        let apronHeight = min(Int(roi.height), writeHeight + Int(ceil(padY)) * 2)
+        let bytesPerWriteCol = max(1, apronHeight) * 4
+        // scratch ≈ (writeW + 2*padX) * apronHeight * 4
+        let maxWriteW = max(32, (maxScratch / bytesPerWriteCol) - Int(ceil(padX)) * 2)
+        var col = Int(writeBounds.minX)
+        let colEnd = Int(writeBounds.maxX)
+        let rowMin = writeBounds.minY
+        let rowH = writeBounds.height
+        while col < colEnd {
+            let sliceW = min(maxWriteW, colEnd - col)
+            let slice = CGRect(x: CGFloat(col), y: rowMin, width: CGFloat(sliceW), height: rowH)
+            col += sliceW
+            autoreleasepool {
+                redactStrip(planned, write: slice, roi: roi, padX: padX, padY: padY,
+                            in: bitmap, bytesPerRow: bytesPerRow, imageHeight: imageHeight, space: space)
+                context.clearCaches()
+            }
+        }
+    }
+
+    /// One vertical strip: copy read apron → filter → write `write` back into `bitmap`.
+    private static func redactStrip(
+        _ planned: [(kind: RedactionKind, rect: CGRect, amount: Float)],
+        write: CGRect,
+        roi: CGRect,
+        padX: CGFloat,
+        padY: CGFloat,
+        in bitmap: OwnedBitmap,
+        bytesPerRow: Int,
+        imageHeight: Int,
+        space: CGColorSpace
+    ) {
+        let read = write.insetBy(dx: -padX, dy: -padY).integral.intersection(roi)
+        let patchWidth = Int(read.width)
+        let patchHeight = Int(read.height)
+        guard patchWidth > 0, patchHeight > 0 else { return }
+        let patchBytesPerRow = patchWidth * 4
+        let top = imageHeight - Int(read.maxY)
+        let left = Int(read.minX)
+        guard let bytes = NSMutableData(length: patchBytesPerRow * patchHeight) else { return }
+        let base = bytes.mutableBytes
+        for row in 0..<patchHeight {
+            let from = bitmap.baseAddress + (top + row) * bytesPerRow + left * 4
+            (base + row * patchBytesPerRow).copyMemory(from: from, byteCount: patchBytesPerRow)
+        }
+        guard let provider = CGDataProvider(data: bytes as CFData),
+              let patch = CGImage(
+                width: patchWidth, height: patchHeight,
+                bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: patchBytesPerRow,
+                space: space,
+                bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent
+              ) else { return }
+
+        let source = CIImage(cgImage: patch)
+            .transformed(by: CGAffineTransform(translationX: read.minX, y: read.minY))
         var output = source
         for region in planned {
             let effect: CIImage?
@@ -190,30 +253,26 @@ public enum Redactor {
                 effect = filter.outputImage
             }
             if let effect {
-                output = effect.cropped(to: region.rect).composited(over: output)
+                // Crop to the mark ∩ this strip so neighbouring strips do not overwrite.
+                let markSlice = region.rect.intersection(write)
+                guard !markSlice.isEmpty else { continue }
+                output = effect.cropped(to: markSlice).composited(over: output)
             }
         }
-        // Only the mark pixels change; the reach apron was input context and stays as drawn.
-        var writeBounds = CGRect.null
-        for region in planned {
-            writeBounds = writeBounds.union(region.rect)
-        }
-        writeBounds = writeBounds.integral.intersection(roi)
-        guard !writeBounds.isEmpty else { return }
-        let outWidth = Int(writeBounds.width)
-        let outHeight = Int(writeBounds.height)
+        let outWidth = Int(write.width)
+        let outHeight = Int(write.height)
         let outBytesPerRow = outWidth * 4
         guard let outBytes = NSMutableData(length: outBytesPerRow * outHeight) else { return }
         context.render(
             output, toBitmap: outBytes.mutableBytes, rowBytes: outBytesPerRow,
-            bounds: writeBounds, format: .RGBA8, colorSpace: space
+            bounds: write, format: .RGBA8, colorSpace: space
         )
-        let outTop = imageHeight - Int(writeBounds.maxY)
-        let outLeft = Int(writeBounds.minX)
-        let base = outBytes.mutableBytes
+        let outTop = imageHeight - Int(write.maxY)
+        let outLeft = Int(write.minX)
+        let outBase = outBytes.mutableBytes
         for row in 0..<outHeight {
             let dest = bitmap.baseAddress + (outTop + row) * bytesPerRow + outLeft * 4
-            dest.copyMemory(from: base + row * outBytesPerRow, byteCount: outBytesPerRow)
+            dest.copyMemory(from: outBase + row * outBytesPerRow, byteCount: outBytesPerRow)
         }
     }
 
