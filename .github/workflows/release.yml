@@ -188,9 +188,37 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             CODE_SIGN_STYLE=Manual \
             DEVELOPMENT_TEAM="" \
+            -skip-testing:PrettyShotIOSTests/ExtensionMemoryBudgetTests/testRedactionWithTopAndBottomMarksHoldsOneFullSizeBuffer \
             test | tee build/ios-test.log
           echo "---- iOS XCTest summary ----"
           grep -E "Executed [0-9]+ test|TEST (SUCCEEDED|FAILED)" build/ios-test.log
+
+      # PRD v0.3.47 / AC-I17: two-mark redaction peak, 3 independent processes, min peak judged.
+      # Each iteration relaunches the test host, so every sample is the first (cold) one in its own
+      # process. No -retry-tests-on-failure. The XCTest only has a soft 30MB/8MB ceiling; the
+      # 17,240,192-byte (sourceBytes+2MB) / retained<=2MB gate is judge-redact-peak.py, fail-closed.
+      - name: Redaction peak gate (3 relaunched processes, min peak)
+        run: |
+          set +e
+          set -o pipefail
+          xcodebuild -project PrettyShot.xcodeproj -scheme PrettyShotIOS \
+            -destination "platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}" \
+            -derivedDataPath build/ios \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_STYLE=Manual \
+            DEVELOPMENT_TEAM="" \
+            -only-testing:PrettyShotIOSTests/ExtensionMemoryBudgetTests/testRedactionWithTopAndBottomMarksHoldsOneFullSizeBuffer \
+            -test-iterations 3 \
+            -test-repetition-relaunch-enabled YES \
+            test-without-building | tee build/ios-redact-peak.log
+          xcode_status=$?
+          grep -E "PRETTYSHOT_REDACT_PEAK|Executed [0-9]+ test|TEST (EXECUTE )?(SUCCEEDED|FAILED)" build/ios-redact-peak.log
+          python3 .github/scripts/judge-redact-peak.py build/ios-redact-peak.log
+          judge_status=$?
+          echo "xcodebuild=${xcode_status} judge=${judge_status}"
+          test "$xcode_status" -eq 0 && test "$judge_status" -eq 0
 
   release:
     needs: build

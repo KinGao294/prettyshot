@@ -628,13 +628,25 @@ final class ExtensionMemoryBudgetTests: XCTestCase {
 
     /// Review eea0efd must-fix 1. One mark near the top and one near the bottom must not make redaction
     /// copy and render the whole span between them: still one full-size buffer at peak.
+    ///
+    /// PRD v0.3.47 / AC-I17: this test takes exactly one cold sample per process and logs it. It does
+    /// NOT assert the production gate. CI runs it on its own with
+    /// `-test-iterations 3 -test-repetition-relaunch-enabled YES`, so the three samples come from three
+    /// independent test processes, and `.github/scripts/judge-redact-peak.py` is the real gate: it needs
+    /// exactly three samples, picks the process with the lowest peak, and judges peak and retained on
+    /// that same process against the unchanged limits (sourceBytes + 2MB = 17,240,192 bytes; retained
+    /// ≤ 2MB). It fails only if that picked process fails, i.e. only if all three exceed the peak limit.
+    /// The asserts below are a soft local ceiling (peak ≤ 30MB, retained ≤ 8MB): a whole extra
+    /// full-size buffer (15.1MB) still fails here, normal jitter (16.5–17.8MB peak) never does.
+    /// Do not loop inside this test: later samples in one process read low (warm caches / reused pages).
     func testRedactionWithTopAndBottomMarksHoldsOneFullSizeBuffer() throws {
         _ = Redactor.apply([PixelRedaction(rect: CGRect(x: 0, y: 0, width: 8, height: 8))], to: try solidImage(width: 16, height: 16), scale: 1)
         let width = 1320
         let height = 2868
         let source = try solidImage(width: width, height: height)
         let sourceBytes = Int64(width * height * ExtensionMemoryBudget.bytesPerPixel)
-        let slack = Int64(2 * 1024 * 1024)
+        let softPeakCeiling = Int64(30 * 1024 * 1024)
+        let softRetainedCeiling = Int64(8 * 1024 * 1024)
         // Charge the source's own pages before sampling (see testRedactionHoldsOneFullSizeBuffer).
         let pixels = try XCTUnwrap(source.dataProvider?.data)
         let pixelBytes = try XCTUnwrap(CFDataGetBytePtr(pixels))
@@ -656,9 +668,12 @@ final class ExtensionMemoryBudgetTests: XCTestCase {
         XCTAssertEqual(redacted?.height, height)
         redacted = nil
         let retained = FootprintSampler.current() - before
-        print("PRETTYSHOT_REDACT_PEAK 1320x2868 two-marks peak=\(peak) retained=\(retained) sourceBytes=\(sourceBytes)")
-        XCTAssertLessThanOrEqual(peak, sourceBytes + slack)
-        XCTAssertLessThanOrEqual(retained, slack)
+        let process = ProcessInfo.processInfo.processIdentifier
+        // One machine-parseable line per process; judge-redact-peak.py reads exactly these fields.
+        print("PRETTYSHOT_REDACT_PEAK 1320x2868 two-marks process=\(process) peak=\(peak) retained=\(retained) sourceBytes=\(sourceBytes) before=\(before)")
+        // Soft local ceiling only; the 17,240,192-byte gate lives in judge-redact-peak.py (PRD v0.3.47).
+        XCTAssertLessThanOrEqual(peak, softPeakCeiling, "an extra full-size buffer at redaction peak")
+        XCTAssertLessThanOrEqual(retained, softRetainedCeiling, "a full-size buffer left behind after redaction")
         withExtendedLifetime(source) {}
     }
 
@@ -688,6 +703,12 @@ final class ExtensionMemoryBudgetTests: XCTestCase {
         }
 
         func stop() -> Int64 {
+            // Final sample on the caller's thread, taken before the background thread stops. Memory
+            // the measured call allocated in its last millisecond (between two background samples)
+            // is still alive here, so the peak can never read below the footprint at the moment the
+            // measured call returned. Only ever raises the reported peak (P1 #37: the full-size
+            // canvas is now allocated at the end of `Redactor.apply`).
+            let final = Self.current()
             lock.lock()
             running = false
             let value = high
@@ -696,7 +717,7 @@ final class ExtensionMemoryBudgetTests: XCTestCase {
             lock.lock()
             let latest = high
             lock.unlock()
-            return max(value, latest)
+            return max(value, latest, final)
         }
 
         static func current() -> Int64 {
