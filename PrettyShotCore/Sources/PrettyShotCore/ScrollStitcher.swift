@@ -110,6 +110,8 @@ public enum PendingSeamStyle {
     public static let labelBorderWidth: Int = 1
     /// Dashed stroke thickness of the seam line on the long image.
     public static let seamLineWidth: Int = 3
+    /// Dash on / off of the seam line when a view draws it in points (Mac preview window).
+    public static let seamLineDash: [Double] = [6, 4]
 
     public static var warnRGB: (UInt8, UInt8, UInt8) {
         (UInt8((warn >> 16) & 0xFF), UInt8((warn >> 8) & 0xFF), UInt8(warn & 0xFF))
@@ -1158,7 +1160,12 @@ public struct ScrollAssembly: Equatable {
 
     /// Downscaled stack for the review window, plus one mark per seam (OK and unresolved).
     /// Resolved overlaps are applied; unresolved segments are stacked in full so nothing is hidden by a guess.
-    public func renderPreview(maxLongSide: Int = 1200) -> (image: RGBAImage, marks: [SeamMark])? {
+    /// `paintsPendingSeamLine` false leaves the 「待确认」 amber line out of the pixels, for a caller that
+    /// scales the image and draws that line itself in view points (the Mac window). iOS keeps the default.
+    public func renderPreview(
+        maxLongSide: Int = 1200,
+        paintsPendingSeamLine: Bool = true
+    ) -> (image: RGBAImage, marks: [SeamMark])? {
         let layout = layoutPieces()
         guard let width = layout.pieces.first?.image.width, width > 0 else { return nil }
         let fullHeight = layout.fullHeight
@@ -1235,6 +1242,7 @@ public struct ScrollAssembly: Equatable {
                     note: card.reason
                 ))
                 if card.chrome == .amberDashed {
+                    guard paintsPendingSeamLine else { continue }
                     paintLine(
                         at: y,
                         fullHeight: fullHeight,

@@ -218,7 +218,8 @@ final class StitchPreviewModel: ObservableObject {
     func refresh() {
         duplicateMarks = assembly.duplicateRegionMarks()
         previewFullHeight = assembly.previewStackHeight()
-        guard let rendered = assembly.renderPreview() else {
+        // The window scales the image, so it draws the 「待确认」 line itself in points (`pendingSeamLineYs`).
+        guard let rendered = assembly.renderPreview(paintsPendingSeamLine: false) else {
             preview = nil
             marks = []
             loupe = nil
@@ -325,8 +326,8 @@ final class StitchPreviewModel: ObservableObject {
         let seam = assembly.seams[boundary]
         let card = seam.card(number: boundary + 1)
         if card.chrome == .amberDashed {
-            // Dark keeps the design's #8A5A12 text; DESIGN.md gives no dark value for it.
-            let ink = SeamTagInk(
+            // Light text #8A5A12; dark text is Warn #E3B26B (DESIGN.md ML6b, PR #22 design review).
+            let light = SeamTagInk(
                 text: PendingSeamStyle.text,
                 border: PendingSeamStyle.warn,
                 fill: PendingSeamStyle.warn,
@@ -334,7 +335,9 @@ final class StitchPreviewModel: ObservableObject {
                 borderWidth: PendingSeamStyle.labelBorderWidth,
                 dashed: true
             )
-            return SeamTag(text: card.label, light: ink, dark: ink)
+            var dark = light
+            dark.text = PendingSeamStyle.warn
+            return SeamTag(text: card.label, light: light, dark: dark)
         }
         guard card.labelColor != 0 else { return nil }
         let darkFill = seam.kind == .joinedAsIs ? ResolvedSeamStyle.directDarkFillOpacity : card.fillOpacity
@@ -357,6 +360,16 @@ final class StitchPreviewModel: ObservableObject {
                 dashed: false
             )
         )
+    }
+
+    /// Rows (full-resolution stack, like `SeamMark.y`) of the 「待确认」 seams. The view draws their amber
+    /// line in points, so it stays 3 pt dashed 6/4 at any image zoom.
+    var pendingSeamLineYs: [Int] {
+        marks.compactMap { mark in
+            guard let index = mark.boundaryIndex, assembly.seams.indices.contains(index),
+                  assembly.seams[index].card(number: index + 1).chrome == .amberDashed else { return nil }
+            return mark.y
+        }
     }
 
     /// The card's reason line. A handled tie or reverse seam has none.
@@ -841,9 +854,31 @@ struct StitchPreviewView: View {
                     }
                     .frame(width: width, height: imageH, alignment: .top)
                 }
+                ForEach(Array(model.pendingSeamLineYs.enumerated()), id: \.offset) { _, seamY in
+                    pendingSeamLine(y: CGFloat(seamY) * scale, width: width)
+                        .frame(width: width, height: imageH)
+                }
             }
             .frame(width: width, height: imageH, alignment: .topLeading)
         }
+    }
+
+    /// ML6b 「待确认」 seam line in view points: 3 pt Warn, dashed 6/4, whatever the image zoom.
+    /// Snapped to half a point so the stroke lands on whole pixels at 2x.
+    private func pendingSeamLine(y: CGFloat, width: CGFloat) -> some View {
+        let lineY = (y * 2).rounded() / 2
+        return Path { path in
+            path.move(to: CGPoint(x: 0, y: lineY))
+            path.addLine(to: CGPoint(x: width, y: lineY))
+        }
+        .stroke(
+            Color(hex: PendingSeamStyle.warn),
+            style: StrokeStyle(
+                lineWidth: CGFloat(PendingSeamStyle.seamLineWidth),
+                dash: PendingSeamStyle.seamLineDash.map { CGFloat($0) }
+            )
+        )
+        .allowsHitTesting(false)
     }
 
     /// ML6c rose dashed 「− 底栏 F · 顶栏 H」; ML6d amber dashed 「固定栏已接回」.
