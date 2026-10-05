@@ -2367,3 +2367,75 @@ extension CoreScrollFixtures {
         return RGBAImage(width: width, height: colors.count, pixels: pixels)
     }
 }
+
+// Round 7 (design review mac-10-c6b7120): handled-seam tag paint, signed manual label, lone reverse sign.
+extension ScrollStitchTests {
+    func testConfirmedTagUses22PercentFillAndSolidBorder() throws {
+        var assembly = try openShiftTie()
+        let suggested = try XCTUnwrap(assembly.seams[0].suggestedOverlap)
+        assembly.align(seam: 0, overlap: suggested)
+        let card = assembly.seams[0].card(number: 1)
+        XCTAssertEqual(card.label, "✓ 已确认")
+        XCTAssertEqual(card.tagText, "✓ 已确认")
+        XCTAssertEqual(card.fillOpacity, 0.22)
+        XCTAssertEqual(card.borderWidth, 1)
+        XCTAssertEqual(ResolvedSeamStyle.handledFillOpacity, 0.22)
+        XCTAssertEqual(ResolvedSeamStyle.labelBorderWidth, 1)
+    }
+
+    func testManualTagShowsSignedShiftWith22PercentFill() throws {
+        var assembly = try openShiftTie()
+        assembly.align(seam: 0, shift: -28)
+        let card = assembly.seams[0].card(number: 1)
+        XCTAssertEqual(card.label, "✓ 手动对齐")
+        XCTAssertEqual(card.tagText, "✓ 手动对齐 · −28 px")
+        XCTAssertEqual(card.fillOpacity, 0.22)
+        XCTAssertEqual(card.borderWidth, 1)
+    }
+
+    func testDirectTagUses12PercentFillAndSolidBorder() throws {
+        var assembly = try openShiftTie()
+        assembly.joinAsIs(seam: 0)
+        let card = assembly.seams[0].card(number: 1)
+        XCTAssertEqual(card.tagText, "直接拼")
+        XCTAssertEqual(card.fillOpacity, 0.12)
+        XCTAssertEqual(card.borderWidth, 1)
+        XCTAssertEqual(ResolvedSeamStyle.directFillOpacity, 0.12)
+    }
+
+    /// Same pair as iOS `stagedCheck`: #4F8F7E light, #7EB8A8 dark.
+    func testMintHasADarkVariantMatchingIOSStagedCheck() throws {
+        XCTAssertEqual(ResolvedSeamStyle.mint, 0x4F8F7E)
+        XCTAssertEqual(ResolvedSeamStyle.mintDark, 0x7EB8A8)
+        var assembly = try openShiftTie()
+        assembly.align(seam: 0, shift: 32)
+        let card = assembly.seams[0].card(number: 1)
+        XCTAssertEqual(card.labelColor, 0x4F8F7E)
+        XCTAssertEqual(card.labelColorDark, 0x7EB8A8)
+    }
+
+    /// A lone reverse seam keeps the sign of its shift; aligning on the suggestion uses that shift.
+    func testLoneReverseSuggestionKeepsItsSign() throws {
+        var stitcher = ScrollStitcher()
+        XCTAssertEqual(stitcher.ingest(CoreScrollFixtures.page(scroll: 0, height: 48, slot: 0)), .seeded)
+        XCTAssertEqual(stitcher.ingest(CoreScrollFixtures.page(scroll: 12, height: 48, slot: 0)), .appended(12))
+        XCTAssertEqual(stitcher.ingest(CoreScrollFixtures.falseReverse()), .unmatched)
+        var assembly = stitcher.takeAssembly()
+        let seam = try XCTUnwrap(assembly.seams.first)
+        XCTAssertTrue(seam.reversed)
+        let shift = try XCTUnwrap(seam.suggestedShift)
+        XCTAssertLessThan(shift, 0)
+        XCTAssertEqual(seam.selectedShift, shift)
+        assembly.alignToSuggestion(seam: 0)
+        XCTAssertEqual(assembly.seams[0].alignedShift, shift)
+        XCTAssertEqual(assembly.seams[0].card(number: 1).label, "✓ 已确认")
+    }
+
+    /// Non-reverse seams still align on the suggested overlap.
+    func testTieSuggestionAlignsOnTheSelectedShift() throws {
+        var assembly = try openShiftTie()
+        XCTAssertEqual(assembly.seams[0].suggestedShift, 32)
+        assembly.alignToSuggestion(seam: 0)
+        XCTAssertEqual(assembly.seams[0].card(number: 1).label, "✓ 已确认")
+    }
+}
