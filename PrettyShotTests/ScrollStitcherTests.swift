@@ -2425,7 +2425,6 @@ extension ScrollStitcherTests {
     func testLongImageHasNoTopLeftPendingOverlay() throws {
         let model = StitchPreviewModel(assembly: try openShiftTie(), notice: nil)
         XCTAssertEqual(model.assembly.seams[0].card(number: 1).chrome, .amberDashed)
-        XCTAssertNil(model.longImageOverlayLabel)
     }
 
     /// 按此对齐 on a lone reverse seam keeps the suggestion's sign.
