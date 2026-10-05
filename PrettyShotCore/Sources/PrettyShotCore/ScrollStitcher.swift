@@ -894,14 +894,9 @@ public struct ScrollAssembly: Equatable {
         return StitchCopy.overLimit(height: height, pixels: pixels, maxHeight: maxHeight, maxPixels: maxPixels)
     }
 
-    /// ML6b 「确认当前位移」: align on the shift the matcher picked, sign kept.
+    /// ML6b 「确认当前位移」. Same as `alignToSuggestion(seam:)`; kept only because existing tests call this name.
     public mutating func confirmCurrentShift(seam index: Int) {
-        guard seams.indices.contains(index) else { return }
-        if let shift = seams[index].selectedShift {
-            align(seam: index, shift: shift)
-        } else {
-            align(seam: index, overlap: seams[index].suggestedOverlap ?? 0)
-        }
+        alignToSuggestion(seam: index)
     }
 
     /// ML6c 「− 底栏 F · 顶栏 H」 while bars are kept once; ML6d 「固定栏已接回」 after restore.
@@ -1016,7 +1011,8 @@ public struct ScrollAssembly: Equatable {
         seams[index].alignedShift = shift
     }
 
-    /// 「按此对齐」 on the suggestion. A tie or lone reverse aligns on its signed shift;
+    /// 「按此对齐」 / ML6b 「确认当前位移」: the one way to align on the suggestion (PRD v0.3.43).
+    /// A tie or lone reverse aligns on its signed shift (the one marked 「当前」);
     /// any other seam uses the suggested overlap.
     public mutating func alignToSuggestion(seam index: Int) {
         guard seams.indices.contains(index) else { return }
