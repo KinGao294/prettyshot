@@ -203,6 +203,14 @@ public struct ScrollSeam: Equatable {
         self.reversed = reversed
     }
 
+    /// Stub: the digits on each candidate line, sign dropped. This is how the shifts read today.
+    public var candidateShifts: [Int] {
+        candidateLines.map { line in
+            let digits = line.split(separator: "·").dropFirst().first.map { String($0.filter(\.isNumber)) } ?? ""
+            return Int(digits) ?? 0
+        }
+    }
+
     /// True when this boundary is a shift tie or a lone reverse, whatever the user has done since.
     var awaitsConfirmation: Bool {
         pendingTitle != nil || !candidateLines.isEmpty || reversed
@@ -868,6 +876,12 @@ public struct ScrollAssembly: Equatable {
         guard seams.indices.contains(index), segments.indices.contains(index + 1) else { return }
         let limit = max(0, presented(at: index + 1).image.height - 1)
         seams[index].kind = .aligned(overlap: min(max(0, overlap), limit))
+    }
+
+    /// Stub: aligns on `frame height − |shift|`, the overlap the window uses today.
+    public mutating func align(seam index: Int, shift: Int) {
+        guard segments.indices.contains(index + 1) else { return }
+        align(seam: index, overlap: presented(at: index + 1).image.height - abs(shift))
     }
 
     /// A confirmation seam goes back to amber 「待确认」.

@@ -2110,3 +2110,297 @@ private enum ScrollFixtures {
         return RGBAImage(width: width, height: height, pixels: pixels)
     }
 }
+
+// MARK: - Round 6 must-fixes (C, E, F)
+
+extension ScrollStitcherTests {
+    private static let tieReason = "找到 2 个都说得通的位移，自动对齐没法确定是哪一个——为了不拼错，先停下来请你确认。"
+    private static let listRowPrefix = "这一段是重复的列表行（行高 22 px）。"
+
+    // C: a rival in the same direction as the best shift also opens the tie.
+
+    /// +12, then a frame that +30 and +50 both explain. Neither is close to +12, both point down.
+    func testSameDirectionRivalOpensATie() throws {
+        var stitcher = ScrollStitcher()
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.palePage(scroll: 0)), .seeded)
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.palePage(scroll: 12)), .appended(12))
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.paleSameDirectionTie()), .unmatched)
+        let assembly = stitcher.takeAssembly()
+        let card = try XCTUnwrap(assembly.seams.last).card(number: 1)
+        XCTAssertEqual(card.label, "待确认")
+        XCTAssertEqual(card.chrome, .amberDashed)
+        XCTAssertEqual(card.title, "接缝 1 · 待确认：位移无法唯一确定")
+        XCTAssertEqual(card.reason, Self.tieReason)
+        XCTAssertEqual(card.candidates.count, 2)
+        XCTAssertTrue(card.candidates.allSatisfy { $0.contains("+") }, "\(card.candidates)")
+        XCTAssertFalse(card.candidates.contains { $0.contains("−") }, "\(card.candidates)")
+        XCTAssertEqual(card.candidates.filter { $0.hasSuffix(" · 当前") }.count, 1)
+        XCTAssertEqual(assembly.unalignedSeamCount, 1)
+    }
+
+    // C: repeated 22 px list rows put the list-row sentence in front of the tie reason.
+
+    func testRepeatedListRowsPrefixTheTieReason() throws {
+        var stitcher = ScrollStitcher()
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.withFixedListRows(ScrollFixtures.aliasPeriod(scroll: 0))), .seeded)
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.withFixedListRows(ScrollFixtures.aliasPeriod(scroll: 12))), .appended(12))
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.withFixedListRows(ScrollFixtures.aliasPeriod(scroll: 42))), .unmatched)
+        let assembly = stitcher.takeAssembly()
+        let card = try XCTUnwrap(assembly.seams.last).card(number: 1)
+        XCTAssertEqual(card.label, "待确认")
+        XCTAssertEqual(card.chrome, .amberDashed)
+        XCTAssertEqual(card.title, "接缝 1 · 待确认：位移无法唯一确定")
+        XCTAssertTrue(card.reason?.hasPrefix(Self.listRowPrefix) == true, card.reason ?? "nil")
+        XCTAssertEqual(card.reason, Self.listRowPrefix + Self.tieReason)
+        XCTAssertEqual(card.candidates.count, 2)
+    }
+
+    // E: tie candidates keep their sign, and aligning on a shift uses that sign.
+
+    func testTieSeamKeepsSignedCandidateShifts() throws {
+        let assembly = try openShiftTie()
+        let seam = try XCTUnwrap(assembly.seams.first)
+        XCTAssertEqual(seam.candidateLines, ["位移 A · +32 px · 当前", "位移 B · −28 px"])
+        XCTAssertEqual(seam.candidateShifts, [32, -28])
+    }
+
+    /// −28 puts the new frame 28 rows above the last one (top 12 → −16): 16 new rows go on top,
+    /// the rest repeats segment 0. Nothing is appended below. The old overlap 62 appended 28 rows.
+    func testAligningTheReverseTieCandidatePutsItsRowsAboveTheSegment() throws {
+        var assembly = try openShiftTie()
+        let upper = try XCTUnwrap(assembly.segments.first).image
+        XCTAssertEqual(upper.height, 102)
+        assembly.align(seam: 0, shift: -28)
+        XCTAssertEqual(assembly.unalignedSeamCount, 0)
+        let image = try XCTUnwrap(assembly.flattenedIfResolved())
+        XCTAssertEqual(image.height, 118)
+        XCTAssertEqual(assembly.stackedHeight(deduping: true), 118)
+        guard image.height == 118 else { return }
+        let source = ScrollFixtures.aliasPeriod(scroll: 90)
+        for y in 0..<16 {
+            XCTAssertEqual(ScrollFixtures.row(image, y), ScrollFixtures.row(source, y), "prepended row \(y)")
+        }
+        for y in 0..<upper.height {
+            XCTAssertEqual(ScrollFixtures.row(image, 16 + y), ScrollFixtures.row(upper, y), "segment 0 row \(y)")
+        }
+        let card = assembly.seams[0].card(number: 1)
+        XCTAssertEqual(card.label, "✓ 手动对齐")
+        XCTAssertEqual(card.chrome, .plain)
+        let preview = try XCTUnwrap(assembly.renderPreview())
+        XCTAssertEqual(preview.image.height, 118)
+    }
+
+    /// Guards existing behaviour: +32 is still overlap 58, the same image as 按此对齐 on the suggestion.
+    func testAligningTheSelectedTieShiftMatchesTheSuggestedOverlap() throws {
+        var byShift = try openShiftTie()
+        var byOverlap = try openShiftTie()
+        let suggested = try XCTUnwrap(byOverlap.seams[0].suggestedOverlap)
+        XCTAssertEqual(suggested, 58)
+        byShift.align(seam: 0, shift: 32)
+        byOverlap.align(seam: 0, overlap: suggested)
+        let shifted = try XCTUnwrap(byShift.flattenedIfResolved())
+        let overlapped = try XCTUnwrap(byOverlap.flattenedIfResolved())
+        XCTAssertEqual(shifted.height, 134)
+        XCTAssertEqual(shifted, overlapped)
+        XCTAssertEqual(byShift.seams[0].card(number: 1).label, "✓ 已确认")
+    }
+
+    /// +30 and −30 both give overlap 60. Picking −30 is not the auto-selected shift.
+    func testAligningTheOppositeShiftOfAnEvenTieIsManual() throws {
+        var stitcher = ScrollStitcher()
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.aliasPeriod(scroll: 0)), .seeded)
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.aliasPeriod(scroll: 12)), .appended(12))
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.aliasPeriod(scroll: 42)), .unmatched)
+        let opened = stitcher.takeAssembly()
+        XCTAssertEqual(opened.seams.first?.candidateShifts, [30, -30])
+        var opposite = opened
+        opposite.align(seam: 0, shift: -30)
+        XCTAssertEqual(opposite.seams[0].card(number: 1).label, "✓ 手动对齐")
+        var selected = opened
+        selected.align(seam: 0, shift: 30)
+        XCTAssertEqual(selected.seams[0].card(number: 1).label, "✓ 已确认")
+    }
+
+    // F: once a confirmation seam is handled, the tie or reverse reason is gone from the card and the mark.
+
+    func testConfirmedTieSeamDropsTheTieReason() throws {
+        var assembly = try openShiftTie()
+        let suggested = try XCTUnwrap(assembly.seams[0].suggestedOverlap)
+        assembly.align(seam: 0, overlap: suggested)
+        try assertHandledSeamShowsNoReason(assembly)
+    }
+
+    func testManualTieSeamDropsTheTieReason() throws {
+        var assembly = try openShiftTie()
+        let suggested = try XCTUnwrap(assembly.seams[0].suggestedOverlap)
+        assembly.align(seam: 0, overlap: suggested + 4)
+        try assertHandledSeamShowsNoReason(assembly)
+    }
+
+    func testDirectTieSeamDropsTheTieReason() throws {
+        var assembly = try openShiftTie()
+        assembly.joinAsIs(seam: 0)
+        try assertHandledSeamShowsNoReason(assembly)
+    }
+
+    func testAlignedReverseSeamDropsTheReverseLine() throws {
+        var stitcher = ScrollStitcher()
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.page(scroll: 0, height: 48, slot: 0)), .seeded)
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.page(scroll: 12, height: 48, slot: 0)), .appended(12))
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.falseReverse()), .unmatched)
+        var assembly = stitcher.takeAssembly()
+        XCTAssertEqual(assembly.seams.first?.note, StitchCopy.reverseSeam)
+        let suggested = try XCTUnwrap(assembly.seams[0].suggestedOverlap)
+        assembly.align(seam: 0, overlap: suggested)
+        try assertHandledSeamShowsNoReason(assembly)
+    }
+
+    /// Guards existing behaviour: the pending tie still shows its reason on the card and the mark.
+    func testPendingTieSeamKeepsTheTieReasonOnTheMark() throws {
+        let assembly = try openShiftTie()
+        let card = assembly.seams[0].card(number: 1)
+        XCTAssertEqual(card.reason, Self.tieReason)
+        let preview = try XCTUnwrap(assembly.renderPreview())
+        let mark = try XCTUnwrap(preview.marks.first { $0.boundaryIndex == 0 })
+        XCTAssertEqual(mark.note, Self.tieReason)
+    }
+
+    private func assertHandledSeamShowsNoReason(
+        _ assembly: ScrollAssembly,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws {
+        let card = assembly.seams[0].card(number: 1)
+        XCTAssertEqual(card.chrome, .plain, file: file, line: line)
+        XCTAssertNil(card.reason, file: file, line: line)
+        let preview = try XCTUnwrap(assembly.renderPreview(), file: file, line: line)
+        let mark = try XCTUnwrap(preview.marks.first { $0.boundaryIndex == 0 }, file: file, line: line)
+        XCTAssertNil(mark.note, file: file, line: line)
+    }
+}
+
+extension ScrollFixtures {
+    /// Pale rows: channels in 195...255 (step 10), at least 20 apart inside a row so every row is distinctive.
+    /// Two different rows stay close, so a frame that is half right for a shift still scores inside the align distance.
+    static let paleLevels: [UInt8] = [195, 205, 215, 225, 235, 245, 255]
+    static let palePalette: [[UInt8]] = (0..<343).compactMap { index -> [UInt8]? in
+        let rgb = [paleLevels[index % 7], paleLevels[(index / 7) % 7], paleLevels[index / 49]]
+        let span = Int(rgb.max() ?? 0) - Int(rgb.min() ?? 0)
+        return span >= 20 ? rgb : nil
+    }
+
+    /// Page row `page` of the pale page. 17 is coprime with the palette size, so rows never repeat.
+    static func paleColor(_ page: Int) -> [UInt8] {
+        palePalette[(page * 17) % palePalette.count]
+    }
+
+    static func palePage(scroll: Int, height: Int = 90) -> RGBAImage {
+        solidRows((0..<height).map { paleColor(scroll + $0) })
+    }
+
+    /// After `palePage(scroll: 12)`: rows 0..<24 continue the page 30 rows on, rows 24..<50
+    /// continue it 50 rows on, and the rest is new. +30 and +50 both explain the frame.
+    static func paleSameDirectionTie(last: Int = 12, height: Int = 90) -> RGBAImage {
+        solidRows((0..<height).map { y -> [UInt8] in
+            if y < 24 { return paleColor(last + 30 + y) }
+            if y < 50 { return paleColor(last + 50 + y) }
+            return paleColor(200 + y)
+        })
+    }
+
+    /// A fixed list panel under the moving rows: 132 rows that repeat every 22 px, byte for byte.
+    static func withFixedListRows(_ image: RGBAImage, rows: Int = 132) -> RGBAImage {
+        var colors: [[UInt8]] = []
+        for y in 0..<image.height {
+            colors.append(row(image, y))
+        }
+        for y in 0..<rows {
+            colors.append(listRowPalette[y % 22])
+        }
+        return solidRows(colors)
+    }
+
+    /// Channels halfway between the stitch palette levels, so no list row is near a page row.
+    static let listRowPalette: [[UInt8]] = {
+        let mids: [UInt8] = [32, 96, 160, 224]
+        var colors: [[UInt8]] = []
+        for index in 0..<64 {
+            let rgb = [mids[index % 4], mids[(index / 4) % 4], mids[index / 16]]
+            if Int(rgb.max() ?? 0) - Int(rgb.min() ?? 0) >= 18 {
+                colors.append(rgb)
+            }
+        }
+        return colors
+    }()
+
+    static func solidRows(_ colors: [[UInt8]]) -> RGBAImage {
+        var pixels = [UInt8](repeating: 255, count: width * colors.count * 4)
+        for (y, rgb) in colors.enumerated() {
+            for x in 0..<width {
+                let i = (y * width + x) * 4
+                pixels[i] = rgb[0]
+                pixels[i + 1] = rgb[1]
+                pixels[i + 2] = rgb[2]
+                pixels[i + 3] = 255
+            }
+        }
+        return RGBAImage(width: width, height: colors.count, pixels: pixels)
+    }
+}
+
+// MARK: - Round 6 must-fixes (B, E, F on the Mac review window)
+
+extension ScrollStitcherTests {
+    /// B: 「还原自动」 in the Mac window goes through the Core rule and puts the tie back on 「待确认」.
+    @MainActor
+    func testRestoreAutoAlignmentButtonReturnsTheTieToPendingConfirmation() throws {
+        let tie = try openShiftTie()
+        let model = StitchPreviewModel(assembly: tie, notice: nil)
+        model.refresh()
+        model.select(boundary: 0)
+        model.alignSelected()
+        XCTAssertEqual(model.assembly.seams[0].kind, .aligned(overlap: 58))
+        XCTAssertEqual(model.assembly.seams[0].card(number: 1).label, "✓ 已确认")
+        model.restoreAutoAlignment()
+        XCTAssertEqual(model.assembly.seams[0].kind, .needsAlignment)
+        let card = model.assembly.seams[0].card(number: 1)
+        XCTAssertEqual(card.label, "待确认")
+        XCTAssertEqual(card.chrome, .amberDashed)
+        XCTAssertEqual(card.title, "接缝 1 · 待确认：位移无法唯一确定")
+        XCTAssertFalse(card.candidates.isEmpty)
+        XCTAssertEqual(model.assembly.unalignedSeamCount, 1)
+        XCTAssertEqual(Int(model.overlap.rounded()), 58)
+    }
+
+    /// F: after 按此对齐 in the Mac window, the seam row has no tie reason left to show.
+    @MainActor
+    func testAligningInTheWindowDropsTheTieReasonFromTheSeamRow() throws {
+        let tie = try openShiftTie()
+        let model = StitchPreviewModel(assembly: tie, notice: nil)
+        model.refresh()
+        let pending = try XCTUnwrap(model.marks.first { $0.boundaryIndex == 0 })
+        XCTAssertNotNil(pending.note)
+        model.select(boundary: 0)
+        model.alignSelected()
+        let mark = try XCTUnwrap(model.marks.first { $0.boundaryIndex == 0 })
+        XCTAssertNil(mark.note)
+        XCTAssertNil(model.assembly.seams[0].card(number: 1).reason)
+    }
+
+    /// E: a reverse tie pick survives saving the stitch to history and reading it back.
+    @MainActor
+    func testReverseTieAlignmentRoundTripsThroughHistory() throws {
+        var assembly = try openShiftTie()
+        assembly.align(seam: 0, shift: -28)
+        let image = try XCTUnwrap(assembly.segments[0].image.cgImage())
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("PrettyShotTests-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = HistoryStore(directory: directory, limit: 4)
+        let item = try store.add(image: image, scale: 2, mode: .scrolling)
+        try store.saveStitch(assembly, for: item)
+        let loaded = try XCTUnwrap(HistoryStore(directory: directory, limit: 4).loadStitch(for: item))
+        XCTAssertEqual(loaded.seams[0].candidateShifts, [32, -28])
+        XCTAssertEqual(loaded.flattenedIfResolved()?.height, 118)
+        XCTAssertEqual(loaded.seams[0].card(number: 1).label, "✓ 手动对齐")
+    }
+}
