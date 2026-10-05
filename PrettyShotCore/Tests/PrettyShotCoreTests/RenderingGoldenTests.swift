@@ -138,7 +138,12 @@ final class RenderingGoldenTests: XCTestCase {
     }
 
     /// Same fixture geometry as the iOS two-mark peak sample (top pixelate + bottom blur), scaled
-    /// down so the golden stays cheap — still covers top and bottom marks vs PreRefactor/main.
+    /// down so the golden stays cheap — still covers top and bottom marks.
+    ///
+    /// Added in this PR (1d5f14f) on the premise that main == PreRefactor here. CI on 6a805c8 showed
+    /// that premise is false at the bottom blur's clipped patch (1 LSB at (367, 883)), so the gate is
+    /// main, as PRD v0.3.49 #37 asks: live must be byte-identical to `MainRedactorSnapshot`, and its
+    /// PreRefactor diff must be exactly main's PreRefactor diff (both counts are logged).
     func testRedactionPeakFixtureGeometryMatchesPreRefactor() {
         let image = TestImages.make(width: 440, height: 960, striped: true)
         let top = CGRect(x: 20, y: 50, width: 133, height: 30)
@@ -154,7 +159,21 @@ final class RenderingGoldenTests: XCTestCase {
             ],
             image: image, scale: 1
         )
-        XCTAssertSamePixels(live, frozen, "peak-fixture-geometry")
+        let marks = [Mark(kind: .pixelate, rect: top), Mark(kind: .blur, rect: bottom)]
+        let main = MainRedactorSnapshot.apply(marks, to: image, scale: 1)
+        MainRedactorParityTests.assertByteIdentical(live, main, "peak-fixture-geometry-vs-main")
+        let liveBytes = TestImages.bytes(live)
+        let mainBytes = TestImages.bytes(main)
+        let frozenBytes = TestImages.bytes(frozen)
+        let liveVsFrozen = zip(liveBytes, frozenBytes).enumerated().filter { $0.element.0 != $0.element.1 }.map(\.offset)
+        let mainVsFrozen = zip(mainBytes, frozenBytes).enumerated().filter { $0.element.0 != $0.element.1 }.map(\.offset)
+        var firstMain = "none"
+        if let offset = mainVsFrozen.first {
+            firstMain = "(\((offset / 4) % image.width),\((offset / 4) / image.width))"
+        }
+        print("PRETTYSHOT_PREREFACTOR_DIFF case=peak-fixture-geometry live=\(liveVsFrozen.count) "
+              + "main=\(mainVsFrozen.count) firstMain=\(firstMain)")
+        XCTAssertEqual(liveVsFrozen, mainVsFrozen, "peak-fixture-geometry: PreRefactor diff must equal main's")
     }
 
     func testTinyRedactionReturnsTheSameImage() {
