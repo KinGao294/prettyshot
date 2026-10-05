@@ -62,13 +62,16 @@ public struct SeamMark: Identifiable, Equatable {
     /// Index into `ScrollAssembly.seams` when this mark is a boundary between segments.
     public var boundaryIndex: Int?
     public var suggestedOverlap: Int?
+    /// Extra line on the seam card. Blank frames use the designer's wording.
+    public var note: String?
 
-    public init(id: String, state: SeamState, y: Int, boundaryIndex: Int?, suggestedOverlap: Int?) {
+    public init(id: String, state: SeamState, y: Int, boundaryIndex: Int?, suggestedOverlap: Int?, note: String? = nil) {
         self.id = id
         self.state = state
         self.y = y
         self.boundaryIndex = boundaryIndex
         self.suggestedOverlap = suggestedOverlap
+        self.note = note
     }
 }
 
@@ -99,10 +102,95 @@ public struct ScrollSegment: Equatable {
     }
 }
 
+/// Paint for a 「待确认」 seam. Warn from the design, shared by the label and the long-image line.
+public enum PendingSeamStyle {
+    public static let warn: UInt32 = 0xE3B26B
+    public static let text: UInt32 = 0x8A5A12
+    public static let fillOpacity: Double = 0.18
+    public static let labelBorderWidth: Int = 1
+    /// Dashed stroke thickness of the seam line on the long image.
+    public static let seamLineWidth: Int = 3
+
+    public static var warnRGB: (UInt8, UInt8, UInt8) {
+        (UInt8((warn >> 16) & 0xFF), UInt8((warn >> 8) & 0xFF), UInt8(warn & 0xFF))
+    }
+}
+
+/// Rivals of the best shift. These are the thresholds the matcher already uses.
+public enum AliasRival {
+    /// Shifts this close are the same scroll, not a second candidate.
+    public static let shiftGap = 2
+    /// A rival may score this much worse than the best and still count.
+    public static let scoreSlack = 4
+    /// Integer half: `votes * voteFactor >= bestVotes`.
+    public static let voteFactor = 2
+}
+
+/// Colors for a resolved confirmation seam.
+public enum ResolvedSeamStyle {
+    /// Mint for 「✓ 已确认」 and 「✓ 手动对齐」.
+    public static let mint: UInt32 = 0x4F8F7E
+    /// Neutral gray for 「直接拼」.
+    public static let direct: UInt32 = 0x5C5751
+}
+
+/// What the review window shows for one seam. The pending reverse seam uses the amber dashed label.
+public struct SeamCard: Equatable {
+    public enum Chrome: Equatable {
+        /// Solid rose 「需要对齐」.
+        case plain
+        /// Amber dashed 「待确认」.
+        case amberDashed
+    }
+
+    public var label: String
+    public var chrome: Chrome
+    public var title: String?
+    public var reason: String?
+    public var candidates: [String]
+    /// Label ink. Unset until a resolved confirmation seam picks Mint or gray.
+    public var labelColor: UInt32
+
+    public init(
+        label: String,
+        chrome: Chrome,
+        title: String? = nil,
+        reason: String? = nil,
+        candidates: [String] = [],
+        labelColor: UInt32 = 0
+    ) {
+        self.label = label
+        self.chrome = chrome
+        self.title = title
+        self.reason = reason
+        self.candidates = candidates
+        self.labelColor = labelColor
+    }
+}
+
 public struct ScrollSeam: Equatable {
     public var kind: Kind
     /// Best-guess overlap (rows) when `kind` is `.needsAlignment`. Not applied until the user says so.
     public var suggestedOverlap: Int?
+    /// Shown in the seam card when this boundary needs a reason, such as a blank frame.
+    public var note: String?
+    /// Set when several shifts share the best score and the join cannot pick one.
+    public var pendingTitle: String?
+    /// Display lines for those shifts, highest first. The selected line ends with 「 · 当前」.
+    public var candidateLines: [String]
+    /// Lone reverse candidate. The amber card reads this flag, not the note string.
+    public var reversed: Bool
+    /// Signed shifts behind `candidateLines`, same order (highest first). Empty unless this seam is a shift tie.
+    public var candidateShifts: [Int]
+    /// The shift the matcher picked, the one marked 「当前」. Nil when there was no guess.
+    public var selectedShift: Int?
+    /// Row of the upper segment where the last frame before this seam starts. Nil when unknown.
+    public var upperFrameTop: Int?
+    /// Rows from the top of the lower segment that go above the upper segment.
+    /// Set by `align(seam:shift:)` when the shift reaches above the upper segment; only applied while aligned.
+    public var prependRows: Int
+    /// The shift chosen with `align(seam:shift:)`. Any other alignment clears it.
+    public var alignedShift: Int?
 
     public enum Kind: Equatable {
         case needsAlignment
@@ -110,9 +198,98 @@ public struct ScrollSeam: Equatable {
         case joinedAsIs
     }
 
-    public init(kind: Kind, suggestedOverlap: Int? = nil) {
+    public init(
+        kind: Kind,
+        suggestedOverlap: Int? = nil,
+        note: String? = nil,
+        pendingTitle: String? = nil,
+        candidateLines: [String] = [],
+        reversed: Bool = false,
+        candidateShifts: [Int] = [],
+        selectedShift: Int? = nil,
+        upperFrameTop: Int? = nil,
+        prependRows: Int = 0,
+        alignedShift: Int? = nil
+    ) {
         self.kind = kind
         self.suggestedOverlap = suggestedOverlap
+        self.note = note
+        self.pendingTitle = pendingTitle
+        self.candidateLines = candidateLines
+        self.reversed = reversed
+        self.candidateShifts = candidateShifts
+        self.selectedShift = selectedShift
+        self.upperFrameTop = upperFrameTop
+        self.prependRows = prependRows
+        self.alignedShift = alignedShift
+    }
+
+    /// Rows of the lower segment drawn above the upper segment. Zero unless aligned on a shift that reaches above it.
+    public var appliedPrependRows: Int {
+        if case .aligned = kind { return max(0, prependRows) }
+        return 0
+    }
+
+    /// True when this boundary is a shift tie or a lone reverse, whatever the user has done since.
+    var awaitsConfirmation: Bool {
+        pendingTitle != nil || !candidateLines.isEmpty || reversed
+    }
+
+    /// Review copy for this boundary. `number` is the 1-based seam index.
+    /// Amber 「待确认」 only while the seam still needs alignment.
+    /// Confirming the auto-selected shift, picking another overlap, and stitching as-is each get their own label.
+    public func card(number: Int) -> SeamCard {
+        precondition(number >= 1)
+        if awaitsConfirmation {
+            switch kind {
+            case .needsAlignment:
+                if pendingTitle != nil || !candidateLines.isEmpty {
+                    return SeamCard(
+                        label: "待确认",
+                        chrome: .amberDashed,
+                        title: pendingTitle,
+                        reason: note,
+                        candidates: candidateLines,
+                        labelColor: PendingSeamStyle.text
+                    )
+                }
+                return SeamCard(
+                    label: "待确认",
+                    chrome: .amberDashed,
+                    reason: note,
+                    labelColor: PendingSeamStyle.text
+                )
+            case .aligned(let overlap):
+                // A pick by shift compares shifts: +30 and −30 can share an overlap and still differ.
+                let confirmed: Bool
+                if let alignedShift, let selectedShift {
+                    confirmed = alignedShift == selectedShift
+                } else {
+                    confirmed = suggestedOverlap.map { overlap == $0 } ?? false
+                }
+                return SeamCard(
+                    label: confirmed ? "✓ 已确认" : "✓ 手动对齐",
+                    chrome: .plain,
+                    labelColor: ResolvedSeamStyle.mint
+                )
+            case .joinedAsIs:
+                return SeamCard(
+                    label: "直接拼",
+                    chrome: .plain,
+                    labelColor: ResolvedSeamStyle.direct
+                )
+            }
+        }
+        let label: String
+        switch kind {
+        case .needsAlignment:
+            label = "需要对齐"
+        case .aligned:
+            label = "已手动对齐"
+        case .joinedAsIs:
+            label = "已按原样拼接"
+        }
+        return SeamCard(label: label, chrome: .plain, reason: note)
     }
 
     public var state: SeamState {
@@ -588,7 +765,13 @@ public struct ScrollAssembly: Equatable {
             }
             origin += max(0, imageHeight - start)
         }
+        // Rows a reverse shift put above segment `index`, taken from the top of the next segment.
+        func lead(above index: Int) -> Int {
+            guard seams.indices.contains(index), segments.indices.contains(index + 1) else { return 0 }
+            return min(seams[index].appliedPrependRows, presented(at: index + 1).image.height)
+        }
         let first = presented(at: 0).image
+        origin += lead(above: 0)
         take(segmentIndex: 0, imageHeight: first.height, start: 0)
         for index in seams.indices where segments.indices.contains(index + 1) {
             let next = presented(at: index + 1).image
@@ -599,6 +782,7 @@ public struct ScrollAssembly: Equatable {
             case .aligned(let overlap):
                 start = min(max(0, overlap), next.height)
             }
+            origin += lead(above: index + 1)
             if start < next.height {
                 take(segmentIndex: index + 1, imageHeight: next.height, start: start)
             }
@@ -641,6 +825,7 @@ public struct ScrollAssembly: Equatable {
                 start = min(max(0, overlap), nextHeight)
             }
             total += max(0, nextHeight - start)
+            total += min(seams[index].appliedPrependRows, nextHeight)
         }
         return total
     }
@@ -703,6 +888,14 @@ public struct ScrollAssembly: Equatable {
                 }
                 parts = Self.droppingRows(drop, from: parts)
             }
+            // Rows a reverse shift put above this segment come from the top of the next one.
+            if seams.indices.contains(index), segments.indices.contains(index + 1), seams[index].appliedPrependRows > 0 {
+                let lower = imageForExport(index: index + 1, dedupe: dedupe)
+                let lifted = min(seams[index].appliedPrependRows, lower.height)
+                if lifted > 0 {
+                    slices.append(lower.crop(rows: 0..<lifted))
+                }
+            }
             slices.append(contentsOf: parts)
         }
         return Self.pack(slices, maxHeight: maxHeight, maxPixels: maxPixels)
@@ -724,10 +917,36 @@ public struct ScrollAssembly: Equatable {
         guard seams.indices.contains(index), segments.indices.contains(index + 1) else { return }
         let limit = max(0, presented(at: index + 1).image.height - 1)
         seams[index].kind = .aligned(overlap: min(max(0, overlap), limit))
+        seams[index].prependRows = 0
+        seams[index].alignedShift = nil
     }
 
-    /// Puts the overlap back on the automatic suggestion and marks the seam aligned.
-    /// The capture itself never applies that suggestion until the user asks.
+    /// Aligns a seam on a signed shift: the lower segment's first frame starts `shift` rows below
+    /// the last frame of the upper segment (above it when negative).
+    /// A positive shift is the usual overlap, `frame height − shift`.
+    /// A negative shift that reaches above the upper segment puts those rows on top of it,
+    /// the same way an upward join inside one segment does, and drops the rest of the repeat.
+    public mutating func align(seam index: Int, shift: Int) {
+        guard seams.indices.contains(index), segments.indices.contains(index + 1) else { return }
+        let upperHeight = presented(at: index).image.height
+        let lowerHeight = presented(at: index + 1).image.height
+        let storedTop = seams[index].upperFrameTop.map { logicalPresentedRow($0, segmentIndex: index) }
+        let upperTop = min(max(0, storedTop ?? (upperHeight - lowerHeight)), upperHeight)
+        let lowerTop = upperTop + shift
+        if lowerTop >= 0 {
+            let limit = max(0, lowerHeight - 1)
+            seams[index].kind = .aligned(overlap: min(max(0, upperHeight - lowerTop), limit))
+            seams[index].prependRows = 0
+        } else {
+            let lifted = min(-lowerTop, lowerHeight)
+            seams[index].kind = .aligned(overlap: min(lifted + upperHeight, lowerHeight))
+            seams[index].prependRows = lifted
+        }
+        seams[index].alignedShift = shift
+    }
+
+    /// A confirmation seam goes back to amber 「待确认」.
+    /// Any other seam returns to the suggested overlap and stays aligned.
     /// This is 「还原自动」: duplicate detection runs again. Choices stay when this overlap
     /// matches the one stored on the candidate.
     @discardableResult
@@ -740,6 +959,12 @@ public struct ScrollAssembly: Equatable {
                 clearedChoiceCount: 0
             )
         }
+        if seams[index].awaitsConfirmation {
+            seams[index].kind = .needsAlignment
+            seams[index].prependRows = 0
+            seams[index].alignedShift = nil
+            return restoreAutomaticAlignment()
+        }
         align(seam: index, overlap: seams[index].suggestedOverlap ?? 0)
         return restoreAutomaticAlignment()
     }
@@ -747,6 +972,8 @@ public struct ScrollAssembly: Equatable {
     public mutating func joinAsIs(seam index: Int) {
         guard seams.indices.contains(index) else { return }
         seams[index].kind = .joinedAsIs
+        seams[index].prependRows = 0
+        seams[index].alignedShift = nil
     }
 
     /// 1:1 crop around a boundary. The rows the overlap hides are drawn at partial alpha
@@ -819,15 +1046,24 @@ public struct ScrollAssembly: Equatable {
         guard !segments.isEmpty else { return [] }
         var chunks: [RGBAImage] = []
         var current: [RGBAImage] = [presented(at: 0).image]
+        // Where segment `index` begins inside `current`. Rows a reverse shift lifts go in front of it.
+        var segmentStart = 0
         for index in seams.indices where segments.indices.contains(index + 1) {
             let next = presented(at: index + 1).image
+            let lifted = min(seams[index].appliedPrependRows, next.height)
+            if lifted > 0 {
+                current.insert(next.crop(rows: 0..<lifted), at: min(segmentStart, current.count))
+            }
             switch seams[index].kind {
             case .needsAlignment:
                 if let joined = RGBAImage.verticalJoin(current) { chunks.append(joined) }
                 current = [next]
+                segmentStart = 0
             case .joinedAsIs:
+                segmentStart = current.count
                 current.append(next)
             case .aligned(let overlap):
+                segmentStart = current.count
                 let start = min(max(0, overlap), next.height)
                 let trimmed = next.crop(rows: start..<next.height)
                 if trimmed.height > 0 { current.append(trimmed) }
@@ -849,24 +1085,37 @@ public struct ScrollAssembly: Equatable {
         let outH = max(1, Int((CGFloat(fullHeight) * factor).rounded()))
         var pixels = [UInt8](repeating: 255, count: outW * outH * 4)
 
+        // `blockStarts[i]` is where piece i begins (its lead first); `origins[i]` is where its own rows begin.
+        var blockStarts: [Int] = []
         var origins: [Int] = []
         var cursor = 0
         for piece in layout.pieces {
-            origins.append(cursor)
-            cursor += piece.image.height - piece.start
+            blockStarts.append(cursor)
+            origins.append(cursor + piece.leadHeight)
+            cursor += piece.height
         }
 
         for row in 0..<outH {
             let sourceY = min(fullHeight - 1, Int((CGFloat(row) / factor).rounded(.down)))
-            guard let pieceIndex = origins.lastIndex(where: { $0 <= sourceY }) else { continue }
+            guard let pieceIndex = blockStarts.indices.last(where: {
+                blockStarts[$0] <= sourceY && layout.pieces[$0].height > 0
+            }) else { continue }
             let piece = layout.pieces[pieceIndex]
-            let local = piece.start + (sourceY - origins[pieceIndex])
-            guard local >= 0, local < piece.image.height else { continue }
-            piece.image.withRow(local) { src in
+            let source: RGBAImage
+            let local: Int
+            if let lead = piece.lead, sourceY < origins[pieceIndex] {
+                source = lead
+                local = sourceY - blockStarts[pieceIndex]
+            } else {
+                source = piece.image
+                local = piece.start + (sourceY - origins[pieceIndex])
+            }
+            guard local >= 0, local < source.height else { continue }
+            source.withRow(local) { src in
                 let dst = row * outW * 4
                 guard src.count >= 4 else { return }
                 for x in 0..<outW {
-                    let sourceX = min(piece.image.width - 1, Int((CGFloat(x) / factor).rounded(.down)))
+                    let sourceX = min(source.width - 1, Int((CGFloat(x) / factor).rounded(.down)))
                     let s = sourceX * 4
                     let d = dst + x * 4
                     guard s + 3 < src.count, d + 3 < pixels.count else { continue }
@@ -890,16 +1139,34 @@ public struct ScrollAssembly: Equatable {
             }
             if segmentIndex < seams.count {
                 let seam = seams[segmentIndex]
-                let y = origins[segmentIndex] + (piece.image.height - piece.start)
+                let y = origins[segmentIndex] + max(0, piece.image.height - piece.start)
+                let card = seam.card(number: segmentIndex + 1)
+                // The card decides the reason line. A handled tie or reverse seam has none,
+                // so the row must not fall back to the old 「都说得通」 or reverse sentence.
                 marks.append(SeamMark(
                     id: "boundary-\(segmentIndex)",
                     state: seam.state,
                     y: y,
                     boundaryIndex: segmentIndex,
-                    suggestedOverlap: seam.suggestedOverlap
+                    suggestedOverlap: seam.suggestedOverlap,
+                    note: card.reason
                 ))
-                let color: (UInt8, UInt8, UInt8) = seam.isResolved ? (126, 184, 168) : (232, 160, 168)
-                paintLine(at: y, fullHeight: fullHeight, factor: factor, outW: outW, outH: outH, color: color, into: &pixels)
+                if card.chrome == .amberDashed {
+                    paintLine(
+                        at: y,
+                        fullHeight: fullHeight,
+                        factor: factor,
+                        outW: outW,
+                        outH: outH,
+                        color: PendingSeamStyle.warnRGB,
+                        thickness: PendingSeamStyle.seamLineWidth,
+                        dashed: true,
+                        into: &pixels
+                    )
+                } else {
+                    let color: (UInt8, UInt8, UInt8) = seam.isResolved ? (126, 184, 168) : (232, 160, 168)
+                    paintLine(at: y, fullHeight: fullHeight, factor: factor, outW: outW, outH: outH, color: color, into: &pixels)
+                }
             }
         }
         return (RGBAImage(width: outW, height: outH, pixels: pixels), marks)
@@ -908,6 +1175,11 @@ public struct ScrollAssembly: Equatable {
     private struct Piece {
         var image: RGBAImage
         var start: Int
+        var lead: RGBAImage? = nil
+
+        var leadHeight: Int { lead?.height ?? 0 }
+        /// Rows this piece takes in the stack, lead included.
+        var height: Int { leadHeight + max(0, image.height - start) }
     }
 
     /// Dedupe-off view of a segment: repeated sticky bars spliced back at each confident seam.
@@ -1124,6 +1396,8 @@ public struct ScrollAssembly: Equatable {
         return chunks
     }
 
+    /// One piece per segment, in order, so `pieces[i]` is segment `i`. A segment hidden by its overlap
+    /// stays as an empty piece. `lead` holds rows a reverse shift put above that segment.
     private func layoutPieces() -> (pieces: [Piece], fullHeight: Int) {
         guard !segments.isEmpty else { return ([], 0) }
         var pieces = [Piece(image: presented(at: 0).image, start: 0)]
@@ -1136,11 +1410,13 @@ public struct ScrollAssembly: Equatable {
             case .aligned(let overlap):
                 start = min(max(0, overlap), next.height)
             }
-            if start < next.height {
-                pieces.append(Piece(image: next, start: start))
+            let lifted = min(seams[index].appliedPrependRows, next.height)
+            if lifted > 0 {
+                pieces[index].lead = next.crop(rows: 0..<lifted)
             }
+            pieces.append(Piece(image: next, start: start))
         }
-        let fullHeight = pieces.reduce(0) { $0 + ($1.image.height - $1.start) }
+        let fullHeight = pieces.reduce(0) { $0 + $1.height }
         return (pieces, fullHeight)
     }
 
@@ -1151,16 +1427,26 @@ public struct ScrollAssembly: Equatable {
         outW: Int,
         outH: Int,
         color: (UInt8, UInt8, UInt8),
+        thickness: Int = 1,
+        dashed: Bool = false,
         into pixels: inout [UInt8]
     ) {
         guard fullHeight > 0 else { return }
         let row = min(outH - 1, max(0, Int((CGFloat(fullY) * factor).rounded(.down))))
-        for x in 0..<outW {
-            let d = (row * outW + x) * 4
-            pixels[d] = color.0
-            pixels[d + 1] = color.1
-            pixels[d + 2] = color.2
-            pixels[d + 3] = 255
+        let span = max(1, thickness)
+        let first = row - span / 2
+        for offset in 0..<span {
+            let target = first + offset
+            guard target >= 0, target < outH else { continue }
+            for x in 0..<outW {
+                // 3 px on, 2 px off. The old seam used 4 px on / 4 px off.
+                if dashed, x % 5 >= 3 { continue }
+                let d = (target * outW + x) * 4
+                pixels[d] = color.0
+                pixels[d + 1] = color.1
+                pixels[d + 2] = color.2
+                pixels[d + 3] = 255
+            }
         }
     }
 }
@@ -1206,6 +1492,9 @@ public struct ScrollStitcher {
     private var canvasFooter = 0
     /// True until the first successful join, so a sticky split only re-labels the seed rows.
     private var canvasIsSeed = false
+    /// Canvas row where the last incorporated frame starts. A seam records it so a reverse
+    /// tie candidate can be placed against that frame instead of the bottom of the segment.
+    private var previousTop = 0
     private var open = false
     private var confidentYs: [Int] = []
     private var previous: RGBAImage?
@@ -1213,6 +1502,9 @@ public struct ScrollStitcher {
     private var lockedFooter: Int?
     private var pendingSticky: PendingStickyConfirmation?
     private var stickyRepeats: [StickyRepeat] = []
+    /// Last confident vertical shift. Breaks a later alias (period-like cards) in the same direction.
+    /// Cleared when a segment closes, when the assembly is finalized, and in `beginStitch()`.
+    private var lastShift: Int?
     /// One shared copy of the sticky bars for the open run. Each seam records these images
     /// instead of cropping a fresh header and footer on every frame.
     private var pinnedHeader: RGBAImage?
@@ -1224,8 +1516,11 @@ public struct ScrollStitcher {
         self.options = options
     }
 
-    /// 「开始拼接」. Clears candidates found so far so the next frames are identified again.
+    /// 「开始拼接」. Drops the shift remembered for repeating-card aliases so the next
+    /// pass cannot inherit a direction from the previous one, and clears candidates found
+    /// so far so the next frames are identified again.
     public mutating func beginStitch() {
+        lastShift = nil
         duplicateCandidates = []
     }
 
@@ -1249,6 +1544,7 @@ public struct ScrollStitcher {
             canvasHeader = 0
             canvasFooter = 0
             canvasIsSeed = true
+            previousTop = 0
             open = true
             return .seeded
         }
@@ -1299,16 +1595,37 @@ public struct ScrollStitcher {
             }
         }
 
-        let found = RowSamples.bestShift(prevRows, nextRows, header: headerH, footer: footerH, options: options)
-        if let match = found, match.confident {
+        // A fixed bar taller than the sticky cap, or a blank margin, must not hide the rows that moved.
+        let match = RowSamples.matchEdges(
+            prevRows,
+            nextRows,
+            fallbackHeader: headerH,
+            fallbackFooter: footerH,
+            options: options
+        )
+        let found = RowSamples.bestShift(
+            prevRows,
+            nextRows,
+            header: match.header,
+            footer: match.footer,
+            lastShift: lastShift,
+            options: options
+        )
+        if let matchFound = found, matchFound.confident {
             let duplicate = RowSamples.uncertainDuplicate(
                 prev: prevRows,
                 next: nextRows,
-                shift: match.shift,
-                header: headerH,
-                footer: footerH
+                shift: matchFound.shift,
+                header: match.header,
+                footer: match.footer
             )
-            let outcome = apply(next: frame, shift: match.shift, headerH: headerH, footerH: footerH, duplicate: duplicate)
+            let outcome = apply(
+                next: frame,
+                shift: matchFound.shift,
+                headerH: match.header,
+                footerH: match.footer,
+                duplicate: duplicate
+            )
             switch outcome {
             case .appended, .prepended, .reachedLimit:
                 if lockedHeader == nil {
@@ -1318,18 +1635,31 @@ public struct ScrollStitcher {
                 if pendingSticky != nil, headerH > 0 || footerH > 0 {
                     pendingSticky?.seamCount += 1
                 }
+                lastShift = matchFound.shift
                 previous = frame
             case .unchanged:
                 break
             case .unmatched:
-                return breakUnmatched(frame, suggested: max(0, frame.height - abs(match.shift)))
+                return breakUnmatched(frame, suggested: max(0, frame.height - abs(matchFound.shift)))
             case .seeded, .ignored:
                 break
             }
             return outcome
         }
+        // Hover, caret, or a one-frame flash: most of the picture is still the last frame.
+        if found == nil, RowSamples.isFlicker(prevRows, nextRows, options: options) {
+            return .ignored
+        }
         let suggested = found.map { max(0, frame.height - abs($0.shift)) }
-        return breakUnmatched(frame, suggested: suggested)
+        let reverseNote = found?.reversed == true ? StitchCopy.reverseSeam : nil
+        return breakUnmatched(
+            frame,
+            suggested: suggested,
+            note: reverseNote,
+            tieShifts: found?.tieShifts,
+            selectedShift: found?.shift,
+            reversed: found?.reversed == true
+        )
     }
 
     /// Seals the open segment and returns every piece. Call once, when capture ends.
@@ -1440,6 +1770,8 @@ public struct ScrollStitcher {
             }
         }
         canvasIsSeed = false
+        // An upward join lines the frame up with the top of the canvas, a downward one with the bottom.
+        previousTop = prepend ? 0 : max(0, canvas.height - next.height)
         if repeatHeader.height > 0 || repeatFooter.height > 0 {
             stickyRepeats.append(StickyRepeat(seamY: joinY, header: repeatHeader, footer: repeatFooter))
         }
@@ -1471,7 +1803,14 @@ public struct ScrollStitcher {
         ))
     }
 
-    private mutating func breakUnmatched(_ frame: RGBAImage, suggested: Int?) -> ScrollIngest {
+    private mutating func breakUnmatched(
+        _ frame: RGBAImage,
+        suggested: Int?,
+        note: String? = nil,
+        tieShifts: [Int]? = nil,
+        selectedShift: Int? = nil,
+        reversed: Bool = false
+    ) -> ScrollIngest {
         let room = ScrollOutputLimit.remainingRows(
             totalHeight: pixelHeight,
             width: frame.width,
@@ -1480,8 +1819,37 @@ public struct ScrollStitcher {
         )
         // Don't start another full viewport that would blow the cap, and don't clip it into a fake join.
         if pixelHeight > 0, room < frame.height { return .reachedLimit }
+        let upperFrameTop: Int? = open ? previousTop : nil
         sealOpenSegment()
-        seams.append(ScrollSeam(kind: .needsAlignment, suggestedOverlap: suggested))
+        var seamNote = note ?? RowSamples.blankSeamNote(RowSamples.make(frame, options: options))
+        var pendingTitle: String?
+        var candidateLines: [String] = []
+        var candidateShifts: [Int] = []
+        if let tieShifts, tieShifts.count >= 2 {
+            let number = seams.count + 1
+            pendingTitle = "接缝 \(number) · 待确认：位移无法唯一确定"
+            var reason = "找到 \(tieShifts.count) 个都说得通的位移，自动对齐没法确定是哪一个——为了不拼错，先停下来请你确认。"
+            if Self.repeatsListRows(frame, height: 22) {
+                reason = "这一段是重复的列表行（行高 22 px）。" + reason
+            }
+            seamNote = reason
+            let selected = selectedShift ?? tieShifts[0]
+            candidateShifts = tieShifts.sorted(by: >)
+            candidateLines = candidateShifts.enumerated().map { index, shift in
+                Self.shiftCandidateLine(index: index, shift: shift, selected: selected)
+            }
+        }
+        seams.append(ScrollSeam(
+            kind: .needsAlignment,
+            suggestedOverlap: suggested,
+            note: seamNote,
+            pendingTitle: pendingTitle,
+            candidateLines: candidateLines,
+            reversed: reversed && pendingTitle == nil,
+            candidateShifts: candidateShifts,
+            selectedShift: selectedShift,
+            upperFrameTop: upperFrameTop
+        ))
         let savedHeader = lockedHeader
         let savedFooter = lockedFooter
         let savedPending = pendingSticky
@@ -1490,6 +1858,7 @@ public struct ScrollStitcher {
         canvasHeader = 0
         canvasFooter = 0
         canvasIsSeed = true
+        previousTop = 0
         open = true
         confidentYs = []
         stickyRepeats = []
@@ -1506,7 +1875,38 @@ public struct ScrollStitcher {
         return .unmatched
     }
 
+    /// 「位移 A · +30 px · 当前」. A negative shift uses U+2212, not a hyphen.
+    private static func shiftCandidateLine(index: Int, shift: Int, selected: Int) -> String {
+        let letter = index < 26 ? String(UnicodeScalar(65 + index)!) : "?"
+        let sign = shift < 0 ? "−" : "+"
+        var line = "位移 \(letter) · \(sign)\(abs(shift)) px"
+        if shift == selected {
+            line += " · 当前"
+        }
+        return line
+    }
+
+    /// True when most rows repeat the row `period` px below. Alias periods of 60 do not.
+    private static func repeatsListRows(_ frame: RGBAImage, height period: Int) -> Bool {
+        guard period > 0, frame.width > 0, frame.height >= period * 3 else { return false }
+        let pixels = frame.pixels
+        let rowBytes = frame.width * 4
+        guard pixels.count >= frame.height * rowBytes else { return false }
+        var matches = 0
+        let compared = frame.height - period
+        for y in 0..<compared {
+            let top = y * rowBytes
+            let below = (y + period) * rowBytes
+            if pixels[top..<(top + rowBytes)] == pixels[below..<(below + rowBytes)] {
+                matches += 1
+            }
+        }
+        return matches * 2 >= compared
+    }
+
     private mutating func sealOpenSegment() {
+        // The next segment, and the next capture after finalize, start without a direction.
+        lastShift = nil
         guard open, canvas.height > 0 else {
             stickyRepeats = []
             return
@@ -1609,6 +2009,10 @@ private enum RowSamples {
     struct ShiftChoice {
         var shift: Int
         var confident: Bool
+        /// True only when the single candidate reverses the last accepted direction.
+        var reversed: Bool = false
+        /// Equal-score shifts when the join cannot pick one. Nil for a lone reverse.
+        var tieShifts: [Int]? = nil
     }
 
     /// Leading rows of the new strip that repeat the rows sitting directly across the seam.
@@ -1703,21 +2107,28 @@ private enum RowSamples {
         a.distinctive && b.distinctive && a.bytes == b.bytes
     }
 
-    static func bestShift(_ prev: [RowSample], _ next: [RowSample], header: Int, footer: Int, options: ScrollStitcher.Options) -> ShiftChoice? {
+    static func bestShift(
+        _ prev: [RowSample],
+        _ next: [RowSample],
+        header: Int,
+        footer: Int,
+        lastShift: Int? = nil,
+        options: ScrollStitcher.Options
+    ) -> ShiftChoice? {
         let height = min(prev.count, next.count)
         let contentEnd = height - footer
         guard header >= 0, footer >= 0, contentEnd - header > options.minOverlapRows else { return nil }
 
-        var scored: [Int: Int] = [:]
+        var scored: [Int: (score: Int, votes: Int)] = [:]
 
         func consider(_ shift: Int) {
             guard shift != 0 else { return }
             guard let score = verify(prev, next, header: header, footer: footer, shift: shift, options: options) else { return }
             guard score <= options.alignDistance else { return }
             if let existing = scored[shift] {
-                scored[shift] = min(existing, score)
+                scored[shift] = (min(existing.score, score), existing.votes + 1)
             } else {
-                scored[shift] = score
+                scored[shift] = (score, 1)
             }
         }
 
@@ -1732,21 +2143,128 @@ private enum RowSamples {
             }
         }
 
-        let ranked = scored.sorted { lhs, rhs in
-            if lhs.value != rhs.value { return lhs.value < rhs.value }
-            let left = abs(lhs.key)
-            let right = abs(rhs.key)
-            if left != right { return left < right }
-            return lhs.key > rhs.key
-        }
+        let ranked = clustered(scored)
         guard let best = ranked.first else { return nil }
-        // A tied or near-tied second shift — including several perfect scores of 0 — is not safe.
-        // Dictionary order is not a tie-break; repeated list rows must stay unconfirmed.
-        let ambiguous = ranked.dropFirst().contains { $0.value <= best.value + 4 }
-        return ShiftChoice(shift: best.key, confident: !ambiguous)
+        // Distant aliases with similar score *and* similar support are not safe — a repeating
+        // list can match at several periods. Nearby 1–2 px candidates are the same scroll.
+        let rivals = ranked.dropFirst().filter { rival in
+            abs(rival.shift - best.shift) > AliasRival.shiftGap
+                && rival.score <= best.score + AliasRival.scoreSlack
+                && rival.votes * AliasRival.voteFactor >= best.votes
+        }
+        // One candidate used to be trusted even when it reversed the last shift.
+        // Only that lone opposite candidate, with no rival inside the threshold, uses the reverse line.
+        let loneReverse = rivals.isEmpty && (lastShift.map { prior in
+            prior != 0 && best.shift.signum() != prior.signum()
+        } ?? false)
+        if rivals.isEmpty {
+            if loneReverse {
+                return ShiftChoice(shift: best.shift, confident: false, reversed: true)
+            }
+            return ShiftChoice(shift: best.shift, confident: true)
+        }
+        if let prior = lastShift,
+           let preferred = resolveAlias(best: best, rivals: Array(rivals), prior: prior) {
+            return ShiftChoice(shift: preferred, confident: true)
+        }
+        // resolveAlias did not pick one. Every rival inside the threshold is a tie,
+        // whatever its direction and whether or not the scores are exactly equal.
+        let tieShifts = [best.shift] + rivals.map(\.shift)
+        return ShiftChoice(shift: best.shift, confident: false, reversed: false, tieShifts: tieShifts)
+    }
+
+    /// Header and footer used to score a shift. A stationary edge that is too tall for the
+    /// sticky cap still has to be left out of the search, or the moving strip never gets a vote.
+    static func matchEdges(
+        _ a: [RowSample],
+        _ b: [RowSample],
+        fallbackHeader: Int,
+        fallbackFooter: Int,
+        options: ScrollStitcher.Options
+    ) -> (header: Int, footer: Int) {
+        var header = stationaryRun(a, b, options: options, fromTop: true)
+        var footer = stationaryRun(a, b, options: options, fromTop: false)
+        let count = min(a.count, b.count)
+        if header + footer >= count {
+            header = 0
+            footer = 0
+        }
+        let candidateHeader = max(fallbackHeader, header)
+        let candidateFooter = max(fallbackFooter, footer)
+        if count - candidateHeader - candidateFooter > options.minOverlapRows {
+            return (candidateHeader, candidateFooter)
+        }
+        return (fallbackHeader, fallbackFooter)
+    }
+
+    /// A frame that is mostly blank cannot be placed. The seam card says so.
+    static func blankSeamNote(_ rows: [RowSample]) -> String? {
+        guard !rows.isEmpty else { return nil }
+        let detailed = rows.reduce(0) { $0 + ($1.distinctive ? 1 : 0) }
+        guard detailed * 4 <= rows.count else { return nil }
+        return StitchCopy.blankSeam
+    }
+
+    static func isFlicker(_ a: [RowSample], _ b: [RowSample], options: ScrollStitcher.Options) -> Bool {
+        let count = min(a.count, b.count)
+        guard count > 0 else { return false }
+        var header = stationaryRun(a, b, options: options, fromTop: true)
+        var footer = stationaryRun(a, b, options: options, fromTop: false)
+        if header + footer > count {
+            header = count
+            footer = 0
+        }
+        // A thin changed strip on a still frame is a flash. Fixed bars are the opposite:
+        // the still edge is large and the part that moved is the page.
+        let moving = count - header - footer
+        if moving * 4 < count {
+            header = 0
+            footer = 0
+        }
+        var same = 0
+        var eligible = 0
+        for y in 0..<count {
+            if y < header || (footer > 0 && y >= count - footer) { continue }
+            // Blank and low-variance rows match at every scroll. They are not "unchanged content".
+            guard a[y].distinctive || b[y].distinctive else { continue }
+            eligible += 1
+            if distance(a[y], b[y]) <= options.matchDistance { same += 1 }
+        }
+        guard eligible >= 4 else { return false }
+        return same * 4 >= eligible * 3
     }
 
     // MARK: - Private
+
+    /// Stationary distinctive edge, with no cap. Blank rows do not start it.
+    private static func stationaryRun(
+        _ a: [RowSample],
+        _ b: [RowSample],
+        options: ScrollStitcher.Options,
+        fromTop: Bool
+    ) -> Int {
+        let count = min(a.count, b.count)
+        var confirmed = 0
+        var pendingGaps = 0
+        var sawDetail = false
+        for step in 0..<count {
+            let y = fromTop ? step : (count - 1 - step)
+            let same = distance(a[y], b[y]) <= options.matchDistance
+            let detailed = a[y].distinctive || b[y].distinctive
+            if same && detailed {
+                pendingGaps = 0
+                sawDetail = true
+                confirmed = step + 1
+            } else if same && sawDetail {
+                pendingGaps = 0
+                confirmed = step + 1
+            } else {
+                pendingGaps += 1
+                if pendingGaps > 2 { break }
+            }
+        }
+        return sawDetail ? confirmed : 0
+    }
 
     private static func stickyRun(_ a: [RowSample], _ b: [RowSample], options: ScrollStitcher.Options, fromTop: Bool) -> StickyBand {
         let count = min(a.count, b.count)
@@ -1808,7 +2326,7 @@ private enum RowSamples {
         let start = header
         let end = height - footer - magnitude
         guard end - start >= options.minOverlapRows else { return nil }
-        let step = max(1, (end - start) / 24)
+        let step = max(1, (end - start) / 48)
         var sum = 0
         var n = 0
         var y = start
@@ -1816,6 +2334,8 @@ private enum RowSamples {
             let nextY = shift > 0 ? y : y + magnitude
             let prevY = shift > 0 ? y + magnitude : y
             guard nextY < height, prevY < height else { break }
+            // Skipping every blank pair lets a 1 px miss score the same as the true shift.
+            // A blank side still counts, including the edge where new content meets white.
             if prev[prevY].distinctive || next[nextY].distinctive {
                 sum += distance(prev[prevY], next[nextY])
                 n += 1
@@ -1826,7 +2346,8 @@ private enum RowSamples {
         return sum / n
     }
 
-    /// Best-matching row of `needle` inside `rows[from..<to]`, if it is close enough to be the same content.
+    /// Best-matching row of `needle` inside `rows[from..<to]`, if that row is unique in the frame.
+    /// Repeating chrome or a periodic list matches at several y values and cannot vote.
     private static func closest(
         to needle: RowSample,
         in rows: [RowSample],
@@ -1835,17 +2356,91 @@ private enum RowSamples {
         options: ScrollStitcher.Options
     ) -> Int? {
         guard from < to, needle.distinctive else { return nil }
+        var hits: [Int] = []
         var bestY: Int?
         var best = Int.max
-        for y in from..<to {
+        for y in 0..<rows.count {
             let score = distance(needle, rows[y])
-            if score < best {
+            if score <= options.matchDistance {
+                hits.append(y)
+            }
+            if y >= from, y < to, score < best {
                 best = score
                 bestY = y
             }
         }
         guard let bestY, best <= options.matchDistance else { return nil }
+        // Another equally good match far away — even outside the search window — means
+        // this row is periodic. Near-colour neighbours (1–2 px) are not a second alignment.
+        if hits.contains(where: { abs($0 - bestY) > 2 && distance(needle, rows[$0]) <= best + 2 }) {
+            return nil
+        }
         return bestY
+    }
+
+    private struct ShiftCluster {
+        var shift: Int
+        var score: Int
+        var votes: Int
+    }
+
+    /// Merges shifts within 2 px (same scroll, 1 px of capture / rounding noise).
+    private static func clustered(_ scored: [Int: (score: Int, votes: Int)]) -> [ShiftCluster] {
+        let keys = scored.keys.sorted()
+        var clusters: [ShiftCluster] = []
+        var index = 0
+        while index < keys.count {
+            var group = [keys[index]]
+            var next = index + 1
+            while next < keys.count, keys[next] - keys[next - 1] <= AliasRival.shiftGap {
+                group.append(keys[next])
+                next += 1
+            }
+            var score = Int.max
+            var votes = 0
+            var bestShift = group[0]
+            var bestVotes = -1
+            for shift in group {
+                guard let item = scored[shift] else { continue }
+                votes += item.votes
+                if item.score < score || (item.score == score && item.votes > bestVotes) {
+                    score = item.score
+                    bestShift = shift
+                    bestVotes = item.votes
+                }
+            }
+            clusters.append(ShiftCluster(shift: bestShift, score: score, votes: votes))
+            index = next
+        }
+        return clusters.sorted { lhs, rhs in
+            if lhs.score != rhs.score { return lhs.score < rhs.score }
+            if lhs.votes != rhs.votes { return lhs.votes > rhs.votes }
+            if abs(lhs.shift) != abs(rhs.shift) { return abs(lhs.shift) < abs(rhs.shift) }
+            return lhs.shift > rhs.shift
+        }
+    }
+
+    private static func resolveAlias(best: ShiftCluster, rivals: [ShiftCluster], prior: Int) -> Int? {
+        let candidates = [best] + rivals
+        // Same-quality motion the other way means the page may have reversed.
+        // Confirming the forward alias would stitch that reverse in the wrong direction.
+        let reversed = candidates.contains { candidate in
+            prior != 0
+                && candidate.shift.signum() != prior.signum()
+                && candidate.score <= best.score
+                && candidate.votes >= best.votes
+        }
+        if reversed { return nil }
+        guard let preferred = candidates.min(by: { abs($0.shift - prior) < abs($1.shift - prior) }) else {
+            return nil
+        }
+        // A rival may stand in for best only when it is not a worse match.
+        if preferred.shift != best.shift {
+            guard preferred.score <= best.score, preferred.votes >= best.votes else { return nil }
+        }
+        let sameDirection = preferred.shift.signum() == prior.signum() || prior == 0
+        let closeEnough = abs(preferred.shift - prior) <= max(4, abs(prior) / 4)
+        return sameDirection && closeEnough ? preferred.shift : nil
     }
 
     private static func anchorRows(_ rows: [RowSample], from: Int, to: Int, bias: Bias) -> [Int] {
@@ -1859,8 +2454,8 @@ private enum RowSamples {
         case .bottom:
             pool = Array(indices.suffix(max(indices.count / 2, 1)))
         }
-        if pool.count <= 5 { return pool }
-        return (0..<5).map { pool[$0 * (pool.count - 1) / 4] }
+        if pool.count <= 8 { return pool }
+        return (0..<8).map { pool[$0 * (pool.count - 1) / 7] }
     }
 
     private static func sampleColumns(width: Int, count: Int) -> [Int] {

@@ -424,6 +424,15 @@ private enum StitchArchive {
         var kind: String
         var overlap: Int?
         var suggestedOverlap: Int?
+        var note: String?
+        var pendingTitle: String?
+        var candidateLines: [String]?
+        var reversed: Bool?
+        var candidateShifts: [Int]? = nil
+        var selectedShift: Int? = nil
+        var upperFrameTop: Int? = nil
+        var prependRows: Int? = nil
+        var alignedShift: Int? = nil
     }
 
     static func encode(_ manifest: Manifest) throws -> Data {
@@ -459,14 +468,23 @@ private enum StitchArchive {
             segments.append(Segment(image: imageName, confidentSeamYs: segment.confidentSeamYs, repeats: repeats))
         }
         let seams = assembly.seams.map { seam -> Seam in
+            let lines = seam.candidateLines.isEmpty ? nil : seam.candidateLines
+            let reversed = seam.reversed ? true : nil
+            var record: Seam
             switch seam.kind {
             case .needsAlignment:
-                return Seam(kind: "needsAlignment", overlap: nil, suggestedOverlap: seam.suggestedOverlap)
+                record = Seam(kind: "needsAlignment", overlap: nil, suggestedOverlap: seam.suggestedOverlap, note: seam.note, pendingTitle: seam.pendingTitle, candidateLines: lines, reversed: reversed)
             case .aligned(let overlap):
-                return Seam(kind: "aligned", overlap: overlap, suggestedOverlap: seam.suggestedOverlap)
+                record = Seam(kind: "aligned", overlap: overlap, suggestedOverlap: seam.suggestedOverlap, note: seam.note, pendingTitle: seam.pendingTitle, candidateLines: lines, reversed: reversed)
             case .joinedAsIs:
-                return Seam(kind: "joinedAsIs", overlap: nil, suggestedOverlap: seam.suggestedOverlap)
+                record = Seam(kind: "joinedAsIs", overlap: nil, suggestedOverlap: seam.suggestedOverlap, note: seam.note, pendingTitle: seam.pendingTitle, candidateLines: lines, reversed: reversed)
             }
+            record.candidateShifts = seam.candidateShifts.isEmpty ? nil : seam.candidateShifts
+            record.selectedShift = seam.selectedShift
+            record.upperFrameTop = seam.upperFrameTop
+            record.prependRows = seam.prependRows > 0 ? seam.prependRows : nil
+            record.alignedShift = seam.alignedShift
+            return record
         }
         let pending = assembly.pendingSticky.map {
             Pending(headerRows: $0.headerRows, footerRows: $0.footerRows, seamCount: $0.seamCount, keepOnce: $0.keepOnce)
@@ -529,7 +547,19 @@ private enum StitchArchive {
             default:
                 kind = .needsAlignment
             }
-            return ScrollSeam(kind: kind, suggestedOverlap: seam.suggestedOverlap)
+            return ScrollSeam(
+                kind: kind,
+                suggestedOverlap: seam.suggestedOverlap,
+                note: seam.note,
+                pendingTitle: seam.pendingTitle,
+                candidateLines: seam.candidateLines ?? [],
+                reversed: seam.reversed ?? false,
+                candidateShifts: seam.candidateShifts ?? [],
+                selectedShift: seam.selectedShift,
+                upperFrameTop: seam.upperFrameTop,
+                prependRows: seam.prependRows ?? 0,
+                alignedShift: seam.alignedShift
+            )
         }
         let pending = manifest.pending.map {
             PendingStickyConfirmation(headerRows: $0.headerRows, footerRows: $0.footerRows, seamCount: $0.seamCount, keepOnce: $0.keepOnce)
