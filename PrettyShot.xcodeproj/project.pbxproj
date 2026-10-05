@@ -193,6 +193,10 @@
 			isa = PBXBuildFile;
 			fileRef = 40DD86579C029A9347B41188;
 		};
+		0BDEEA2126D16B79B388B6E8 = {
+			isa = PBXBuildFile;
+			fileRef = A32EAC173147A355AA246014;
+		};
 		9A2992ACF0B1E660D0745D93 = {
 			isa = PBXBuildFile;
 			fileRef = 9E012D65F46757E4F099CA64;
@@ -204,6 +208,10 @@
 		9CE3DC85ED4DF02337E0317A = {
 			isa = PBXBuildFile;
 			fileRef = 6B267F5E1A63342993777D51;
+		};
+		83C7435F66CEAB7AD741A3BC = {
+			isa = PBXBuildFile;
+			fileRef = 884545027A4A93EBE8949EED;
 		};
 		A289CE6CDB6BA6628301FA1C = {
 			isa = PBXBuildFile;
@@ -241,9 +249,17 @@
 			isa = PBXBuildFile;
 			fileRef = A489AE02B78633C1EAC0E15F;
 		};
+		CE86D527A3C3D39262FF0006 = {
+			isa = PBXBuildFile;
+			fileRef = 884545027A4A93EBE8949EED;
+		};
 		C7452B2CD6EE823ACC42F10D = {
 			isa = PBXBuildFile;
 			fileRef = 8D9F7EF34BB42DB6054DCB61;
+		};
+		C0E817006E8F5A8554F6A779 = {
+			isa = PBXBuildFile;
+			fileRef = A32EAC173147A355AA246014;
 		};
 		C81BB9F064D601AEE977136E = {
 			isa = PBXBuildFile;
@@ -616,6 +632,12 @@
 			path = HotkeyManager.swift;
 			sourceTree = "<group>";
 		};
+		884545027A4A93EBE8949EED = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = StitchBottomBarView.swift;
+			sourceTree = "<group>";
+		};
 		8D9F7EF34BB42DB6054DCB61 = {
 			isa = PBXFileReference;
 			lastKnownFileType = sourcecode.swift;
@@ -662,6 +684,12 @@
 			isa = PBXFileReference;
 			lastKnownFileType = sourcecode.swift;
 			path = ShortcutRecorder.swift;
+			sourceTree = "<group>";
+		};
+		A32EAC173147A355AA246014 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = StitchBottomBar.swift;
 			sourceTree = "<group>";
 		};
 		9E012D65F46757E4F099CA64 = {
@@ -942,6 +970,7 @@
 				40DD86579C029A9347B41188,
 				5E8F510D70A1DD35880BEDFB,
 				8D9F7EF34BB42DB6054DCB61,
+				884545027A4A93EBE8949EED,
 				D7DD0A70A71481B02F2CBA43,
 			);
 			path = PrettyShotIOSUI;
@@ -975,6 +1004,7 @@
 				29EC731A038874C62206087F,
 				5B2568BFE8791EA200400B21,
 				9E012D65F46757E4F099CA64,
+				A32EAC173147A355AA246014,
 			);
 			path = PrettyShotIOSKit;
 			sourceTree = "<group>";
@@ -1311,11 +1341,13 @@
 				EBA33F6231A119FD9FB6A142,
 				5977A2949B48F8F5AEE1849F,
 				C81BB9F064D601AEE977136E,
+				C0E817006E8F5A8554F6A779,
 				DE7E12EC082F90ECB72921B2,
 				23EB6310B3C3E37F87C48FF7,
 				098EB45F9B9420CDC83E8E04,
 				03883894BBF1AE29F42B4D2D,
 				C7452B2CD6EE823ACC42F10D,
+				CE86D527A3C3D39262FF0006,
 				096F4183C56C9E943DB30F50,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -1385,11 +1417,13 @@
 				B5A7C5B7C09C1F6069ACA1B6,
 				DC87B12574CDDEB038A3EA9B,
 				9A2992ACF0B1E660D0745D93,
+				0BDEEA2126D16B79B388B6E8,
 				58BCFD9CC6D1EE5D78AB27D6,
 				551895C64DD6B703CC749386,
 				986027CEF0A71B450A65BFAD,
 				45BA357AD144B00528FD31BE,
 				A289CE6CDB6BA6628301FA1C,
+				83C7435F66CEAB7AD741A3BC,
 				283D4B640FE3198BB427F2C8,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

@@ -49,7 +49,9 @@ struct ShareFlowView: View {
                         inExtension: true,
                         pixelWidth: model.pixelWidth,
                         pixelHeight: model.pixelHeight,
-                        canTransferToApp: canTransferToApp
+                        canTransferToApp: canTransferToApp,
+                        style: model.style,
+                        scale: exportScale
                     )
                 )
                     .sheet(isPresented: largeBinding) { largeSheet }
@@ -368,7 +370,13 @@ struct ShareFlowView: View {
         Binding(get: { showsDeniedSheet }, set: { if !$0 { onDismissDenied() } })
     }
 
-    /// Frame 11, extension only, and only when the original file can be handed off.
+    /// Same scale the export uses: the status-bar match, else 1.
+    private var exportScale: CGFloat? {
+        model.cropMatch.map { CGFloat($0.scale) }
+    }
+
+    /// Frame 11 / 11a, content from `ShareExportRoute.decide`. The extension never shows 11b (PRD v0.3.45).
+    /// Extension only, and only when the original file can be handed off.
     private var largeSheet: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text(largeHandoff?.title ?? IOSCopy.largeTitle).font(.system(size: 21, weight: .bold))
@@ -379,11 +387,17 @@ struct ShareFlowView: View {
                 addedRedaction: model.addedRedactionThisSession
             ))
             .font(.system(size: 15))
+            .foregroundStyle(IOSTheme.muted)
             Button(IOSCopy.continueInApp, action: onStitchInApp).buttonStyle(BloomButtonStyle())
-            Button(IOSCopy.cancel, action: onDismissLarge).buttonStyle(PlainCardButtonStyle())
+            Button(IOSCopy.cancel, action: onDismissLarge)
+                .font(.system(size: 16, weight: .semibold))
+                .frame(maxWidth: .infinity)
+                .frame(height: 44)
+                .foregroundStyle(IOSTheme.muted)
         }
         .padding(20)
-        .presentationDetents([.medium])
+        .background(IOSTheme.paper)
+        .presentationDetents([.medium, .large])
     }
 
     private func title(_ classification: ShareClassification) -> String {

@@ -163,7 +163,7 @@ struct AppRootView: View {
                     Text(IOSCopy.missingBanner(missingOrdinals))
                         .font(.system(size: 13, weight: .semibold))
                     ForEach(missingOrdinals, id: \.self) { ordinal in
-                        Button("\(IOSCopy.readdShot) · 第 \(ordinal) 张") { beginReadd(ordinal) }
+                        Button(IOSCopy.readdButton(ordinal: ordinal, missingCount: missingOrdinals.count)) { beginReadd(ordinal) }
                             .font(.system(size: 13, weight: .semibold))
                     }
                 }
@@ -185,7 +185,7 @@ struct AppRootView: View {
                     missingOrdinals = Array(Set(missingOrdinals + loaded.missingOrdinals)).sorted()
                 }
                 guard loaded.images.count >= 2 else {
-                    route = .error
+                    fail(.stitchStart(picked: ordered.count))
                     return
                 }
                 ingestLoaded(loaded, from: ordered)
@@ -204,7 +204,7 @@ struct AppRootView: View {
         .navigationTitle(IOSCopy.stitchCardTitle)
     }
 
-    /// A1b. 「继续拼接」opens the staged shots. 「不用了」drops the staged copies only.
+    /// A1b. 「继续拼接」opens the staged shots (「继续编辑」 when only one). 「不用了」drops the staged copies only.
     private var continueShareBanner: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 10) {
@@ -219,7 +219,7 @@ struct AppRootView: View {
                 }
             }
             HStack(spacing: 16) {
-                Button(IOSCopy.continueStitch, action: openPending)
+                Button(IOSCopy.handoffBannerAction(for: pending), action: openPending)
                     .font(.system(size: 15, weight: .semibold))
                     .padding(.horizontal, 16)
                     .frame(height: 36)
@@ -312,10 +312,7 @@ struct AppRootView: View {
     private func loadSingle(_ item: PhotosPickerItem) async {
         do {
             guard let data = try await item.loadTransferable(type: Data.self), ImagePrep.fullImage(data) != nil else {
-                await MainActor.run {
-                    failedPickCount = 1
-                    route = .error
-                }
+                await MainActor.run { fail(.singlePick) }
                 return
             }
             await MainActor.run {
@@ -330,10 +327,7 @@ struct AppRootView: View {
                 route = .editor
             }
         } catch {
-            await MainActor.run {
-                failedPickCount = 1
-                route = .error
-            }
+            await MainActor.run { fail(.singlePick) }
         }
     }
 
@@ -367,10 +361,15 @@ struct AppRootView: View {
             case .ready, .missing:
                 route = .order
             case .failed:
-                failedPickCount = items.count
-                route = .error
+                fail(.multiPick(picked: items.count))
             }
         }
+    }
+
+    /// Every error path goes through here so the page never shows the copy for an older failure.
+    private func fail(_ failure: OpenFailure) {
+        failedPickCount = InAppStitchLoader.pickedCount(after: failure, previous: failedPickCount)
+        route = .error
     }
 
     private func refreshPending() {
@@ -460,7 +459,7 @@ struct AppRootView: View {
         do {
             data = try ReceiptConfirmation.imageData(of: tickets, store: store)
         } catch {
-            route = .error
+            fail(.pendingResume(staged: PendingShareResume.stagedFileCount(tickets)))
             return
         }
         guard !data.isEmpty else {
@@ -512,7 +511,7 @@ struct AppRootView: View {
 
     private func copyEditor() {
         guard let image = editor.exportOriginalResolution() else {
-            route = .error
+            fail(.editorExport)
             return
         }
         PhotoLibrarySaver.copyToPasteboard(image)
@@ -521,7 +520,7 @@ struct AppRootView: View {
 
     private func saveEditor() {
         guard let image = editor.exportOriginalResolution(), let data = ShotEncoder.pngData(image) else {
-            route = .error
+            fail(.editorExport)
             return
         }
         PhotoLibrarySaver.savePNG(data) { status in

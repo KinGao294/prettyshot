@@ -107,6 +107,20 @@ final class StitchModel: ObservableObject {
         session.restoreDuplicate(id)
         refresh()
     }
+
+    func undoDuplicate() {
+        session.undoDuplicate()
+        refresh()
+    }
+
+    /// Long enough to reach 「撤销」. A newer toast restarts the wait; the undo stack itself stays.
+    @MainActor
+    func expireToast(after seconds: Double = 4) async {
+        guard let shown = session.toast else { return }
+        try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+        guard !Task.isCancelled, session.toast == shown else { return }
+        withAnimation { session.toast = nil }
+    }
 }
 
 /// Frame 38 L4, plus the sheets behind 39–43 / 51–54.
@@ -131,6 +145,7 @@ struct StitchScreen: View {
             }
             .padding(.horizontal, 16)
             .frame(height: 52)
+            summaryRow
             if let missingLine {
                 missingBanner(missingLine)
             }
@@ -157,14 +172,9 @@ struct StitchScreen: View {
                     Text(IOSCopy.exclusionStub).font(.system(size: 12)).foregroundStyle(IOSTheme.muted)
                     Text(IOSCopy.duplicateWiringNote).font(.system(size: 12)).foregroundStyle(IOSTheme.muted)
                     #endif
-                    Toggle(IOSCopy.keepOnce, isOn: Binding(
-                        get: { model.session.assembly.dedupeStickyBars },
-                        set: { model.setDedupe($0) }
-                    ))
-                    Text(IOSCopy.keepOnceDetail).font(.system(size: 12)).foregroundStyle(IOSTheme.muted)
-                    ForEach(model.session.assembly.duplicateCandidates) { candidate in
-                        duplicateCard(candidate)
-                            .id(candidate.id)
+                    ForEach(model.session.duplicateCards, id: \.id) { card in
+                        duplicateCard(card)
+                            .id(card.id)
                     }
                 }
                 .padding(16)
@@ -174,39 +184,112 @@ struct StitchScreen: View {
                 withAnimation { proxy.scrollTo(id, anchor: .center) }
             }
             }
-            VStack(spacing: 10) {
-                if let bar = model.session.gate.bottomBar {
-                    Text(bar)
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(IOSTheme.charcoal)
-                        .padding(12)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(IOSTheme.warn.opacity(0.2), in: RoundedRectangle(cornerRadius: 12))
-                }
-                HStack(spacing: 10) {
-                    Button(IOSCopy.exclusionBands) { }
-                        .buttonStyle(PlainCardButtonStyle())
-                    Button(model.session.gate.primaryTitle) {
-                        model.primaryTapped()
-                        if let image = model.flattened {
-                            onBeautify(image)
-                        }
+            StitchBottomBarView(
+                bar: model.session.bottomBar,
+                onSecondary: {},
+                onPrimary: {
+                    model.primaryTapped()
+                    if let image = model.flattened {
+                        onBeautify(image)
                     }
-                    .buttonStyle(BloomButtonStyle())
-                }
-            }
-            .padding(16)
-            .background(IOSTheme.paper)
+                },
+                sticky: { stickyRow }
+            )
         }
         .background(IOSTheme.paper)
         .overlay(alignment: .top) {
-            if ReaddToast.draws(on: .stitch), let readdToastTitle {
-                SuccessToastBanner(title: readdToastTitle)
+            VStack(spacing: 8) {
+                if let toast = model.session.toast {
+                    StitchToastView(toast: toast, onAction: model.undoDuplicate)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
+                if ReaddToast.draws(on: .stitch), let readdToastTitle {
+                    SuccessToastBanner(title: readdToastTitle)
+                }
             }
         }
+        .task(id: model.session.toast) { await model.expireToast() }
         .sheet(isPresented: $model.showChoices) { choiceSheet }
         .sheet(isPresented: $model.showSticky) { stickySheet }
         .sheet(isPresented: $model.showOverLimit) { overLimitSheet }
+    }
+
+    private var stickyRow: some View {
+        let row = StitchStickyRow.evaluate(model.session.assembly)
+        return HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(row.title).font(.system(size: 15, weight: .semibold))
+                Text(row.detail).font(.system(size: 12)).foregroundStyle(IOSTheme.muted)
+            }
+            Spacer(minLength: 8)
+            if let restore = row.restoreTitle {
+                Button(restore) { model.setDedupe(false) }
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(IOSTheme.charcoal)
+                    .padding(.horizontal, 12)
+                    .frame(height: 30)
+                    .background(IOSTheme.card, in: Capsule())
+                    .overlay(Capsule().stroke(IOSTheme.hairline))
+                    .accessibilityIdentifier("stitch.sticky.restore")
+            }
+            Toggle(row.title, isOn: Binding(
+                get: { model.session.assembly.dedupeStickyBars },
+                set: { model.setDedupe($0) }
+            ))
+            .labelsHidden()
+            .tint(IOSTheme.mint)
+        }
+    }
+
+    /// 「4 张 · 3 处接缝」 + ✓ / 待对齐 / 直接拼 / 固定栏待确认 1 chips (frame 38, L7i frame 60).
+    @ViewBuilder
+    private var summaryRow: some View {
+        let summary = StitchSummary.evaluate(model.session.assembly)
+        if let title = summary.title {
+            HStack(spacing: 8) {
+                Text(title)
+                    .font(.system(size: 13))
+                    .foregroundStyle(IOSTheme.muted)
+                ForEach(Array(summary.chips.enumerated()), id: \.offset) { _, chip in
+                    summaryChip(chip)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 8)
+            .accessibilityIdentifier("stitch.summary")
+        }
+    }
+
+    @ViewBuilder
+    private func summaryChip(_ chip: StitchSummary.Chip) -> some View {
+        switch chip.kind {
+        case .aligned:
+            HStack(spacing: 3) {
+                Image(systemName: "checkmark").font(.system(size: 10, weight: .bold))
+                Text(chip.label)
+            }
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(IOSTheme.stagedCheck)
+            .padding(.horizontal, 8)
+            .frame(height: 22)
+            .background(IOSTheme.mint.opacity(0.18), in: Capsule())
+        case .unaligned, .sticky:
+            Text(chip.label)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Color(uiColor: StitchPalette.warnText))
+                .padding(.horizontal, 8)
+                .frame(height: 22)
+                .background(IOSTheme.warn.opacity(0.18), in: Capsule())
+                .overlay(Capsule().stroke(IOSTheme.warn, style: StrokeStyle(lineWidth: 1, dash: [3, 2])))
+        case .joinedAsIs:
+            Text(chip.label)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(IOSTheme.muted)
+                .padding(.horizontal, 8)
+                .frame(height: 22)
+                .background(IOSTheme.hairline.opacity(0.6), in: Capsule())
+        }
     }
 
     private func missingBanner(_ line: String) -> some View {
@@ -220,7 +303,7 @@ struct StitchScreen: View {
                 Spacer(minLength: 8)
             }
             ForEach(missingOrdinals, id: \.self) { ordinal in
-                Button("\(IOSCopy.readdShot) · 第 \(ordinal) 张") { onReadd(ordinal) }
+                Button(IOSCopy.readdButton(ordinal: ordinal, missingCount: missingOrdinals.count)) { onReadd(ordinal) }
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(IOSTheme.charcoal)
             }
@@ -231,23 +314,53 @@ struct StitchScreen: View {
         .background(IOSTheme.warn.opacity(0.22))
     }
 
-    private func duplicateCard(_ candidate: DuplicateSegmentCandidate) -> some View {
+    /// Pending: amber dashed card with the two choices (L7e). Handled: Mint hairline + 「✓ 已处理 · …｜还原」 (L7f).
+    private func duplicateCard(_ card: DuplicateCardState) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(IOSCopy.duplicateMark).font(.system(size: 12, weight: .semibold)).foregroundStyle(IOSTheme.warn)
-            Text(IOSCopy.duplicateQuestion).font(.system(size: 15, weight: .semibold))
-            Text(IOSCopy.duplicateDetail).font(.system(size: 12)).foregroundStyle(IOSTheme.muted)
-            if candidate.isUnresolved {
-                Button(IOSCopy.duplicateKeepOnce) { model.chooseDuplicate(candidate.id, choice: .keepOnce) }
-                    .buttonStyle(BloomButtonStyle())
-                Button(IOSCopy.duplicateKeepBoth) { model.chooseDuplicate(candidate.id, choice: .keepBoth) }
-                    .buttonStyle(PlainCardButtonStyle())
+            if card.isPending {
+                Text(IOSCopy.duplicateMark)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color(uiColor: StitchPalette.warnText))
+                Text(card.question).font(.system(size: 15, weight: .semibold))
+                Text(card.detail).font(.system(size: 12)).foregroundStyle(IOSTheme.muted)
+                HStack(spacing: 10) {
+                    Button(IOSCopy.duplicateKeepOnce) { model.chooseDuplicate(card.id, choice: .keepOnce) }
+                        .buttonStyle(BloomButtonStyle())
+                    Button(IOSCopy.duplicateKeepBoth) { model.chooseDuplicate(card.id, choice: .keepBoth) }
+                        .buttonStyle(PlainCardButtonStyle())
+                }
             } else {
-                Button(IOSCopy.duplicateRestore) { model.restoreDuplicate(candidate.id) }
-                    .buttonStyle(PlainCardButtonStyle())
+                HStack(spacing: 8) {
+                    if let handled = card.handledLabel {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundStyle(Color(uiColor: StitchPalette.handledMint))
+                        Text(handled)
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Color(uiColor: StitchPalette.handledMint))
+                    }
+                    Button(IOSCopy.duplicateRestore) { model.restoreDuplicate(card.id) }
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Color(hex: 0xB0505E))
+                        .padding(.horizontal, 10)
+                        .frame(height: 28)
+                        .background(IOSTheme.bloom.opacity(0.25), in: Capsule())
+                }
+                .padding(.horizontal, 12)
+                .frame(height: 36)
+                .background(IOSTheme.card, in: Capsule())
+                .overlay(Capsule().stroke(IOSTheme.mint))
             }
         }
         .padding(12)
-        .background(IOSTheme.card, in: RoundedRectangle(cornerRadius: 14))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(card.isPending ? Color(uiColor: StitchPalette.pendingCardBackground) : Color.clear, in: RoundedRectangle(cornerRadius: 14))
+        .overlay {
+            if card.isPending {
+                RoundedRectangle(cornerRadius: 14)
+                    .stroke(IOSTheme.warn, style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+            }
+        }
     }
 
     /// Frame 51 when a suggestion exists. Frame 39 when the seam has no reliable overlap.

@@ -103,6 +103,32 @@ enum InAppStitchLoader {
     }
 }
 
+/// Every way the app can land on frame 19 / the multi-image error page.
+enum OpenFailure: Equatable {
+    case singlePick
+    case multiPick(picked: Int)
+    /// 「开始拼接」 found fewer than two readable shots.
+    case stitchStart(picked: Int)
+    /// A1b could not read the staged files.
+    case pendingResume(staged: Int)
+    /// Copy or save from the editor could not render.
+    case editorExport
+}
+
+extension InAppStitchLoader {
+    /// `failedPickCount` for the error page. Every path sets it, so an older failure never picks the copy.
+    static func pickedCount(after failure: OpenFailure, previous: Int) -> Int {
+        switch failure {
+        case .singlePick, .editorExport:
+            return 1
+        case .multiPick(let picked), .stitchStart(let picked):
+            return picked
+        case .pendingResume(let staged):
+            return staged
+        }
+    }
+}
+
 /// 「分开导出」 uses the same beautify pass as a merged export, then the caller saves the result.
 enum SegmentBeautifier {
     static func beautify(_ image: CGImage, style: BackgroundStyle = .default, scale: CGFloat = 1) -> CGImage? {
@@ -117,14 +143,32 @@ enum SegmentBeautifier {
 
 /// 「预览已降采样」 is an extension-only chip, and only when this image is over the extension budget.
 enum PreviewDownsampleChip {
-    static func shows(inExtension: Bool, pixelWidth: Int, pixelHeight: Int, canTransferToApp: Bool) -> Bool {
+    /// Judged by the current style (PRD (35) f). Frame 11 only: an image that the default style already
+    /// pushes over the gate. 11b (only the user's style is over) has no chip, r7 §15 rule 1.
+    static func shows(
+        inExtension: Bool,
+        pixelWidth: Int,
+        pixelHeight: Int,
+        canTransferToApp: Bool,
+        style: BackgroundStyle = .default,
+        scale: CGFloat? = nil
+    ) -> Bool {
         guard inExtension, pixelWidth > 0, pixelHeight > 0 else { return false }
         guard max(pixelWidth, pixelHeight) > ExtensionMemoryBudget.previewMaxLongSide else { return false }
-        return ExtensionMemoryBudget.plan(
+        let overWithDefault = ExtensionMemoryBudget.plan(
             pixelWidth: pixelWidth,
             pixelHeight: pixelHeight,
-            canTransferToApp: canTransferToApp
+            canTransferToApp: canTransferToApp,
+            scale: scale
         ) != .fullResolutionInline
+        let overWithCurrent = ExtensionMemoryBudget.plan(
+            pixelWidth: pixelWidth,
+            pixelHeight: pixelHeight,
+            canTransferToApp: canTransferToApp,
+            style: style,
+            scale: scale
+        ) != .fullResolutionInline
+        return overWithDefault && overWithCurrent
     }
 }
 

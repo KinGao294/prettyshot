@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import PrettyShotCore
 
@@ -91,6 +92,9 @@ enum IOSCopy {
     static let largeTitle = "图片较大，去 App 里处理"
     static let largeBody = "这张图尺寸很大，在分享菜单里按原分辨率导出可能内存不足。为了不丢图，请在 PrettyShot App 中继续。"
     static let continueInApp = "在 App 中继续"
+    /// 帧 11b。默认样式放得下，用户这次改大的样式放不下。
+    static let largeStyleTitle = "按这个样式导出太大，去 App 里处理"
+    static let shrinkPadding = "改小边距"
     /// S10c。
     static let handoffProgressTitle = "正在交给 PrettyShot…"
     static let handoffProgressBody = "图片只在本机暂存，不上传。App 确认收到之前，暂存的副本不会删；相册里的原图始终不动。"
@@ -186,6 +190,13 @@ enum IOSCopy {
     static let keepOnce = "固定栏只保留一次"
     static let keepOnceDetail = "顶栏只留第 1 张 · 底栏只留最后 1 张"
     static let exclusionBands = "排除带"
+    /// L4 / L7i mini button next to the 「固定栏只保留一次」 switch.
+    static let restoreSticky = "还原固定栏"
+    /// Summary row above the stitch preview (frame 38 / 60).
+    static func stitchSummaryTitle(shots: Int, seams: Int) -> String { "\(shots) 张 · \(seams) 处接缝" }
+    static func summaryUnaligned(_ count: Int) -> String { "待对齐 \(count)" }
+    static func summaryJoinedAsIs(_ count: Int) -> String { "直接拼 \(count)" }
+    static let summaryStickyPending = "固定栏待确认 1"
     static let exclusionStub = "上下排除带的拖动手柄还是占位，开关和还原已经接上共用模块。"
     static let nextBeautify = "下一步 · 美化"
     static let alignTitle = "手动对齐"
@@ -251,6 +262,32 @@ enum IOSCopy {
         "\(shotPairTitle(first, second))已对齐 · 重复段已重新识别，\(pending) 处待确认"
     }
 
+    static func duplicateChoiceName(_ choice: DuplicateSegmentChoice) -> String {
+        choice == .keepOnce ? duplicateKeepOnce : duplicateKeepBoth
+    }
+
+    /// L7f 胶囊。✓ 由界面画，不写进文案。
+    static func duplicateHandled(_ choice: DuplicateSegmentChoice) -> String {
+        "已处理 · \(duplicateChoiceName(choice))"
+    }
+
+    /// L7f / L7h toast 标题。n = 卡片顺序（1 起）。
+    static func duplicateChoiceToast(index: Int, choice: DuplicateSegmentChoice) -> String {
+        "第 \(index) 处重复段：\(duplicateChoiceName(choice))"
+    }
+
+    /// L7g toast 标题。
+    static func duplicateRestoredToast(index: Int) -> String {
+        "第 \(index) 处重复段已还原为待确认"
+    }
+
+    /// toast 小字。只数重复段；固定栏还在待确认也照样写「都处理完了」（L7h / L7i）。
+    static func duplicateRemaining(_ pending: Int) -> String {
+        pending > 0 ? "待确认还剩 \(pending) 处" : "重复段都处理完了"
+    }
+
+    static let undone = "已撤销"
+
     static let duplicateQuestion = "这一行出现了两次"
     static let duplicateDetail = "程序判断不了是重叠还是本来就重复"
     static let duplicateKeepOnce = "只保留一次"
@@ -291,6 +328,22 @@ enum IOSCopy {
         return "已暂存 \(count) 张 · 来自 \(shares) 次分享"
     }
 
+    static let continueEditing = "继续编辑"
+
+    /// A1b 主按钮。只暂存 1 张时打开的是编辑页，所以写「继续编辑」（PRD（35）b）。
+    static func handoffBannerAction(stagedCount: Int) -> String {
+        stagedCount == 1 ? continueEditing : continueStitch
+    }
+
+    static func handoffBannerAction(for pending: [HandoffTicket]) -> String {
+        handoffBannerAction(stagedCount: PendingShareResume.stagedFileCount(pending))
+    }
+
+    /// L3m / L9m「重新加入」按钮。只缺 1 张时同帧 67 不带序号；缺多张时每个按钮带序号（PRD（35）c）。
+    static func readdButton(ordinal: Int, missingCount: Int) -> String {
+        missingCount <= 1 ? readdShot : "\(readdShot) · 第 \(ordinal) 张"
+    }
+
     static func handoffBannerDetail(for pending: [HandoffTicket]) -> String {
         let imageShares = pending.filter { $0.kind != .pdf }.count
         return handoffBannerDetail(
@@ -327,6 +380,59 @@ enum LargeHandoff {
     static func body(changedStyle: Bool, changedCrop: Bool, addedArrow: Bool, addedRedaction: Bool) -> String {
         let edited = changedStyle || changedCrop || addedArrow || addedRedaction
         return edited ? IOSCopy.largeBody + editedNote : IOSCopy.largeBody
+    }
+
+    /// Frame 11 (default style is already over the gate) or 11b (only the current style is).
+    enum Kind: Equatable {
+        case large
+        case style
+    }
+
+    /// Nil when the export fits in the extension. Frame 11 when even the default style is over the gate;
+    /// 11b when only the style the user set is over it.
+    static func kind(pixelWidth: Int, pixelHeight: Int, style: BackgroundStyle, scale: CGFloat? = nil) -> Kind? {
+        guard !fits(pixelWidth, pixelHeight, style: style, scale: scale) else { return nil }
+        return fits(pixelWidth, pixelHeight, style: .default, scale: scale) ? .style : .large
+    }
+
+    static func title(_ kind: Kind) -> String {
+        switch kind {
+        case .large: return IOSCopy.largeTitle
+        case .style: return IOSCopy.largeStyleTitle
+        }
+    }
+
+    /// `padding` is the current padding in pt. Only a padding above the default 28 is named.
+    static func body(_ kind: Kind, padding: Int, edited: Bool) -> String {
+        let main: String
+        switch kind {
+        case .large:
+            main = IOSCopy.largeBody
+        case .style:
+            let named = padding > defaultPadding ? "（边距 \(padding)）" : ""
+            main = "这张图本身不大，但当前样式\(named)让导出尺寸变得很大，在分享菜单里按原分辨率导出可能内存不足。为了不丢图，请在 PrettyShot App 中继续。"
+        }
+        return edited ? main + editedNote : main
+    }
+
+    /// 「改小边距」 only on 11b, and only when padding 28 with everything else unchanged fits.
+    static func showsShrinkPadding(pixelWidth: Int, pixelHeight: Int, style: BackgroundStyle, scale: CGFloat? = nil) -> Bool {
+        guard kind(pixelWidth: pixelWidth, pixelHeight: pixelHeight, style: style, scale: scale) == .style else { return false }
+        var shrunk = style
+        shrunk.padding = BackgroundStyle.default.padding
+        return fits(pixelWidth, pixelHeight, style: shrunk, scale: scale)
+    }
+
+    private static var defaultPadding: Int { Int(BackgroundStyle.default.padding.rounded()) }
+
+    private static func fits(_ width: Int, _ height: Int, style: BackgroundStyle, scale: CGFloat?) -> Bool {
+        ExtensionMemoryBudget.plan(
+            pixelWidth: width,
+            pixelHeight: height,
+            canTransferToApp: true,
+            style: style,
+            scale: scale
+        ) == .fullResolutionInline
     }
 
     static func showsManualOpenFooter() -> Bool { false }

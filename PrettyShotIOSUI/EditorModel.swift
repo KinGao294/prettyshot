@@ -83,6 +83,11 @@ final class EditorModel: ObservableObject {
         openingRemoveStatusBar = removeStatusBar
     }
 
+    /// 11b 「改小边距」: back to S5 with the padding slider in view. No value changes.
+    func openPaddingControl() {
+        tool = .style
+    }
+
     func refreshPreview() {
         let image: CGImage?
         if let sourceURL {
