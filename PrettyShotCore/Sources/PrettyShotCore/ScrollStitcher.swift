@@ -130,8 +130,21 @@ public enum AliasRival {
 public enum ResolvedSeamStyle {
     /// Mint for 「✓ 已确认」 and 「✓ 手动对齐」.
     public static let mint: UInt32 = 0x4F8F7E
+    /// Mint in dark mode, same pair as iOS `stagedCheck`.
+    public static let mintDark: UInt32 = 0x7EB8A8
     /// Neutral gray for 「直接拼」.
     public static let direct: UInt32 = 0x5C5751
+    /// Tag fill for 「✓ 已确认」 and 「✓ 手动对齐」.
+    public static let handledFillOpacity: Double = 0.22
+    /// Tag fill for 「直接拼」.
+    public static let directFillOpacity: Double = 0.12
+    /// Solid tag border.
+    public static let labelBorderWidth: Int = 1
+
+    /// 「−28 px」 / 「+32 px」 with a real minus sign.
+    public static func signedPixels(_ shift: Int) -> String {
+        shift < 0 ? "−\(-shift) px" : "+\(shift) px"
+    }
 }
 
 /// What the review window shows for one seam. The pending reverse seam uses the amber dashed label.
@@ -150,6 +163,14 @@ public struct SeamCard: Equatable {
     public var candidates: [String]
     /// Label ink. Unset until a resolved confirmation seam picks Mint or gray.
     public var labelColor: UInt32
+    /// Label ink in dark mode. Same as `labelColor` unless the style has a dark variant.
+    public var labelColorDark: UInt32
+    /// Text drawn in the tag. Adds the signed shift to 「✓ 手动对齐」 when one was picked.
+    public var tagText: String
+    /// Tag fill opacity of `labelColor`. Zero when the tag has no fill rule.
+    public var fillOpacity: Double
+    /// Tag border width; solid for handled seams, dashed for 「待确认」.
+    public var borderWidth: Int
 
     public init(
         label: String,
@@ -157,7 +178,11 @@ public struct SeamCard: Equatable {
         title: String? = nil,
         reason: String? = nil,
         candidates: [String] = [],
-        labelColor: UInt32 = 0
+        labelColor: UInt32 = 0,
+        labelColorDark: UInt32? = nil,
+        tagText: String? = nil,
+        fillOpacity: Double = 0,
+        borderWidth: Int = 0
     ) {
         self.label = label
         self.chrome = chrome
@@ -165,6 +190,10 @@ public struct SeamCard: Equatable {
         self.reason = reason
         self.candidates = candidates
         self.labelColor = labelColor
+        self.labelColorDark = labelColorDark ?? labelColor
+        self.tagText = tagText ?? label
+        self.fillOpacity = fillOpacity
+        self.borderWidth = borderWidth
     }
 }
 
@@ -184,6 +213,12 @@ public struct ScrollSeam: Equatable {
     public var candidateShifts: [Int]
     /// The shift the matcher picked, the one marked 「当前」. Nil when there was no guess.
     public var selectedShift: Int?
+    /// Signed shift behind `suggestedOverlap` for a tie or a lone reverse.
+    /// `suggestedOverlap` drops the sign; aligning on this shift keeps it.
+    public var suggestedShift: Int? {
+        guard reversed || !candidateShifts.isEmpty else { return nil }
+        return selectedShift
+    }
     /// Row of the upper segment where the last frame before this seam starts. Nil when unknown.
     public var upperFrameTop: Int?
     /// Rows from the top of the lower segment that go above the upper segment.
@@ -273,16 +308,27 @@ public struct ScrollSeam: Equatable {
                 } else {
                     confirmed = suggestedOverlap.map { overlap == $0 } ?? false
                 }
+                let label = confirmed ? "✓ 已确认" : "✓ 手动对齐"
+                var tag = label
+                if !confirmed, let alignedShift {
+                    tag += " · " + ResolvedSeamStyle.signedPixels(alignedShift)
+                }
                 return SeamCard(
-                    label: confirmed ? "✓ 已确认" : "✓ 手动对齐",
+                    label: label,
                     chrome: .plain,
-                    labelColor: ResolvedSeamStyle.mint
+                    labelColor: ResolvedSeamStyle.mint,
+                    labelColorDark: ResolvedSeamStyle.mintDark,
+                    tagText: tag,
+                    fillOpacity: ResolvedSeamStyle.handledFillOpacity,
+                    borderWidth: ResolvedSeamStyle.labelBorderWidth
                 )
             case .joinedAsIs:
                 return SeamCard(
                     label: "直接拼",
                     chrome: .plain,
-                    labelColor: ResolvedSeamStyle.direct
+                    labelColor: ResolvedSeamStyle.direct,
+                    fillOpacity: ResolvedSeamStyle.directFillOpacity,
+                    borderWidth: ResolvedSeamStyle.labelBorderWidth
                 )
             }
         }
@@ -968,6 +1014,17 @@ public struct ScrollAssembly: Equatable {
             seams[index].prependRows = lifted
         }
         seams[index].alignedShift = shift
+    }
+
+    /// 「按此对齐」 on the suggestion. A tie or lone reverse aligns on its signed shift;
+    /// any other seam uses the suggested overlap.
+    public mutating func alignToSuggestion(seam index: Int) {
+        guard seams.indices.contains(index) else { return }
+        if let shift = seams[index].suggestedShift {
+            align(seam: index, shift: shift)
+        } else {
+            align(seam: index, overlap: seams[index].suggestedOverlap ?? 0)
+        }
     }
 
     /// A confirmation seam goes back to amber 「待确认」.
