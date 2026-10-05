@@ -122,6 +122,41 @@ final class RenderingGoldenTests: XCTestCase {
         XCTAssertNotEqual(TestImages.bytes(live), TestImages.bytes(image))
     }
 
+    /// Wide blur forces multiple vertical strips (apron + 256KB scratch cap). Strip outputs must
+    /// still match PreRefactor / main byte-for-byte, including pixels whose blur apron spans a
+    /// strip boundary — the P1 #37 pixel-identity gate (not just “existing tests green”).
+    func testRedactionStripBoundaryMatchesPreRefactor() {
+        let image = TestImages.make(width: 520, height: 220, striped: true)
+        // amount=14, reach=14*4+2=58 → apron dominates; write width 400 needs ≥2 strips at 256KB.
+        let mark = CGRect(x: 40, y: 50, width: 400, height: 90)
+        let live = Redactor.apply([Mark(kind: .blur, rect: mark)], to: image, scale: 1)
+        let frozen = PreRefactorSnapshot.redact(
+            [PreRefactorSnapshot.Region(pixelate: false, rect: mark)],
+            image: image, scale: 1
+        )
+        XCTAssertSamePixels(live, frozen, "strip-boundary-blur")
+    }
+
+    /// Same fixture geometry as the iOS two-mark peak sample (top pixelate + bottom blur), scaled
+    /// down so the golden stays cheap — still covers top and bottom marks vs PreRefactor/main.
+    func testRedactionPeakFixtureGeometryMatchesPreRefactor() {
+        let image = TestImages.make(width: 440, height: 960, striped: true)
+        let top = CGRect(x: 20, y: 50, width: 133, height: 30)
+        let bottom = CGRect(x: 233, y: 883, width: 140, height: 33)
+        let live = Redactor.apply(
+            [Mark(kind: .pixelate, rect: top), Mark(kind: .blur, rect: bottom)],
+            to: image, scale: 1
+        )
+        let frozen = PreRefactorSnapshot.redact(
+            [
+                PreRefactorSnapshot.Region(pixelate: true, rect: top),
+                PreRefactorSnapshot.Region(pixelate: false, rect: bottom),
+            ],
+            image: image, scale: 1
+        )
+        XCTAssertSamePixels(live, frozen, "peak-fixture-geometry")
+    }
+
     func testTinyRedactionReturnsTheSameImage() {
         let image = TestImages.make(width: 32, height: 16, striped: true)
         let redacted = Redactor.apply([
