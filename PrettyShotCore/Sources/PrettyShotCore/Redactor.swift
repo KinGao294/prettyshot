@@ -1,6 +1,7 @@
 import CoreGraphics
 import CoreImage
 import CoreImage.CIFilterBuiltins
+import Foundation
 
 public enum RedactionKind: Equatable {
     case pixelate
@@ -42,7 +43,7 @@ public enum Redactor {
         let extent = CGRect(x: 0, y: 0, width: width, height: height)
         // Core Image y-up rects, plus how far each filter reads past its rect.
         var planned: [(kind: RedactionKind, rect: CGRect, amount: Float)] = []
-        var area = CGRect.null
+        var reaches: [CGRect] = []
         for region in regions {
             // Image pixels (y-down) → Core Image (y-up).
             let full = region.rect
@@ -62,8 +63,9 @@ public enum Redactor {
                 reach = CGFloat(amount) * 4 + 2
             }
             planned.append((region.kind, ciRect, amount))
-            area = area.union(ciRect.insetBy(dx: -reach, dy: -reach))
+            reaches.append(ciRect.insetBy(dx: -reach, dy: -reach).integral.intersection(extent))
         }
+        let groups = patchGroups(reaches)
 
         return autoreleasepool { () -> CGImage in
             let bytesPerRow = (width * 4 + 15) & ~15
@@ -83,13 +85,14 @@ public enum Redactor {
             canvas.setBlendMode(.copy)
             canvas.draw(image, in: extent)
 
-            if !planned.isEmpty {
-                let roi = area.integral.intersection(extent)
-                if let patch = redactedPatch(planned, roi: roi, from: owned, bytesPerRow: bytesPerRow,
-                                             imageHeight: height, space: space) {
-                    canvas.draw(patch, in: roi)
+            // One patch per group of marks whose filter reach overlaps. Marks far apart (a name at
+            // the top, a number at the bottom) never make a patch that spans the image between them.
+            for group in groups {
+                autoreleasepool {
+                    redactPatch(group.members.map { planned[$0] }, roi: group.roi, in: owned,
+                                bytesPerRow: bytesPerRow, imageHeight: height, space: space)
+                    context.clearCaches()
                 }
-                context.clearCaches()
             }
             canvas.flush()
 
@@ -115,30 +118,54 @@ public enum Redactor {
         }
     }
 
-    /// Runs the redaction filters over `roi` only. `roi` covers every redacted rect plus the
-    /// distance its filter reads, so clamping at the patch edge does not reach the redacted pixels.
-    /// The patch is copied out of `bitmap` first, so Core Image never reads what is being written.
-    private static func redactedPatch(
+    /// Groups marks whose reach rects overlap, directly or through other marks, so the groups' patches
+    /// are disjoint. Overlapping marks stay together and keep their order, because a later mark filters
+    /// the earlier one's output.
+    private static func patchGroups(_ reaches: [CGRect]) -> [(roi: CGRect, members: [Int])] {
+        var groups: [(roi: CGRect, members: [Int])] = []
+        for (index, reach) in reaches.enumerated() where !reach.isEmpty {
+            var roi = reach
+            var members = [index]
+            var merged = true
+            while merged {
+                merged = false
+                if let hit = groups.firstIndex(where: { $0.roi.intersects(roi) }) {
+                    roi = roi.union(groups[hit].roi)
+                    members += groups[hit].members
+                    groups.remove(at: hit)
+                    merged = true
+                }
+            }
+            groups.append((roi, members.sorted()))
+        }
+        return groups
+    }
+
+    /// Runs the redaction filters over `roi` only and writes the result straight back into `bitmap`.
+    /// `roi` covers every redacted rect plus the distance its filter reads, so clamping at the patch
+    /// edge does not reach the redacted pixels. The patch is copied out of `bitmap` first, so Core
+    /// Image never reads what is being written. Rendering into `bitmap` (rather than into a new
+    /// CGImage drawn back over it) keeps a second patch-sized copy out of the peak.
+    private static func redactPatch(
         _ planned: [(kind: RedactionKind, rect: CGRect, amount: Float)],
         roi: CGRect,
-        from bitmap: OwnedBitmap,
+        in bitmap: OwnedBitmap,
         bytesPerRow: Int,
         imageHeight: Int,
         space: CGColorSpace
-    ) -> CGImage? {
+    ) {
         let patchWidth = Int(roi.width)
         let patchHeight = Int(roi.height)
-        guard patchWidth > 0, patchHeight > 0 else { return nil }
+        guard patchWidth > 0, patchHeight > 0 else { return }
         let patchBytesPerRow = patchWidth * 4
         let top = imageHeight - Int(roi.maxY)
         let left = Int(roi.minX)
-        var bytes = Data(count: patchBytesPerRow * patchHeight)
-        bytes.withUnsafeMutableBytes { dest in
-            guard let base = dest.baseAddress else { return }
-            for row in 0..<patchHeight {
-                let from = bitmap.baseAddress + (top + row) * bytesPerRow + left * 4
-                (base + row * patchBytesPerRow).copyMemory(from: from, byteCount: patchBytesPerRow)
-            }
+        // Filled in place and handed over toll-free: bridging a Swift `Data` may copy the patch again.
+        guard let bytes = NSMutableData(length: patchBytesPerRow * patchHeight) else { return }
+        let base = bytes.mutableBytes
+        for row in 0..<patchHeight {
+            let from = bitmap.baseAddress + (top + row) * bytesPerRow + left * 4
+            (base + row * patchBytesPerRow).copyMemory(from: from, byteCount: patchBytesPerRow)
         }
         guard let provider = CGDataProvider(data: bytes as CFData),
               let patch = CGImage(
@@ -147,7 +174,7 @@ public enum Redactor {
                 space: space,
                 bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
                 provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent
-              ) else { return nil }
+              ) else { return }
 
         let source = CIImage(cgImage: patch)
             .transformed(by: CGAffineTransform(translationX: roi.minX, y: roi.minY))
@@ -171,7 +198,10 @@ public enum Redactor {
                 output = effect.cropped(to: region.rect).composited(over: output)
             }
         }
-        return context.createCGImage(output, from: roi)
+        // Core Image writes the top row of `roi` first, at the patch's top-left pixel in `bitmap`.
+        let target = bitmap.baseAddress + top * bytesPerRow + left * 4
+        context.render(output, toBitmap: target, rowBytes: bytesPerRow, bounds: roi,
+                       format: .RGBA8, colorSpace: space)
     }
 
     /// Downscaled copy of `image` for cheap live previews.

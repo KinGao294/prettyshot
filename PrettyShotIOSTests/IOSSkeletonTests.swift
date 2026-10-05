@@ -459,6 +459,48 @@ final class ExtensionMemoryBudgetTests: XCTestCase {
         }
     }
 
+    /// Review eea0efd must-fix 2. 1830×1830 at padding 28 stays in the extension on the formula alone
+    /// (about 124.0MB of 125.8MB). Measure it the way the 1179×2556 sample is measured, and require the
+    /// same 12MB left over that card ① asks of the measured peak.
+    func testDefaultPadding1830MeasuredPeakLeavesTwelveMegabytes() throws {
+        let side = 1830
+        XCTAssertEqual(
+            ExtensionMemoryBudget.plan(pixelWidth: side, pixelHeight: side, canTransferToApp: true),
+            .fullResolutionInline
+        )
+        let source = try solidImage(width: side, height: side)
+        let before = FootprintSampler.current()
+        let sampler = FootprintSampler()
+        sampler.start()
+        let redacted = Redactor.apply(
+            [PixelRedaction(rect: CGRect(x: 40, y: 120, width: 200, height: 60))],
+            to: source,
+            scale: 1
+        )
+        let canvas = try XCTUnwrap(BeautifyRenderer.render(BeautifyInput(
+            base: redacted,
+            crop: CGRect(x: 0, y: 0, width: redacted.width, height: redacted.height),
+            background: BackgroundStyle.default,
+            scale: 1
+        )))
+        let encoded = try XCTUnwrap(ShotEncoder.pngData(canvas))
+        let during = sampler.stop()
+        let delta = during - before
+        let sourceBytes = side * side * ExtensionMemoryBudget.bytesPerPixel
+        let peak = ExtensionMemoryBudget.exportPeakBytes(
+            sourcePixels: side * side,
+            canvasPixels: ExtensionMemoryBudget.canvasPixelCount(width: side, height: side)
+        )
+        let total = ExtensionMemoryBudget.headroomBytes + sourceBytes + Int(delta)
+        print("PRETTYSHOT_RENDER_DELTA 1830x1830 before=\(before) during=\(during) delta=\(delta) residentSource=\(sourceBytes) sameBasis=\(delta + Int64(sourceBytes)) exportPeak=\(peak) total=\(total) left=\(ExtensionMemoryBudget.limitBytes - total) encodedBytes=\(encoded.count)")
+        XCTAssertGreaterThan(delta, 0)
+        XCTAssertLessThanOrEqual(delta, Int64(peak))
+        XCTAssertLessThanOrEqual(total, ExtensionMemoryBudget.limitBytes)
+        XCTAssertLessThanOrEqual(total + ExtensionMemoryBudget.renderMarginBytes, ExtensionMemoryBudget.limitBytes)
+        XCTAssertEqual(canvas.width, side + 56)
+        withExtendedLifetime(source) {}
+    }
+
     /// 1320×2868 at the default style is over the 5-buffer gate, so it hands off to the app.
     /// The sample is the current `phys_footprint` during the render, not the lifetime ledger peak.
     func testInsideGateScreenshotStaysInTheExtension() throws {
@@ -579,6 +621,42 @@ final class ExtensionMemoryBudgetTests: XCTestCase {
         redacted = nil
         let retained = FootprintSampler.current() - before
         print("PRETTYSHOT_REDACT_PEAK 1320x2868 peak=\(peak) retained=\(retained) sourceBytes=\(sourceBytes)")
+        XCTAssertLessThanOrEqual(peak, sourceBytes + slack)
+        XCTAssertLessThanOrEqual(retained, slack)
+        withExtendedLifetime(source) {}
+    }
+
+    /// Review eea0efd must-fix 1. One mark near the top and one near the bottom must not make redaction
+    /// copy and render the whole span between them: still one full-size buffer at peak.
+    func testRedactionWithTopAndBottomMarksHoldsOneFullSizeBuffer() throws {
+        _ = Redactor.apply([PixelRedaction(rect: CGRect(x: 0, y: 0, width: 8, height: 8))], to: try solidImage(width: 16, height: 16), scale: 1)
+        let width = 1320
+        let height = 2868
+        let source = try solidImage(width: width, height: height)
+        let sourceBytes = Int64(width * height * ExtensionMemoryBudget.bytesPerPixel)
+        let slack = Int64(2 * 1024 * 1024)
+        // Charge the source's own pages before sampling (see testRedactionHoldsOneFullSizeBuffer).
+        let pixels = try XCTUnwrap(source.dataProvider?.data)
+        let pixelBytes = try XCTUnwrap(CFDataGetBytePtr(pixels))
+        var touched = 0
+        for offset in stride(from: 0, to: CFDataGetLength(pixels), by: 4096) {
+            touched &+= Int(pixelBytes[offset]) + 1
+        }
+        XCTAssertGreaterThan(touched, 0)
+        let marks = [
+            PixelRedaction(rect: CGRect(x: 60, y: 150, width: 400, height: 90)),
+            PixelRedaction(rect: CGRect(x: 700, y: 2650, width: 420, height: 100), kind: .blur),
+        ]
+        let before = FootprintSampler.current()
+        let sampler = FootprintSampler()
+        sampler.start()
+        var redacted: CGImage? = Redactor.apply(marks, to: source, scale: 3)
+        let peak = sampler.stop() - before
+        XCTAssertEqual(redacted?.width, width)
+        XCTAssertEqual(redacted?.height, height)
+        redacted = nil
+        let retained = FootprintSampler.current() - before
+        print("PRETTYSHOT_REDACT_PEAK 1320x2868 two-marks peak=\(peak) retained=\(retained) sourceBytes=\(sourceBytes)")
         XCTAssertLessThanOrEqual(peak, sourceBytes + slack)
         XCTAssertLessThanOrEqual(retained, slack)
         withExtendedLifetime(source) {}
@@ -2423,5 +2501,81 @@ final class StitchL7iSummaryTests: XCTestCase {
         )
         assembly.pendingSticky = PendingStickyConfirmation(headerRows: 8, footerRows: 0, seamCount: 3, keepOnce: nil)
         return assembly
+    }
+}
+
+/// Review eea0efd must-fix 4. Asserts on `ShareExportRoute.decide`, the route the extension acts on,
+/// not on `LargeHandoff.frame` alone. Guards existing behavior: the extension has no 11b today.
+final class ShareExportRouteTests: XCTestCase {
+    private let frame11bTitle = "按这个样式导出太大，去 App 里处理"
+
+    func testDefaultStyleOverflowRoutesToFrame11() throws {
+        let model = try loaded(1320, 2868)
+        XCTAssertEqual(
+            ShareExportRoute.decide(model, canTransferToApp: true),
+            .largeSheet(LargeHandoffSheet(frame: .frame11, title: IOSCopy.largeTitle, body: IOSCopy.largeBody))
+        )
+    }
+
+    func testEachEditRoutesToFrame11a() throws {
+        let edited = IOSCopy.largeBody + LargeHandoff.editedNote
+        let expected = ShareExportRoute.largeSheet(LargeHandoffSheet(frame: .frame11a, title: IOSCopy.largeTitle, body: edited))
+
+        let arrow = try loaded(1320, 2868)
+        arrow.addArrow(start: CGPoint(x: 10, y: 10), end: CGPoint(x: 200, y: 300), in: CGSize(width: 440, height: 956))
+        XCTAssertEqual(ShareExportRoute.decide(arrow, canTransferToApp: true), expected)
+
+        let redaction = try loaded(1320, 2868)
+        redaction.addRedaction(rect: CGRect(x: 20, y: 40, width: 120, height: 40), in: CGSize(width: 440, height: 956))
+        XCTAssertEqual(ShareExportRoute.decide(redaction, canTransferToApp: true), expected)
+
+        let crop = try loaded(1320, 2868)
+        crop.setRemoveStatusBar(!crop.removeStatusBar)
+        XCTAssertTrue(crop.changedCropThisSession)
+        XCTAssertEqual(ShareExportRoute.decide(crop, canTransferToApp: true), expected)
+
+        let style = try loaded(1320, 2868)
+        style.style = BackgroundStyle(presetKey: "night-ink", padding: 28, radius: 12, shadow: 48)
+        XCTAssertEqual(ShareExportRoute.decide(style, canTransferToApp: true), expected)
+    }
+
+    /// Larger margins on a shot that is already over at the default style stay on 11a, never 11b.
+    func testEnlargedMarginsOnDefaultOverflowNeverRouteTo11b() throws {
+        let model = try loaded(1320, 2868)
+        model.style = BackgroundStyle(presetKey: "pastel-air", padding: 64, radius: 12, shadow: 48)
+        guard case .largeSheet(let sheet) = ShareExportRoute.decide(model, canTransferToApp: true) else {
+            XCTFail("1320×2868 at padding 64 must show the large sheet")
+            return
+        }
+        XCTAssertNotEqual(sheet.frame, .frame11b)
+        XCTAssertNotEqual(sheet.title, frame11bTitle)
+        XCTAssertEqual(sheet.title, IOSCopy.largeTitle)
+        XCTAssertEqual(sheet.frame, .frame11a)
+    }
+
+    func testNoTransferChannelAsksToReselect() throws {
+        XCTAssertEqual(ShareExportRoute.decide(try loaded(1320, 2868), canTransferToApp: false), .reselectInApp)
+    }
+
+    func testInsideGateStaysInline() throws {
+        XCTAssertEqual(ShareExportRoute.decide(try loaded(1179, 2556), canTransferToApp: true), .inline)
+    }
+
+    private func loaded(_ width: Int, _ height: Int) throws -> EditorModel {
+        let space = try XCTUnwrap(CGColorSpace(name: CGColorSpace.sRGB))
+        let context = try XCTUnwrap(CGContext(
+            data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+            space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ))
+        context.setFillColor(CGColor(srgbRed: 0.3, green: 0.4, blue: 0.9, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        let image = try XCTUnwrap(context.makeImage())
+        let data = NSMutableData()
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithData(data, "public.png" as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, image, nil)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        let model = EditorModel()
+        model.load(data as Data)
+        return model
     }
 }

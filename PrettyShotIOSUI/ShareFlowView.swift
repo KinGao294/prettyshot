@@ -17,8 +17,6 @@ struct ShareFlowView: View {
     var onContinuePartial: () -> Void
     var onCancelHandoff: () -> Void
     var onDismissLarge: () -> Void
-    /// 11b 「改小边距」.
-    var onShrinkPadding: () -> Void = {}
     var onDismissDenied: () -> Void
     var onOpenSettings: () -> Void
     /// S12. Set when the app did not open and nothing was staged. The page stays `.multi`.
@@ -27,6 +25,8 @@ struct ShareFlowView: View {
     var showsReadFailedOpenHint = false
     /// S10f for a multi-image or PDF share that cannot hand files to the app.
     var showsMultiInlineFootnote = false
+    /// Frame 11 / 11a content from `ShareExportRoute.decide`.
+    var largeHandoff: LargeHandoffSheet? = nil
 
     var body: some View {
         ZStack {
@@ -375,41 +375,20 @@ struct ShareFlowView: View {
         model.cropMatch.map { CGFloat($0.scale) }
     }
 
-    /// Frame 11 / 11a, or 11b when only the style the user set is over the gate.
+    /// Frame 11 / 11a, content from `ShareExportRoute.decide`. The extension never shows 11b (PRD v0.3.45).
     /// Extension only, and only when the original file can be handed off.
     private var largeSheet: some View {
-        let kind = LargeHandoff.kind(
-            pixelWidth: model.pixelWidth,
-            pixelHeight: model.pixelHeight,
-            style: model.style,
-            scale: exportScale
-        ) ?? .large
-        let edited = model.changedStyleThisSession
-            || model.changedCropThisSession
-            || model.addedArrowThisSession
-            || model.addedRedactionThisSession
-        let showsShrink = LargeHandoff.showsShrinkPadding(
-            pixelWidth: model.pixelWidth,
-            pixelHeight: model.pixelHeight,
-            style: model.style,
-            scale: exportScale
-        )
-        return VStack(alignment: .leading, spacing: 14) {
-            if kind == .style {
-                Image(systemName: "slider.horizontal.3")
-                    .font(.system(size: 22, weight: .semibold))
-                    .foregroundStyle(IOSTheme.bloom)
-                    .frame(width: 52, height: 52)
-                    .background(IOSTheme.bloom.opacity(0.16), in: RoundedRectangle(cornerRadius: 14))
-            }
-            Text(LargeHandoff.title(kind)).font(.system(size: 21, weight: .bold))
-            Text(LargeHandoff.body(kind, padding: Int(model.style.padding.rounded()), edited: edited))
-                .font(.system(size: 15))
-                .foregroundStyle(IOSTheme.muted)
+        VStack(alignment: .leading, spacing: 14) {
+            Text(largeHandoff?.title ?? IOSCopy.largeTitle).font(.system(size: 21, weight: .bold))
+            Text(largeHandoff?.body ?? LargeHandoff.body(
+                changedStyle: model.changedStyleThisSession,
+                changedCrop: model.changedCropThisSession,
+                addedArrow: model.addedArrowThisSession,
+                addedRedaction: model.addedRedactionThisSession
+            ))
+            .font(.system(size: 15))
+            .foregroundStyle(IOSTheme.muted)
             Button(IOSCopy.continueInApp, action: onStitchInApp).buttonStyle(BloomButtonStyle())
-            if showsShrink {
-                Button(IOSCopy.shrinkPadding, action: onShrinkPadding).buttonStyle(PlainCardButtonStyle())
-            }
             Button(IOSCopy.cancel, action: onDismissLarge)
                 .font(.system(size: 16, weight: .semibold))
                 .frame(maxWidth: .infinity)
@@ -455,5 +434,53 @@ extension ShareClassification {
     var pdfCount: Int {
         if case .stitch(_, let pdfs, _) = route { return pdfs }
         return 0
+    }
+}
+
+/// The sheet the extension shows when export goes to the app (frame 11 / 11a).
+struct LargeHandoffSheet: Equatable {
+    var frame: LargeHandoffFrame
+    var title: String
+    var body: String
+}
+
+/// What the extension does on copy or save.
+enum ShareExportRoute: Equatable {
+    case inline
+    case largeSheet(LargeHandoffSheet)
+    case reselectInApp
+
+    /// The route `ShareViewController` acts on for copy and save. Over budget with a transfer channel it is
+    /// frame 11 (no edits) or 11a (any style, crop, arrow or redaction change), titled `IOSCopy.largeTitle`;
+    /// without a channel it asks to reselect in the app (S10f). The extension never shows 11b.
+    static func decide(_ model: EditorModel, canTransferToApp: Bool) -> ShareExportRoute {
+        switch ExportFidelityRouter.decide(
+            pixelWidth: model.pixelWidth,
+            pixelHeight: model.pixelHeight,
+            canTransferToApp: canTransferToApp,
+            style: model.style,
+            scale: model.cropMatch.map { CGFloat($0.scale) }
+        ) {
+        case .fullResolutionPNG:
+            return .inline
+        case .reselectInApp:
+            return .reselectInApp
+        case .handOffOriginal:
+            let changedStyle = model.changedStyleThisSession
+            let changedCrop = model.changedCropThisSession
+            let addedArrow = model.addedArrowThisSession
+            let addedRedaction = model.addedRedactionThisSession
+            return .largeSheet(LargeHandoffSheet(
+                frame: LargeHandoff.frame(
+                    changedStyle: changedStyle, changedCrop: changedCrop,
+                    addedArrow: addedArrow, addedRedaction: addedRedaction
+                ),
+                title: IOSCopy.largeTitle,
+                body: LargeHandoff.body(
+                    changedStyle: changedStyle, changedCrop: changedCrop,
+                    addedArrow: addedArrow, addedRedaction: addedRedaction
+                )
+            ))
+        }
     }
 }
