@@ -647,7 +647,8 @@ final class ExtensionMemoryBudgetTests: XCTestCase {
             PixelRedaction(rect: CGRect(x: 60, y: 150, width: 400, height: 90)),
             PixelRedaction(rect: CGRect(x: 700, y: 2650, width: 420, height: 100), kind: .blur),
         ]
-        // PRD v0.3.46: measure 3 times and assert on the minimum peak (fails only if all 3 exceed); the limit is unchanged.
+        // PRD v0.3.46: measure 3 times, pick the one sample with the lowest peak, and judge both checks on it.
+        // The limit is unchanged; the peak check fails only if all 3 samples exceed it.
         var peaks: [Int64] = []
         var retainedSamples: [Int64] = []
         for sample in 1...3 {
@@ -664,9 +665,10 @@ final class ExtensionMemoryBudgetTests: XCTestCase {
             peaks.append(samplePeak)
             retainedSamples.append(sampleRetained)
         }
-        let peak = peaks.min() ?? Int64.max
-        let retained = retainedSamples.min() ?? Int64.max
-        print("PRETTYSHOT_REDACT_PEAK 1320x2868 two-marks min peak=\(peak) retained=\(retained) sourceBytes=\(sourceBytes) samples=\(peaks)")
+        let picked = peaks.indices.min { peaks[$0] < peaks[$1] } ?? 0
+        let peak = peaks[picked]
+        let retained = retainedSamples[picked]
+        print("PRETTYSHOT_REDACT_PEAK 1320x2868 two-marks picked=\(picked + 1) peak=\(peak) retained=\(retained) sourceBytes=\(sourceBytes) peaks=\(peaks) retained=\(retainedSamples)")
         XCTAssertLessThanOrEqual(peak, sourceBytes + slack)
         XCTAssertLessThanOrEqual(retained, slack)
         withExtendedLifetime(source) {}
