@@ -230,6 +230,12 @@ public struct ScrollSeam: Equatable {
         return 0
     }
 
+    /// ML6b options while a tie or lone reverse still waits; empty once handled or for a plain seam.
+    public var confirmationOptions: [String] {
+        guard awaitsConfirmation, kind == .needsAlignment else { return [] }
+        return StitchCopy.confirmationOptions
+    }
+
     /// True when this boundary is a shift tie or a lone reverse, whatever the user has done since.
     var awaitsConfirmation: Bool {
         pendingTitle != nil || !candidateLines.isEmpty || reversed
@@ -840,6 +846,25 @@ public struct ScrollAssembly: Equatable {
         let pixels = Int64(max(width, 0)) * Int64(max(height, 0))
         guard height > maxHeight || pixels > Int64(maxPixels) else { return nil }
         return StitchCopy.overLimit(height: height, pixels: pixels, maxHeight: maxHeight, maxPixels: maxPixels)
+    }
+
+    /// ML6b 「确认当前位移」: align on the shift the matcher picked, sign kept.
+    public mutating func confirmCurrentShift(seam index: Int) {
+        guard seams.indices.contains(index) else { return }
+        if let shift = seams[index].selectedShift {
+            align(seam: index, shift: shift)
+        } else {
+            align(seam: index, overlap: seams[index].suggestedOverlap ?? 0)
+        }
+    }
+
+    /// ML6c 「− 底栏 F · 顶栏 H」 while bars are kept once; ML6d 「固定栏已接回」 after restore.
+    /// Nil when the capture has no sticky bars.
+    public var stickyBandLabel: String? {
+        let repeats = segments.flatMap(\.stickyRepeats).filter { $0.header.height > 0 || $0.footer.height > 0 }
+        guard let first = repeats.first else { return nil }
+        guard dedupeStickyBars else { return StitchCopy.stickyReattached }
+        return StitchCopy.dedupedBand(footer: first.footer.height, header: first.header.height)
     }
 
     /// Turns dedupe off when the restored image fits in one capture. Over the cap, leaves dedupe on.
