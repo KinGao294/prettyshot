@@ -1238,3 +1238,90 @@ struct StitchPreviewView: View {
         }
     }
 }
+
+#if DEBUG
+/// Debug-only PNG of the real preview window, for the CI screenshot test.
+/// Hosts the view in an offscreen window so AppKit controls draw for real, then caches it at 2x.
+enum StitchPreviewSnapshot {
+    @MainActor
+    static func renderPNG(model: StitchPreviewModel, dark: Bool, size: CGSize) -> Data? {
+        let appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+        let host = NSHostingView(rootView: root(model: model, dark: dark, size: size))
+        host.frame = NSRect(origin: .zero, size: size)
+        host.appearance = appearance
+        let window = NSWindow(
+            contentRect: NSRect(origin: NSPoint(x: -20_000, y: -20_000), size: size),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.isReleasedWhenClosed = false
+        window.appearance = appearance
+        window.contentView = host
+        window.orderFrontRegardless()
+        defer { window.orderOut(nil) }
+
+        // onAppear selects the seam and refreshes the loupe; give layout and that update a few turns.
+        for _ in 0..<3 {
+            host.layoutSubtreeIfNeeded()
+            window.displayIfNeeded()
+            RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+        }
+
+        if let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: Int(size.width * 2),
+            pixelsHigh: Int(size.height * 2),
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ) {
+            rep.size = size
+            host.cacheDisplay(in: host.bounds, to: rep)
+            if !isBlank(rep) {
+                return rep.representation(using: .png, properties: [:])
+            }
+            print("StitchPreviewSnapshot: cacheDisplay was blank; using ImageRenderer")
+        }
+        // ImageRenderer draws AppKit controls as placeholders, so it is only the fallback.
+        let renderer = ImageRenderer(content: root(model: model, dark: dark, size: size))
+        renderer.scale = 2
+        guard let cgImage = renderer.cgImage else { return nil }
+        return NSBitmapImageRep(cgImage: cgImage).representation(using: .png, properties: [:])
+    }
+
+    @MainActor
+    private static func root(model: StitchPreviewModel, dark: Bool, size: CGSize) -> some View {
+        StitchPreviewView(
+            model: model,
+            onAlign: {},
+            onJoin: {},
+            onExport: {},
+            onExportRestored: {},
+            onCommit: {}
+        )
+        .environment(\.colorScheme, dark ? .dark : .light)
+        .frame(width: size.width, height: size.height)
+    }
+
+    /// True when every pixel matches the first one.
+    private static func isBlank(_ rep: NSBitmapImageRep) -> Bool {
+        guard let data = rep.bitmapData else { return true }
+        let stride = rep.bitsPerPixel / 8
+        let count = rep.bytesPerRow * rep.pixelsHigh
+        guard stride > 0, count >= stride else { return true }
+        var offset = stride
+        while offset + stride <= count {
+            for byte in 0..<stride where data[offset + byte] != data[byte] {
+                return false
+            }
+            offset += stride
+        }
+        return true
+    }
+}
+#endif

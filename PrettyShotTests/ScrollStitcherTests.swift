@@ -2752,3 +2752,55 @@ extension ScrollStitcherTests {
         XCTAssertEqual(ink.dashed, dashed, "dashed", file: file, line: line)
     }
 }
+
+// MARK: - CI screenshots of the Mac stitch preview (ML6b-r tags, ML6c, ML6d)
+
+extension ScrollStitcherTests {
+    /// Writes tags-, ml6c- and ml6d- PNGs in light and dark at 2x when `PRETTYSHOT_RENDER_DIR` is set.
+    /// Asserts nothing: any problem is printed and that image is skipped.
+    @MainActor
+    func testRenderStitchPreviewScreenshots() {
+        guard let path = ProcessInfo.processInfo.environment["PRETTYSHOT_RENDER_DIR"], !path.isEmpty else {
+            print("PRETTYSHOT_RENDER_DIR is not set; skipping stitch preview screenshots")
+            return
+        }
+        let directory = URL(fileURLWithPath: path, isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        } catch {
+            print("stitch screenshots: cannot create \(directory.path): \(error)")
+            return
+        }
+        // Tall enough for the seam list, the four options and both band labels without scrolling.
+        let size = CGSize(width: 1180, height: 1400)
+        for dark in [false, true] {
+            let suffix = dark ? "dark" : "light"
+            let tags = try? ml6bFourTagModel()
+            let deduped = try? ml6StickyModel()
+            let restored = try? ml6StickyModel()
+            restored?.setDedupeStickyBars(false)
+            let shots: [(String, StitchPreviewModel?)] = [
+                ("tags-\(suffix).png", tags),
+                ("ml6c-\(suffix).png", deduped),
+                ("ml6d-\(suffix).png", restored),
+            ]
+            for (name, model) in shots {
+                guard let model else {
+                    print("stitch screenshots: fixture for \(name) failed")
+                    continue
+                }
+                guard let png = StitchPreviewSnapshot.renderPNG(model: model, dark: dark, size: size) else {
+                    print("stitch screenshots: nothing rendered for \(name)")
+                    continue
+                }
+                let url = directory.appendingPathComponent(name)
+                do {
+                    try png.write(to: url)
+                    print("stitch screenshot: \(url.path)")
+                } catch {
+                    print("stitch screenshots: cannot write \(url.path): \(error)")
+                }
+            }
+        }
+    }
+}
