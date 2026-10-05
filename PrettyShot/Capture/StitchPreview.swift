@@ -60,7 +60,9 @@ final class StitchPreviewController: NSObject, NSWindowDelegate {
     }
 
     private func handleKey(_ event: NSEvent) -> NSEvent? {
-        guard window?.isKeyWindow == true, model.selectedBoundary != nil else { return event }
+        guard window?.isKeyWindow == true,
+              let boundary = model.selectedBoundary,
+              model.showsManualControls(boundary: boundary) else { return event }
         let delta: Int
         switch event.keyCode {
         case 123, 125: delta = -1
@@ -95,6 +97,79 @@ final class StitchPreviewController: NSObject, NSWindowDelegate {
     }
 }
 
+/// Light or dark, apart from SwiftUI so tests and the screenshot helper can pick one.
+enum StitchAppearance: Equatable {
+    case light
+    case dark
+
+    init(_ scheme: ColorScheme) {
+        self = scheme == .dark ? .dark : .light
+    }
+}
+
+/// One seam tag's paint as sRGB hex and opacity. The view turns it into `Color(hex:)`.
+struct SeamTagInk: Equatable {
+    var text: UInt32
+    var border: UInt32
+    var fill: UInt32
+    var fillOpacity: Double
+    var borderWidth: Int
+    var dashed: Bool
+}
+
+/// The tag on one confirmation seam: 「待确认」「✓ 已确认」「✓ 手动对齐 · −28 px」「直接拼」.
+struct SeamTag: Equatable {
+    var text: String
+    var light: SeamTagInk
+    var dark: SeamTagInk
+
+    func ink(_ appearance: StitchAppearance) -> SeamTagInk {
+        appearance == .dark ? dark : light
+    }
+}
+
+/// ML6b options on a 「待确认」 seam, in the order Core lists them.
+enum SeamConfirmationOption: Equatable, CaseIterable {
+    case confirmCurrentShift
+    case manualAlign
+    case joinAsIs
+    case splitExport
+
+    init?(title: String) {
+        guard let option = Self.allCases.first(where: { $0.title == title }) else { return nil }
+        self = option
+    }
+
+    var title: String {
+        switch self {
+        case .confirmCurrentShift: return StitchCopy.confirmCurrentShift
+        case .manualAlign: return StitchCopy.manualAlignOption
+        case .joinAsIs: return StitchCopy.joinAsIsOption
+        case .splitExport: return StitchCopy.splitExportOption
+        }
+    }
+
+    /// Second line under the option (design frame 19).
+    var caption: String {
+        switch self {
+        case .confirmCurrentShift: return "看过上图没有重复 / 缺行"
+        case .manualAlign: return "1:1 放大 + 半透明叠放，拖动 / 方向键微调"
+        case .joinAsIs: return "不找重叠，上下直接接起来"
+        case .splitExport: return "每段单独保存"
+        }
+    }
+}
+
+/// ML6c 「− 底栏 F · 顶栏 H」 or ML6d 「固定栏已接回」, left of the long image at one confident join.
+struct StickyBandMark: Identifiable, Equatable {
+    var id: String
+    /// Row in the full-resolution stack, the same space as `SeamMark.y`.
+    var y: Int
+    var label: String
+    /// True after 「还原固定栏」 put the bars back.
+    var reattached: Bool
+}
+
 @MainActor
 final class StitchPreviewModel: ObservableObject {
     @Published var assembly: ScrollAssembly
@@ -111,6 +186,8 @@ final class StitchPreviewModel: ObservableObject {
     @Published var previewFullHeight = 0
     @Published var selectedDuplicateID: String?
     @Published var highlightPendingSticky = false
+    /// Set by 「手动对齐」 on a 「待确认」 seam: that seam shows the slider instead of the four options.
+    @Published var manualAlignmentBoundary: Int?
     let notice: String?
 
     init(assembly: ScrollAssembly, notice: String?) {
@@ -120,6 +197,12 @@ final class StitchPreviewModel: ObservableObject {
     }
 
     var canCommit: Bool { !assembly.needsReview }
+
+    /// Core's title for the current step: 「处理下一处 · N」, 「先确认 N 处重复段」 or 「下一步 · 美化 →」.
+    var primaryTitle: String { assembly.previewPrimaryTitle }
+
+    /// Only 「下一步 · 美化 →」 can be blocked; the other steps move the selection.
+    var primaryEnabled: Bool { assembly.previewPrimaryStep != .beautify || canCommit }
 
     var selectedSeam: ScrollSeam? {
         guard let selectedBoundary, assembly.seams.indices.contains(selectedBoundary) else { return nil }
@@ -190,6 +273,7 @@ final class StitchPreviewModel: ObservableObject {
     /// Aligns the selected seam on its suggestion, keeping the shift's sign.
     func alignToSuggestion() {
         guard let selectedBoundary else { return }
+        manualAlignmentBoundary = nil
         assembly.alignToSuggestion(seam: selectedBoundary)
         overlap = Double(assembly.seams[selectedBoundary].editorOverlap)
         refreshOverLimitMessage()
@@ -207,11 +291,98 @@ final class StitchPreviewModel: ObservableObject {
         refresh()
     }
 
-    /// The long image carries no top-left status chip; each seam shows its own tag.
-    var longImageOverlayLabel: String? { nil }
+    /// ML6b options for this seam. Empty once it is handled, and for a seam that is not a tie or lone reverse.
+    func confirmationOptions(boundary: Int) -> [SeamConfirmationOption] {
+        guard assembly.seams.indices.contains(boundary) else { return [] }
+        return assembly.seams[boundary].confirmationOptions.compactMap(SeamConfirmationOption.init(title:))
+    }
+
+    /// 「确认当前位移」: the same Core path as 「按此对齐」 on the suggestion.
+    func confirmCurrentShift(boundary: Int) {
+        guard assembly.seams.indices.contains(boundary) else { return }
+        select(boundary: boundary)
+        alignToSuggestion()
+    }
+
+    /// 「手动对齐」: selects the seam and opens the slider. The seam stays 「待确认」 until it is aligned.
+    func beginManualAlignment(boundary: Int) {
+        guard assembly.seams.indices.contains(boundary) else { return }
+        select(boundary: boundary)
+        manualAlignmentBoundary = boundary
+    }
+
+    /// The slider, 1:1 crop and arrow keys belong to a selected seam with no options left,
+    /// or to a 「待确认」 seam after 「手动对齐」.
+    func showsManualControls(boundary: Int) -> Bool {
+        guard selectedBoundary == boundary, assembly.seams.indices.contains(boundary) else { return false }
+        return confirmationOptions(boundary: boundary).isEmpty || manualAlignmentBoundary == boundary
+    }
+
+    /// Tag for a tie or lone reverse seam, nil for any other seam.
+    /// 「待确认」 is the amber dashed chip; handled tags use the card's ink with a 1 px solid border.
+    func seamTag(boundary: Int) -> SeamTag? {
+        guard assembly.seams.indices.contains(boundary) else { return nil }
+        let seam = assembly.seams[boundary]
+        let card = seam.card(number: boundary + 1)
+        if card.chrome == .amberDashed {
+            // Dark keeps the design's #8A5A12 text; DESIGN.md gives no dark value for it.
+            let ink = SeamTagInk(
+                text: PendingSeamStyle.text,
+                border: PendingSeamStyle.warn,
+                fill: PendingSeamStyle.warn,
+                fillOpacity: PendingSeamStyle.fillOpacity,
+                borderWidth: PendingSeamStyle.labelBorderWidth,
+                dashed: true
+            )
+            return SeamTag(text: card.label, light: ink, dark: ink)
+        }
+        guard card.labelColor != 0 else { return nil }
+        let darkFill = seam.kind == .joinedAsIs ? ResolvedSeamStyle.directDarkFillOpacity : card.fillOpacity
+        return SeamTag(
+            text: card.tagText,
+            light: SeamTagInk(
+                text: card.labelColor,
+                border: card.labelColor,
+                fill: card.labelColor,
+                fillOpacity: card.fillOpacity,
+                borderWidth: card.borderWidth,
+                dashed: false
+            ),
+            dark: SeamTagInk(
+                text: card.labelColorDark,
+                border: card.labelColorDark,
+                fill: card.labelColorDark,
+                fillOpacity: darkFill,
+                borderWidth: card.borderWidth,
+                dashed: false
+            )
+        )
+    }
+
+    /// The card's reason line. A handled tie or reverse seam has none.
+    func seamReason(boundary: Int) -> String? {
+        guard assembly.seams.indices.contains(boundary) else { return nil }
+        return assembly.seams[boundary].card(number: boundary + 1).reason
+    }
+
+    /// One left-side label per confident join while the capture has sticky bars.
+    var stickyBandMarks: [StickyBandMark] {
+        guard let label = assembly.stickyBandLabel else { return [] }
+        let reattached = !assembly.dedupeStickyBars
+        return marks
+            .filter { $0.boundaryIndex == nil && $0.state == .ok }
+            .map { StickyBandMark(id: "sticky-\($0.id)", y: $0.y, label: label, reattached: reattached) }
+    }
+
+    /// ML6d notice while the bars are back on every seam.
+    var stickyRestoredNotice: String? {
+        guard assembly.hasStickyRepeats, !assembly.dedupeStickyBars else { return nil }
+        return StitchCopy.stickyRestoredToast
+    }
 
     func joinSelectedAsIs() {
         guard let selectedBoundary else { return }
+        manualAlignmentBoundary = nil
         assembly.joinAsIs(seam: selectedBoundary)
         overlap = 0
         refreshOverLimitMessage()
@@ -222,6 +393,7 @@ final class StitchPreviewModel: ObservableObject {
     func restoreAutoAlignment() {
         guard let selectedBoundary else { return }
         let boundary = selectedBoundary
+        manualAlignmentBoundary = nil
         let summary = assembly.restoreAutoAlignment(seam: boundary)
         overlap = Double(assembly.seams[boundary].editorOverlap)
         clearDuplicateChrome()
@@ -247,6 +419,7 @@ final class StitchPreviewModel: ObservableObject {
     /// Manual alignment 「完成」. Applies the current overlap, then re-runs duplicate detection.
     func finishManualAlignment() {
         let boundary = selectedBoundary
+        manualAlignmentBoundary = nil
         let applied = Int(overlap.rounded())
         if let boundary {
             assembly.align(seam: boundary, overlap: applied)
@@ -417,6 +590,33 @@ final class StitchPreviewModel: ObservableObject {
     }
 }
 
+/// Preview window surfaces in light and dark (DESIGN §11.9). Only this window reads them.
+enum StitchSurface {
+    case canvas
+    case drawer
+    case card
+    case text
+    case secondary
+    case hairline
+
+    func color(_ appearance: StitchAppearance) -> Color {
+        switch (self, appearance) {
+        case (.canvas, .light): return Palette.canvas
+        case (.canvas, .dark): return Color(hex: 0x171615)
+        case (.drawer, .light): return Palette.drawer
+        case (.drawer, .dark): return Color(hex: 0x1E1D1C)
+        case (.card, .light): return Color.white
+        case (.card, .dark): return Color(hex: 0x262422)
+        case (.text, .light): return Palette.charcoal
+        case (.text, .dark): return Color(hex: 0xEDE8E1)
+        case (.secondary, .light): return Palette.muted
+        case (.secondary, .dark): return Color(hex: 0x9C958B)
+        case (.hairline, .light): return Palette.borderLight
+        case (.hairline, .dark): return Color.white.opacity(0.09)
+        }
+    }
+}
+
 @MainActor
 struct StitchPreviewView: View {
     @ObservedObject var model: StitchPreviewModel
@@ -426,6 +626,13 @@ struct StitchPreviewView: View {
     var onExport: () -> Void
     var onExportRestored: () -> Void
     var onCommit: () -> Void
+
+    /// The long image is a column, as in the design frames, with room on the left for band labels.
+    private static let longImageMaxWidth: CGFloat = 320
+    private static let bandGutter: CGFloat = 132
+
+    private var appearance: StitchAppearance { StitchAppearance(colorScheme) }
+    private func surface(_ surface: StitchSurface) -> Color { surface.color(appearance) }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -439,7 +646,7 @@ struct StitchPreviewView: View {
             Divider()
             footer
         }
-        .background(Palette.canvas)
+        .background(surface(.canvas))
         .onAppear {
             if let index = model.selectedBoundary {
                 model.select(boundary: index)
@@ -451,10 +658,10 @@ struct StitchPreviewView: View {
         VStack(alignment: .leading, spacing: 4) {
             Text("拼接预览")
                 .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(Palette.charcoal)
+                .foregroundStyle(surface(.text))
             Text(summary)
                 .font(.system(size: 12))
-                .foregroundStyle(Palette.muted)
+                .foregroundStyle(surface(.secondary))
             if let notice = model.notice {
                 Text(notice)
                     .font(.system(size: 12, weight: .medium))
@@ -464,7 +671,7 @@ struct StitchPreviewView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(pending.prompt)
                         .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(Palette.charcoal)
+                        .foregroundStyle(surface(.text))
                     HStack(spacing: 8) {
                         Button(StitchCopy.keepOnceChoice) { model.confirmPendingSticky(keepOnce: true) }
                             .buttonStyle(BloomPrimaryButtonStyle())
@@ -485,10 +692,21 @@ struct StitchPreviewView: View {
                 ))
                 .toggleStyle(.switch)
                 .font(.system(size: 12))
+                .foregroundStyle(surface(.text))
                 Button(StitchCopy.restoreSticky) { model.setDedupeStickyBars(false) }
                     .buttonStyle(LightButtonStyle())
                     .disabled(!model.assembly.dedupeStickyBars || !model.assembly.hasStickyRepeats)
                     .help(StitchCopy.restoreHelp)
+            }
+            if let restored = model.stickyRestoredNotice {
+                HStack(spacing: 8) {
+                    Text(restored)
+                        .font(.system(size: 12))
+                        .foregroundStyle(surface(.secondary))
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button(StitchCopy.keepOnceToggle) { model.setDedupeStickyBars(true) }
+                        .buttonStyle(LightButtonStyle())
+                }
             }
             if let restoreLimitMessage = model.restoreLimitMessage {
                 let prompt = model.assembly.restoreExportPrompt
@@ -497,7 +715,7 @@ struct StitchPreviewView: View {
                     .foregroundStyle(Palette.bloomDeep)
                 Text(StitchCopy.overLimitNote)
                     .font(.system(size: 12))
-                    .foregroundStyle(Palette.muted)
+                    .foregroundStyle(surface(.secondary))
                 HStack(alignment: .top, spacing: 8) {
                     if prompt.primaryExports {
                         Button(prompt.primaryTitle, action: onExportRestored)
@@ -515,7 +733,7 @@ struct StitchPreviewView: View {
                             if let caption = prompt.segmentExportCaption {
                                 Text(caption)
                                     .font(.system(size: 11))
-                                    .foregroundStyle(Palette.muted)
+                                    .foregroundStyle(surface(.secondary))
                                     .fixedSize(horizontal: false, vertical: true)
                             }
                         }
@@ -540,11 +758,11 @@ struct StitchPreviewView: View {
 
     private var preview: some View {
         VStack(spacing: 0) {
-            if let loupe = model.loupe {
+            if let loupe = model.loupe, let index = model.selectedBoundary, model.showsManualControls(boundary: index) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("接缝 1:1 · 偏移 \(Int(model.overlap.rounded())) px")
                         .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(Palette.muted)
+                        .foregroundStyle(surface(.secondary))
                     Image(nsImage: loupe)
                         .interpolation(.none)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -553,42 +771,22 @@ struct StitchPreviewView: View {
                 .padding(.top, 12)
             }
             GeometryReader { geo in
-                let width = max(geo.size.width - 32, 1)
+                let bands = model.stickyBandMarks
+                let gutter: CGFloat = bands.isEmpty ? 0 : Self.bandGutter
+                let width = max(min(geo.size.width - 32 - gutter, Self.longImageMaxWidth), 1)
                 let fullH = max(model.previewFullHeight, 1)
                 let aspect = (model.preview?.size.height ?? 1) / max(model.preview?.size.width ?? 1, 1)
                 let imageH = max(width * aspect, 1)
+                let scale = imageH / CGFloat(fullH)
                 ScrollViewReader { proxy in
                     ScrollView {
                         if let preview = model.preview {
-                            ZStack(alignment: .topLeading) {
-                                Image(nsImage: preview)
-                                    .resizable()
-                                    .interpolation(.medium)
-                                    .frame(width: width, height: imageH)
-                                ForEach(model.duplicateMarks) { mark in
-                                    let scale = imageH / CGFloat(fullH)
-                                    let y = CGFloat(mark.y) * scale
-                                    let h = max(CGFloat(mark.height) * scale, 22)
-                                    VStack(spacing: 0) {
-                                        Color.clear.frame(height: max(y, 0))
-                                        duplicateMarker(mark, width: width, height: h)
-                                            .id(StitchPreviewModel.duplicatePreviewScrollID(mark.id))
-                                        Spacer(minLength: 0)
-                                    }
-                                    .frame(width: width, height: imageH, alignment: .top)
-                                }
-                            }
-                            .frame(width: width, height: imageH, alignment: .topLeading)
-                            .overlay(alignment: .topLeading) {
-                                if let label = model.longImageOverlayLabel {
-                                    pendingMark(label)
-                                        .padding(8)
-                                }
-                            }
-                            .padding(16)
+                            longImage(preview, width: width, imageH: imageH, scale: scale, gutter: gutter, bands: bands)
+                                .padding(16)
+                                .frame(maxWidth: .infinity)
                         } else {
                             Text("没有可预览的画面")
-                                .foregroundStyle(Palette.muted)
+                                .foregroundStyle(surface(.secondary))
                                 .padding(24)
                         }
                     }
@@ -601,6 +799,79 @@ struct StitchPreviewView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// Band labels in the left gutter, then the long image with its duplicate-region overlays.
+    private func longImage(
+        _ preview: NSImage,
+        width: CGFloat,
+        imageH: CGFloat,
+        scale: CGFloat,
+        gutter: CGFloat,
+        bands: [StickyBandMark]
+    ) -> some View {
+        HStack(alignment: .top, spacing: 0) {
+            if !bands.isEmpty {
+                ZStack(alignment: .topTrailing) {
+                    ForEach(bands) { band in
+                        VStack(spacing: 0) {
+                            Color.clear.frame(height: max(CGFloat(band.y) * scale - 9, 0))
+                            stickyBandLabel(band)
+                                .padding(.trailing, 6)
+                            Spacer(minLength: 0)
+                        }
+                        .frame(width: gutter, height: imageH, alignment: .topTrailing)
+                    }
+                }
+                .frame(width: gutter, height: imageH, alignment: .topTrailing)
+            }
+            ZStack(alignment: .topLeading) {
+                Image(nsImage: preview)
+                    .resizable()
+                    .interpolation(.medium)
+                    .frame(width: width, height: imageH)
+                ForEach(model.duplicateMarks) { mark in
+                    let y = CGFloat(mark.y) * scale
+                    let h = max(CGFloat(mark.height) * scale, 22)
+                    VStack(spacing: 0) {
+                        Color.clear.frame(height: max(y, 0))
+                        duplicateMarker(mark, width: width, height: h)
+                            .id(StitchPreviewModel.duplicatePreviewScrollID(mark.id))
+                        Spacer(minLength: 0)
+                    }
+                    .frame(width: width, height: imageH, alignment: .top)
+                }
+            }
+            .frame(width: width, height: imageH, alignment: .topLeading)
+        }
+    }
+
+    /// ML6c rose dashed 「− 底栏 F · 顶栏 H」; ML6d amber dashed 「固定栏已接回」.
+    private func stickyBandLabel(_ band: StickyBandMark) -> some View {
+        let ink: Color
+        let border: Color
+        if band.reattached {
+            ink = Color(hex: appearance == .dark ? PendingSeamStyle.warn : PendingSeamStyle.text)
+            border = Color(hex: PendingSeamStyle.warn)
+        } else {
+            ink = Palette.bloomDeep
+            border = Palette.bloomRose
+        }
+        return Text(band.label)
+            .font(.system(size: 11, weight: .medium))
+            .foregroundStyle(ink)
+            .lineLimit(1)
+            .fixedSize()
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .fill(band.reattached ? Color(hex: PendingSeamStyle.warn).opacity(0.12) : surface(.card))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .strokeBorder(border, style: StrokeStyle(lineWidth: 1, dash: [3, 2]))
+            )
     }
 
     private var seamList: some View {
@@ -622,21 +893,21 @@ struct StitchPreviewView: View {
                 proxy.scrollTo(id, anchor: .center)
             }
         }
-        .background(Palette.drawer)
+        .background(surface(.drawer))
     }
 
-    /// 「待确认」 chip: 1 px dashed Warn border, Warn text, Warn fill at 18%.
-    private func pendingMark(_ title: String) -> some View {
+    /// ML6b-r tag: 1 px border (dashed for 「待确认」), fill at the tag's opacity.
+    private func seamTagChip(_ title: String, ink: SeamTagInk) -> some View {
         Text(title)
             .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(Color(hex: PendingSeamStyle.text))
+            .foregroundStyle(Color(hex: ink.text))
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
-            .background(Capsule().fill(Color(hex: PendingSeamStyle.warn).opacity(PendingSeamStyle.fillOpacity)))
+            .background(Capsule().fill(Color(hex: ink.fill).opacity(ink.fillOpacity)))
             .overlay(
-                Capsule().stroke(
-                    Color(hex: PendingSeamStyle.warn),
-                    style: StrokeStyle(lineWidth: CGFloat(PendingSeamStyle.labelBorderWidth), dash: [3, 2])
+                Capsule().strokeBorder(
+                    Color(hex: ink.border),
+                    style: StrokeStyle(lineWidth: CGFloat(ink.borderWidth), dash: ink.dashed ? [3, 2] : [])
                 )
             )
     }
@@ -659,7 +930,7 @@ struct StitchPreviewView: View {
                 if candidate.rowCount > 0 {
                     Text(candidate.locationLine)
                         .font(.system(size: 11))
-                        .foregroundStyle(Palette.muted)
+                        .foregroundStyle(surface(.secondary))
                 }
                 Button(StitchCopy.restoreDuplicate) {
                     model.restoreDuplicateCandidate(candidate.id)
@@ -678,17 +949,17 @@ struct StitchPreviewView: View {
                 if candidate.seamMoved {
                     Text(StitchCopy.duplicateSeamMovedNote(seam: candidate.movedSeamNumber ?? candidate.seamNumber))
                         .font(.system(size: 12))
-                        .foregroundStyle(Palette.charcoal)
+                        .foregroundStyle(surface(.text))
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if candidate.rowCount > 0 {
                     Text(candidate.locationLine)
                         .font(.system(size: 11))
-                        .foregroundStyle(Palette.muted)
+                        .foregroundStyle(surface(.secondary))
                 }
                 Text(StitchCopy.duplicateDetail)
                     .font(.system(size: 12))
-                    .foregroundStyle(Palette.charcoal)
+                    .foregroundStyle(surface(.text))
                 HStack(spacing: 8) {
                     Button(StitchCopy.keepDuplicateOnce) {
                         model.resolveDuplicateCandidate(candidate.id, choice: .keepOnce)
@@ -705,12 +976,12 @@ struct StitchPreviewView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(selected && candidate.isUnresolved ? duplicateAmber.opacity(0.12) : Color.white.opacity(0.45))
+                .fill(selected && candidate.isUnresolved ? duplicateAmber.opacity(0.12) : surface(.card).opacity(0.45))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .strokeBorder(
-                    candidate.isUnresolved ? (selected ? duplicateAmber : Palette.borderLight) : Palette.softMint.opacity(0.7),
+                    candidate.isUnresolved ? (selected ? duplicateAmber : surface(.hairline)) : Palette.softMint.opacity(0.7),
                     style: StrokeStyle(lineWidth: 1, dash: candidate.isUnresolved ? [CGFloat(4), 3] : [])
                 )
         )
@@ -720,46 +991,45 @@ struct StitchPreviewView: View {
         }
     }
 
+    /// Reason under the seam title: the card's while a confirmation seam waits, otherwise the mark's note.
+    private func reasonLine(for mark: SeamMark) -> String? {
+        guard let index = mark.boundaryIndex else { return mark.note }
+        return model.seamReason(boundary: index)
+    }
+
     private func seamRow(_ mark: SeamMark) -> some View {
         let selected = mark.boundaryIndex != nil && mark.boundaryIndex == model.selectedBoundary
         let card = seamCard(for: mark)
-        let pending = card?.chrome == .amberDashed
-        let labelText = card.map { pending ? $0.label : $0.tagText } ?? label(for: mark.state)
+        let tag = mark.boundaryIndex.flatMap { model.seamTag(boundary: $0) }
+        let options = mark.boundaryIndex.map { model.confirmationOptions(boundary: $0) } ?? []
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                if pending {
-                    pendingMark(labelText)
+                if let tag {
+                    seamTagChip(tag.text, ink: tag.ink(appearance))
                 } else {
-                    let ink = card.flatMap { card -> Color? in
-                        guard card.labelColor != 0 else { return nil }
-                        return Color(hex: colorScheme == .dark ? card.labelColorDark : card.labelColor)
-                    } ?? tint(for: mark.state)
-                    let fill = card.map { $0.fillOpacity > 0 ? $0.fillOpacity : 0.15 } ?? 0.15
-                    let border = CGFloat(card?.borderWidth ?? 0)
-                    Text(labelText)
+                    let ink = tint(for: mark.state)
+                    Text(card?.tagText ?? label(for: mark.state))
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(ink)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
-                        .background(Capsule().fill(ink.opacity(fill)))
-                        .overlay(Capsule().strokeBorder(ink, lineWidth: border).opacity(border > 0 ? 1 : 0))
+                        .background(Capsule().fill(ink.opacity(0.15)))
                 }
                 Text("距顶部 \(mark.y) px")
                     .font(.system(size: 11))
-                    .foregroundStyle(Palette.muted)
+                    .foregroundStyle(surface(.secondary))
                 Spacer()
             }
             if let title = card?.title {
                 Text(title)
                     .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Palette.charcoal)
+                    .foregroundStyle(surface(.text))
                     .fixedSize(horizontal: false, vertical: true)
             }
-            // A seam with a card shows only the card's reason. A handled tie has none.
-            if let reason = (card != nil ? card?.reason : mark.note) {
+            if let reason = reasonLine(for: mark) {
                 Text(reason)
                     .font(.system(size: 11))
-                    .foregroundStyle(Palette.charcoal)
+                    .foregroundStyle(surface(.text))
                     .fixedSize(horizontal: false, vertical: true)
             }
             if let candidates = card?.candidates, !candidates.isEmpty {
@@ -771,7 +1041,7 @@ struct StitchPreviewView: View {
                     } label: {
                         Text(line)
                             .font(.system(size: 11))
-                            .foregroundStyle(Palette.charcoal)
+                            .foregroundStyle(surface(.text))
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .contentShape(Rectangle())
                     }
@@ -779,10 +1049,22 @@ struct StitchPreviewView: View {
                     .help("按这个位移对齐")
                 }
             }
-            if let index = mark.boundaryIndex, selected, model.assembly.seams.indices.contains(index) {
+            if let index = mark.boundaryIndex, !options.isEmpty, !model.showsManualControls(boundary: index) {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(Array(options.enumerated()), id: \.offset) { offset, option in
+                        Button {
+                            perform(option, boundary: index)
+                        } label: {
+                            optionRow(option, number: offset)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            if let index = mark.boundaryIndex, model.showsManualControls(boundary: index) {
                 Text("重叠 \(Int(model.overlap.rounded())) px（盖住下一段顶部）· 方向键 ±1 px")
                     .font(.system(size: 11))
-                    .foregroundStyle(Palette.charcoal)
+                    .foregroundStyle(surface(.text))
                 Slider(
                     value: Binding(
                         get: { model.overlap },
@@ -805,11 +1087,11 @@ struct StitchPreviewView: View {
         .padding(10)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(selected ? Color.white : Color.white.opacity(0.45))
+                .fill(selected ? surface(.card) : surface(.card).opacity(0.45))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(selected ? Palette.bloomRose : Palette.borderLight, lineWidth: selected ? 1.5 : 1)
+                .strokeBorder(selected ? Palette.bloomRose : surface(.hairline), lineWidth: selected ? 1.5 : 1)
         )
         .contentShape(Rectangle())
         .onTapGesture {
@@ -819,13 +1101,62 @@ struct StitchPreviewView: View {
         }
     }
 
+    /// One ML6b option: a numbered badge (✓ for 确认当前位移), the title, and a short caption.
+    private func optionRow(_ option: SeamConfirmationOption, number: Int) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Text(number == 0 ? "✓" : "\(number)")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Palette.bloomDeep)
+                .frame(width: 20, height: 20)
+                .background(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(Palette.bloomRose.opacity(0.18))
+                )
+            VStack(alignment: .leading, spacing: 2) {
+                Text(option.title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(surface(.text))
+                Text(option.caption)
+                    .font(.system(size: 11))
+                    .foregroundStyle(surface(.secondary))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(surface(.card))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(surface(.hairline), lineWidth: 1)
+        )
+        .contentShape(Rectangle())
+    }
+
+    private func perform(_ option: SeamConfirmationOption, boundary: Int) {
+        switch option {
+        case .confirmCurrentShift:
+            model.confirmCurrentShift(boundary: boundary)
+        case .manualAlign:
+            model.beginManualAlignment(boundary: boundary)
+        case .joinAsIs:
+            model.select(boundary: boundary)
+            onJoin()
+        case .splitExport:
+            onExport()
+        }
+    }
+
     private var footer: some View {
         VStack(alignment: .leading, spacing: 8) {
             if let toast = model.duplicateToast {
                 HStack(spacing: 8) {
                     Text(toast)
                         .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(Palette.charcoal)
+                        .foregroundStyle(surface(.text))
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 8)
                     if model.duplicateToastCanUndo {
@@ -836,11 +1167,11 @@ struct StitchPreviewView: View {
                 .padding(10)
                 .background(
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(Palette.ivory)
+                        .fill(appearance == .dark ? surface(.card) : Palette.ivory)
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .strokeBorder(Palette.borderLight, lineWidth: 1)
+                        .strokeBorder(surface(.hairline), lineWidth: 1)
                 )
             }
             if let bar = model.assembly.reviewBottomBar {
@@ -854,13 +1185,14 @@ struct StitchPreviewView: View {
                     .buttonStyle(LightButtonStyle())
                     .help("按当前分段分别保存。已手动处理的相邻段会合并，未处理的接缝保持分开。")
                 Spacer()
-                Button(model.assembly.previewPrimaryTitle) {
+                Button(model.primaryTitle) {
                     if model.focusPreviewPrimary() {
                         onCommit()
                     }
                 }
                 .buttonStyle(BloomPrimaryButtonStyle())
-                .disabled(model.assembly.previewPrimaryStep == .beautify && !model.canCommit)
+                .disabled(!model.primaryEnabled)
+                .opacity(model.primaryEnabled ? 1 : 0.45)
                 .help(model.canCommit ? "合成一张长图" : (model.assembly.reviewBottomBar ?? ""))
             }
         }

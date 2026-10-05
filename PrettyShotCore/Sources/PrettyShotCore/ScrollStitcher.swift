@@ -134,10 +134,14 @@ public enum ResolvedSeamStyle {
     public static let mintDark: UInt32 = 0x7EB8A8
     /// Neutral gray for 「直接拼」.
     public static let direct: UInt32 = 0x5C5751
+    /// 「直接拼」 in dark mode: about 5:1 on the #262422 card (ML6b-r r2).
+    public static let directDark: UInt32 = 0x9C958B
     /// Tag fill for 「✓ 已确认」 and 「✓ 手动对齐」.
     public static let handledFillOpacity: Double = 0.22
     /// Tag fill for 「直接拼」.
     public static let directFillOpacity: Double = 0.12
+    /// Tag fill for 「直接拼」 in dark mode.
+    public static let directDarkFillOpacity: Double = 0.16
     /// Solid tag border.
     public static let labelBorderWidth: Int = 1
 
@@ -327,6 +331,7 @@ public struct ScrollSeam: Equatable {
                     label: "直接拼",
                     chrome: .plain,
                     labelColor: ResolvedSeamStyle.direct,
+                    labelColorDark: ResolvedSeamStyle.directDark,
                     fillOpacity: ResolvedSeamStyle.directFillOpacity,
                     borderWidth: ResolvedSeamStyle.labelBorderWidth
                 )
