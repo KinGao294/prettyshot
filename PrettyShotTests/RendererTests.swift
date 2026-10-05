@@ -126,3 +126,149 @@ private struct SharedMark: Redactable {
     var redactionRect: CGRect { rect }
     var isMeaningfulRedaction: Bool { meaningful }
 }
+
+// MARK: - CI screenshots of the Mac stitch preview (ML6b-r tags, ML6c, ML6d)
+
+import AppKit
+import SwiftUI
+
+extension ScrollStitcherTests {
+    /// Point size of the rendered window. Tall enough for the seam list, the four options and both band labels.
+    private static let screenshotSize = NSSize(width: 1180, height: 1400)
+
+    /// Writes six PNGs at 2x when `PRETTYSHOT_RENDER_DIR` is set; otherwise does nothing.
+    /// Asserts nothing: any problem is printed and that image is skipped.
+    @MainActor
+    func testRenderStitchPreviewScreenshots() {
+        guard let path = ProcessInfo.processInfo.environment["PRETTYSHOT_RENDER_DIR"], !path.isEmpty else {
+            print("PRETTYSHOT_RENDER_DIR is not set; skipping stitch preview screenshots")
+            return
+        }
+        let directory = URL(fileURLWithPath: path, isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        } catch {
+            print("stitch screenshots: cannot create \(directory.path): \(error)")
+            return
+        }
+        for dark in [false, true] {
+            let suffix = dark ? "dark" : "light"
+            if let model = try? ml6bFourTagModel() {
+                renderStitchPreview(model, dark: dark, to: directory.appendingPathComponent("tags-\(suffix).png"))
+            } else {
+                print("stitch screenshots: four-tag fixture failed")
+            }
+            if let model = try? ml6StickyModel() {
+                renderStitchPreview(model, dark: dark, to: directory.appendingPathComponent("ml6c-\(suffix).png"))
+            } else {
+                print("stitch screenshots: sticky fixture failed")
+            }
+            if let model = try? ml6StickyModel() {
+                model.setDedupeStickyBars(false)
+                renderStitchPreview(model, dark: dark, to: directory.appendingPathComponent("ml6d-\(suffix).png"))
+            } else {
+                print("stitch screenshots: sticky fixture failed")
+            }
+        }
+    }
+
+    @MainActor
+    private func screenshotRoot(_ model: StitchPreviewModel, dark: Bool) -> some View {
+        StitchPreviewView(
+            model: model,
+            onAlign: {},
+            onJoin: {},
+            onExport: {},
+            onExportRestored: {},
+            onCommit: {}
+        )
+        .environment(\.colorScheme, dark ? .dark : .light)
+        .frame(width: Self.screenshotSize.width, height: Self.screenshotSize.height)
+    }
+
+    /// Hosts the real view in an offscreen window so AppKit controls draw for real, then caches it at 2x.
+    /// Falls back to `ImageRenderer` only if the cached bitmap comes back blank.
+    @MainActor
+    private func renderStitchPreview(_ model: StitchPreviewModel, dark: Bool, to url: URL) {
+        let size = Self.screenshotSize
+        let appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+        let host = NSHostingView(rootView: screenshotRoot(model, dark: dark))
+        host.frame = NSRect(origin: .zero, size: size)
+        host.appearance = appearance
+        let window = NSWindow(
+            contentRect: NSRect(origin: NSPoint(x: -20_000, y: -20_000), size: size),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.isReleasedWhenClosed = false
+        window.appearance = appearance
+        window.contentView = host
+        window.orderFrontRegardless()
+        defer { window.orderOut(nil) }
+
+        // onAppear selects the seam and refreshes the loupe; give layout and that update a few turns.
+        for _ in 0..<3 {
+            host.layoutSubtreeIfNeeded()
+            window.displayIfNeeded()
+            RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+        }
+
+        var png: Data?
+        if let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: Int(size.width * 2),
+            pixelsHigh: Int(size.height * 2),
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ) {
+            rep.size = size
+            host.cacheDisplay(in: host.bounds, to: rep)
+            if isBlank(rep) {
+                print("stitch screenshots: cacheDisplay was blank for \(url.lastPathComponent); using ImageRenderer")
+            } else {
+                png = rep.representation(using: .png, properties: [:])
+            }
+        } else {
+            print("stitch screenshots: cannot allocate a bitmap for \(url.lastPathComponent)")
+        }
+        if png == nil {
+            let renderer = ImageRenderer(content: screenshotRoot(model, dark: dark))
+            renderer.scale = 2
+            if let cgImage = renderer.cgImage {
+                png = NSBitmapImageRep(cgImage: cgImage).representation(using: .png, properties: [:])
+            }
+        }
+        guard let png else {
+            print("stitch screenshots: nothing rendered for \(url.lastPathComponent)")
+            return
+        }
+        do {
+            try png.write(to: url)
+            print("stitch screenshot: \(url.path)")
+        } catch {
+            print("stitch screenshots: cannot write \(url.path): \(error)")
+        }
+    }
+
+    /// True when every pixel matches the first one.
+    private func isBlank(_ rep: NSBitmapImageRep) -> Bool {
+        guard let data = rep.bitmapData else { return true }
+        let stride = rep.bitsPerPixel / 8
+        let count = rep.bytesPerRow * rep.pixelsHigh
+        guard stride > 0, count >= stride else { return true }
+        var offset = stride
+        while offset + stride <= count {
+            for byte in 0..<stride where data[offset + byte] != data[byte] {
+                return false
+            }
+            offset += stride
+        }
+        return true
+    }
+}

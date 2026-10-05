@@ -109,6 +109,8 @@ jobs:
           set +e
           set -o pipefail
           export NSUnbufferedIO=YES
+          mkdir -p "$RUNNER_TEMP/stitch-shots"
+          TEST_RUNNER_PRETTYSHOT_RENDER_DIR="$RUNNER_TEMP/stitch-shots" \
           xcodebuild -project PrettyShot.xcodeproj -scheme PrettyShot \
             -destination 'platform=macOS' \
             -derivedDataPath build/macos-tests \
@@ -117,6 +119,14 @@ jobs:
           status=$?
           python3 .github/scripts/annotate-xctest.py /tmp/xcode-test.log
           exit $status
+
+      - name: Upload stitch preview screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stitch-preview-screenshots
+          path: ${{ runner.temp }}/stitch-shots/*.png
+          if-no-files-found: warn
 
       - name: Evidence result
         if: always()
