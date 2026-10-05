@@ -647,16 +647,26 @@ final class ExtensionMemoryBudgetTests: XCTestCase {
             PixelRedaction(rect: CGRect(x: 60, y: 150, width: 400, height: 90)),
             PixelRedaction(rect: CGRect(x: 700, y: 2650, width: 420, height: 100), kind: .blur),
         ]
-        let before = FootprintSampler.current()
-        let sampler = FootprintSampler()
-        sampler.start()
-        var redacted: CGImage? = Redactor.apply(marks, to: source, scale: 3)
-        let peak = sampler.stop() - before
-        XCTAssertEqual(redacted?.width, width)
-        XCTAssertEqual(redacted?.height, height)
-        redacted = nil
-        let retained = FootprintSampler.current() - before
-        print("PRETTYSHOT_REDACT_PEAK 1320x2868 two-marks peak=\(peak) retained=\(retained) sourceBytes=\(sourceBytes)")
+        // PRD v0.3.46: measure 3 times and assert on the median; the limit is unchanged.
+        var peaks: [Int64] = []
+        var retainedSamples: [Int64] = []
+        for sample in 1...3 {
+            let before = FootprintSampler.current()
+            let sampler = FootprintSampler()
+            sampler.start()
+            var redacted: CGImage? = Redactor.apply(marks, to: source, scale: 3)
+            let samplePeak = sampler.stop() - before
+            XCTAssertEqual(redacted?.width, width)
+            XCTAssertEqual(redacted?.height, height)
+            redacted = nil
+            let sampleRetained = FootprintSampler.current() - before
+            print("PRETTYSHOT_REDACT_PEAK 1320x2868 two-marks sample=\(sample) peak=\(samplePeak) retained=\(sampleRetained) sourceBytes=\(sourceBytes)")
+            peaks.append(samplePeak)
+            retainedSamples.append(sampleRetained)
+        }
+        let peak = peaks.sorted()[1]
+        let retained = retainedSamples.sorted()[1]
+        print("PRETTYSHOT_REDACT_PEAK 1320x2868 two-marks median peak=\(peak) retained=\(retained) sourceBytes=\(sourceBytes) samples=\(peaks)")
         XCTAssertLessThanOrEqual(peak, sourceBytes + slack)
         XCTAssertLessThanOrEqual(retained, slack)
         withExtendedLifetime(source) {}
