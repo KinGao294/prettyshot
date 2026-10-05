@@ -555,11 +555,10 @@ final class ScrollStitcherTests: XCTestCase {
     func testAligningADifferentCandidateShowsManualAlignment() throws {
         var picked = try openShiftTie()
         let seam = try XCTUnwrap(picked.seams.first)
-        let other = try XCTUnwrap(seam.candidateLines.first { !$0.contains("当前") })
-        let frameHeight = try XCTUnwrap(picked.segments.last).image.height
-        let overlap = frameHeight - shiftPixels(in: other)
-        XCTAssertNotEqual(overlap, seam.suggestedOverlap)
-        picked.align(seam: 0, overlap: overlap)
+        XCTAssertEqual(seam.candidateShifts, [32, -28])
+        picked.align(seam: 0, shift: -28)
+        XCTAssertEqual(picked.flattenedIfResolved()?.height, 118)
+        XCTAssertEqual(picked.stackedHeight(deduping: true), 118)
         let pickedCard = picked.seams[0].card(number: 1)
         XCTAssertEqual(pickedCard.label, "✓ 手动对齐")
         XCTAssertEqual(pickedCard.labelColor, 0x4F8F7E)
@@ -2402,5 +2401,45 @@ extension ScrollStitcherTests {
         XCTAssertEqual(loaded.seams[0].candidateShifts, [32, -28])
         XCTAssertEqual(loaded.flattenedIfResolved()?.height, 118)
         XCTAssertEqual(loaded.seams[0].card(number: 1).label, "✓ 手动对齐")
+    }
+}
+
+// Round 7 (design review mac-10-c6b7120): Mac seam rows.
+extension ScrollStitcherTests {
+    /// Clicking a candidate row aligns that seam on the row's signed shift.
+    @MainActor
+    func testClickingACandidateRowAlignsOnItsShift() throws {
+        let model = StitchPreviewModel(assembly: try openShiftTie(), notice: nil)
+        model.pickCandidate(seam: 0, index: 1)
+        XCTAssertEqual(model.selectedBoundary, 0)
+        XCTAssertEqual(model.assembly.seams[0].alignedShift, -28)
+        XCTAssertEqual(model.assembly.seams[0].card(number: 1).tagText, "✓ 手动对齐 · −28 px")
+        XCTAssertEqual(model.assembly.flattenedIfResolved()?.height, 118)
+        model.pickCandidate(seam: 0, index: 0)
+        XCTAssertEqual(model.assembly.seams[0].alignedShift, 32)
+        XCTAssertEqual(model.assembly.seams[0].card(number: 1).label, "✓ 已确认")
+    }
+
+    /// Each seam has its own tag; the long image has no extra top-left 「待确认」.
+    @MainActor
+    func testLongImageHasNoTopLeftPendingOverlay() throws {
+        let model = StitchPreviewModel(assembly: try openShiftTie(), notice: nil)
+        XCTAssertEqual(model.assembly.seams[0].card(number: 1).chrome, .amberDashed)
+        XCTAssertNil(model.longImageOverlayLabel)
+    }
+
+    /// 按此对齐 on a lone reverse seam keeps the suggestion's sign.
+    @MainActor
+    func testAlignOnLoneReverseKeepsTheSign() throws {
+        var stitcher = ScrollStitcher()
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.page(scroll: 0, height: 48, slot: 0)), .seeded)
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.page(scroll: 12, height: 48, slot: 0)), .appended(12))
+        XCTAssertEqual(stitcher.ingest(ScrollFixtures.falseReverse()), .unmatched)
+        let model = StitchPreviewModel(assembly: stitcher.takeAssembly(), notice: nil)
+        let shift = try XCTUnwrap(model.assembly.seams[0].suggestedShift)
+        XCTAssertLessThan(shift, 0)
+        model.select(boundary: 0)
+        model.alignToSuggestion()
+        XCTAssertEqual(model.assembly.seams[0].alignedShift, shift)
     }
 }

@@ -176,9 +176,39 @@ final class StitchPreviewModel: ObservableObject {
         updateOverlap(overlap + Double(delta))
     }
 
+    /// 「按此对齐」. At the suggested overlap, a tie or lone reverse aligns on its signed shift.
     func alignSelected() {
+        if let selectedBoundary,
+           assembly.seams[selectedBoundary].suggestedShift != nil,
+           Int(overlap.rounded()) == assembly.seams[selectedBoundary].suggestedOverlap {
+            alignToSuggestion()
+            return
+        }
         updateOverlap(overlap)
     }
+
+    /// Aligns the selected seam on its suggestion, keeping the shift's sign.
+    func alignToSuggestion() {
+        guard let selectedBoundary else { return }
+        assembly.alignToSuggestion(seam: selectedBoundary)
+        overlap = Double(assembly.seams[selectedBoundary].editorOverlap)
+        refreshOverLimitMessage()
+        refresh()
+    }
+
+    /// Clicking a candidate row: select the seam and align on that row's signed shift.
+    func pickCandidate(seam index: Int, index candidate: Int) {
+        guard assembly.seams.indices.contains(index),
+              assembly.seams[index].candidateShifts.indices.contains(candidate) else { return }
+        select(boundary: index)
+        assembly.align(seam: index, shift: assembly.seams[index].candidateShifts[candidate])
+        overlap = Double(assembly.seams[index].editorOverlap)
+        refreshOverLimitMessage()
+        refresh()
+    }
+
+    /// The long image carries no top-left status chip; each seam shows its own tag.
+    var longImageOverlayLabel: String? { nil }
 
     func joinSelectedAsIs() {
         guard let selectedBoundary else { return }
@@ -390,6 +420,7 @@ final class StitchPreviewModel: ObservableObject {
 @MainActor
 struct StitchPreviewView: View {
     @ObservedObject var model: StitchPreviewModel
+    @Environment(\.colorScheme) private var colorScheme
     var onAlign: () -> Void
     var onJoin: () -> Void
     var onExport: () -> Void
@@ -549,8 +580,8 @@ struct StitchPreviewView: View {
                             }
                             .frame(width: width, height: imageH, alignment: .topLeading)
                             .overlay(alignment: .topLeading) {
-                                if pendingSeamLabel != nil {
-                                    pendingMark("待确认")
+                                if let label = model.longImageOverlayLabel {
+                                    pendingMark(label)
                                         .padding(8)
                                 }
                             }
@@ -592,13 +623,6 @@ struct StitchPreviewView: View {
             }
         }
         .background(Palette.drawer)
-    }
-
-    private var pendingSeamLabel: String? {
-        for (index, seam) in model.assembly.seams.enumerated() where seam.card(number: index + 1).chrome == .amberDashed {
-            return seam.card(number: index + 1).label
-        }
-        return nil
     }
 
     /// 「待确认」 chip: 1 px dashed Warn border, Warn text, Warn fill at 18%.
@@ -700,19 +724,25 @@ struct StitchPreviewView: View {
         let selected = mark.boundaryIndex != nil && mark.boundaryIndex == model.selectedBoundary
         let card = seamCard(for: mark)
         let pending = card?.chrome == .amberDashed
-        let labelText = card?.label ?? label(for: mark.state)
+        let labelText = card.map { pending ? $0.label : $0.tagText } ?? label(for: mark.state)
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 if pending {
                     pendingMark(labelText)
                 } else {
-                    let ink = card.flatMap { $0.labelColor == 0 ? nil : Color(hex: $0.labelColor) } ?? tint(for: mark.state)
+                    let ink = card.flatMap { card -> Color? in
+                        guard card.labelColor != 0 else { return nil }
+                        return Color(hex: colorScheme == .dark ? card.labelColorDark : card.labelColor)
+                    } ?? tint(for: mark.state)
+                    let fill = card.map { $0.fillOpacity > 0 ? $0.fillOpacity : 0.15 } ?? 0.15
+                    let border = CGFloat(card?.borderWidth ?? 0)
                     Text(labelText)
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(ink)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
-                        .background(Capsule().fill(ink.opacity(0.15)))
+                        .background(Capsule().fill(ink.opacity(fill)))
+                        .overlay(Capsule().strokeBorder(ink, lineWidth: border).opacity(border > 0 ? 1 : 0))
                 }
                 Text("距顶部 \(mark.y) px")
                     .font(.system(size: 11))
@@ -733,10 +763,20 @@ struct StitchPreviewView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             if let candidates = card?.candidates, !candidates.isEmpty {
-                ForEach(candidates, id: \.self) { line in
-                    Text(line)
-                        .font(.system(size: 11))
-                        .foregroundStyle(Palette.charcoal)
+                ForEach(Array(candidates.enumerated()), id: \.offset) { offset, line in
+                    Button {
+                        if let index = mark.boundaryIndex {
+                            model.pickCandidate(seam: index, index: offset)
+                        }
+                    } label: {
+                        Text(line)
+                            .font(.system(size: 11))
+                            .foregroundStyle(Palette.charcoal)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("按这个位移对齐")
                 }
             }
             if let index = mark.boundaryIndex, selected, model.assembly.seams.indices.contains(index) {
