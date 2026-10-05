@@ -632,38 +632,52 @@ final class ExtensionMemoryBudgetTests: XCTestCase {
         _ = Redactor.apply([PixelRedaction(rect: CGRect(x: 0, y: 0, width: 8, height: 8))], to: try solidImage(width: 16, height: 16), scale: 1)
         let width = 1320
         let height = 2868
-        let source = try solidImage(width: width, height: height)
         let sourceBytes = Int64(width * height * ExtensionMemoryBudget.bytesPerPixel)
         let slack = Int64(2 * 1024 * 1024)
-        // Charge the source's own pages before sampling (see testRedactionHoldsOneFullSizeBuffer).
-        let pixels = try XCTUnwrap(source.dataProvider?.data)
-        let pixelBytes = try XCTUnwrap(CFDataGetBytePtr(pixels))
-        var touched = 0
-        for offset in stride(from: 0, to: CFDataGetLength(pixels), by: 4096) {
-            touched &+= Int(pixelBytes[offset]) + 1
-        }
-        XCTAssertGreaterThan(touched, 0)
         let marks = [
             PixelRedaction(rect: CGRect(x: 60, y: 150, width: 400, height: 90)),
             PixelRedaction(rect: CGRect(x: 700, y: 2650, width: 420, height: 100), kind: .blur),
         ]
         // PRD v0.3.46: measure 3 times, pick the one sample with the lowest peak, and judge both checks on it.
         // The limit is unchanged; the peak check fails only if all 3 samples exceed it.
+        // Each sample uses a fresh source + page touch + autoreleasepool, then waits for footprint to
+        // settle before the next `before` — so later samples are not quietly lower from warm cache /
+        // leftover buffers in the same process (PM / 司令部 gate concern on 02739cf).
         var peaks: [Int64] = []
         var retainedSamples: [Int64] = []
         for sample in 1...3 {
-            let before = FootprintSampler.current()
-            let sampler = FootprintSampler()
-            sampler.start()
-            var redacted: CGImage? = Redactor.apply(marks, to: source, scale: 3)
-            let samplePeak = sampler.stop() - before
-            XCTAssertEqual(redacted?.width, width)
-            XCTAssertEqual(redacted?.height, height)
-            redacted = nil
-            let sampleRetained = FootprintSampler.current() - before
+            var samplePeak: Int64 = 0
+            var sampleRetained: Int64 = 0
+            try autoreleasepool {
+                // Fresh source per sample (do not reuse across iterations).
+                var source: CGImage? = try solidImage(width: width, height: height)
+                // Charge this sample's own pages before sampling (see testRedactionHoldsOneFullSizeBuffer).
+                let pixels = try XCTUnwrap(source?.dataProvider?.data)
+                let pixelBytes = try XCTUnwrap(CFDataGetBytePtr(pixels))
+                var touched = 0
+                for offset in stride(from: 0, to: CFDataGetLength(pixels), by: 4096) {
+                    touched &+= Int(pixelBytes[offset]) + 1
+                }
+                XCTAssertGreaterThan(touched, 0)
+                let before = FootprintSampler.current()
+                let sampler = FootprintSampler()
+                sampler.start()
+                var redacted: CGImage? = Redactor.apply(marks, to: try XCTUnwrap(source), scale: 3)
+                samplePeak = sampler.stop() - before
+                XCTAssertEqual(redacted?.width, width)
+                XCTAssertEqual(redacted?.height, height)
+                redacted = nil
+                // Retained is measured while the source is still held (same as the one-mark test).
+                sampleRetained = FootprintSampler.current() - before
+                source = nil
+            }
             print("PRETTYSHOT_REDACT_PEAK 1320x2868 two-marks sample=\(sample) peak=\(samplePeak) retained=\(sampleRetained) sourceBytes=\(sourceBytes)")
             peaks.append(samplePeak)
             retainedSamples.append(sampleRetained)
+            // Do not start the next sample's `before` while this sample's buffers still inflate the process.
+            if sample < 3 {
+                waitForFootprintToSettle(timeout: 2.0)
+            }
         }
         let picked = peaks.indices.min { peaks[$0] < peaks[$1] } ?? 0
         let peak = peaks[picked]
@@ -671,7 +685,28 @@ final class ExtensionMemoryBudgetTests: XCTestCase {
         print("PRETTYSHOT_REDACT_PEAK 1320x2868 two-marks picked=\(picked + 1) peak=\(peak) retained=\(retained) sourceBytes=\(sourceBytes) peaks=\(peaks) retained=\(retainedSamples)")
         XCTAssertLessThanOrEqual(peak, sourceBytes + slack)
         XCTAssertLessThanOrEqual(retained, slack)
-        withExtendedLifetime(source) {}
+    }
+
+    /// Poll phys_footprint until it stops dropping (or `timeout`), so the next sample's baseline
+    /// is not still inflated by the previous redaction buffers.
+    private func waitForFootprintToSettle(timeout: TimeInterval = 2.0) {
+        let deadline = Date().addingTimeInterval(timeout)
+        var previous = FootprintSampler.current()
+        var stableCount = 0
+        while Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+            let now = FootprintSampler.current()
+            // Settled when footprint is no longer clearly falling (within 64 KiB).
+            if now + (64 * 1024) >= previous {
+                stableCount += 1
+                if stableCount >= 4 {
+                    return
+                }
+            } else {
+                stableCount = 0
+            }
+            previous = now
+        }
     }
 
     private final class FootprintSampler: @unchecked Sendable {
