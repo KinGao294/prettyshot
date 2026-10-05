@@ -235,7 +235,7 @@ struct EditorScreen: View {
                 .tint(IOSTheme.bloom)
             Text("\(Int(value.wrappedValue.rounded()))")
                 .font(.system(size: 12, design: .monospaced))
-                .frame(width: 28, alignment: .trailing)
+                .frame(width: 36, alignment: .trailing)
         }
         .foregroundStyle(IOSTheme.charcoal)
     }

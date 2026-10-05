@@ -194,7 +194,7 @@ public struct BackgroundStyle: Codable, Equatable {
     /// Pastel Air, the last-added wash; padding / radius / shadow match the editor defaults.
     public static let `default` = BackgroundStyle(presetKey: "pastel-air", padding: 28, radius: 12, shadow: 48)
 
-    public static let paddingRange: ClosedRange<Double> = 8...64
+    public static let paddingRange: ClosedRange<Double> = 8...100
     public static let radiusRange: ClosedRange<Double> = 0...28
     public static let shadowRange: ClosedRange<Double> = 0...80
 
