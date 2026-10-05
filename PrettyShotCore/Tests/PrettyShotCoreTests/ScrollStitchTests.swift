@@ -272,11 +272,10 @@ final class ScrollStitchTests: XCTestCase {
     func testAligningADifferentCandidateShowsManualAlignment() throws {
         var picked = try openShiftTie()
         let seam = try XCTUnwrap(picked.seams.first)
-        let other = try XCTUnwrap(seam.candidateLines.first { !$0.contains("当前") })
-        let frameHeight = try XCTUnwrap(picked.segments.last).image.height
-        let overlap = frameHeight - shiftPixels(in: other)
-        XCTAssertNotEqual(overlap, seam.suggestedOverlap)
-        picked.align(seam: 0, overlap: overlap)
+        XCTAssertEqual(seam.candidateShifts, [32, -28])
+        picked.align(seam: 0, shift: -28)
+        XCTAssertEqual(picked.flattenedIfResolved()?.height, 118)
+        XCTAssertEqual(picked.stackedHeight(deduping: true), 118)
         let pickedCard = picked.seams[0].card(number: 1)
         XCTAssertEqual(pickedCard.label, "✓ 手动对齐")
         XCTAssertEqual(pickedCard.labelColor, 0x4F8F7E)
