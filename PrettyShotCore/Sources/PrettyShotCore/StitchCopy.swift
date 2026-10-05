@@ -13,6 +13,21 @@ public enum StitchCopy {
     public static let overlayRestoredChip = overlayRestored + joiner + undoSticky
 
     public static let keepOnceToggle = "固定栏只保留一次"
+    /// ML6d tag on the long image after the bars go back on every seam.
+    public static let stickyReattached = "固定栏已接回"
+    /// ML6d toast after 「还原固定栏」.
+    public static let stickyRestoredToast = "已还原固定栏：固定栏接回每条接缝"
+    /// ML6c band label: 「− 底栏 44 · 顶栏 52」.
+    public static func dedupedBand(footer: Int, header: Int) -> String {
+        "− 底栏 \(footer) · 顶栏 \(header)"
+    }
+
+    /// ML6b options for a 「待确认」 seam, in design order.
+    public static let confirmCurrentShift = "确认当前位移"
+    public static let manualAlignOption = "手动对齐"
+    public static let joinAsIsOption = "直接拼"
+    public static let splitExportOption = "分开导出"
+    public static let confirmationOptions = [confirmCurrentShift, manualAlignOption, joinAsIsOption, splitExportOption]
     public static let keepOnceChoice = "当固定栏，只留一次"
     public static let keepAllChoice = "当内容，全部保留"
     public static let keepDedupe = "保持去重"

@@ -265,6 +265,12 @@ public struct ScrollSeam: Equatable {
         return 0
     }
 
+    /// ML6b options while a tie or lone reverse still waits; empty once handled or for a plain seam.
+    public var confirmationOptions: [String] {
+        guard awaitsConfirmation, kind == .needsAlignment else { return [] }
+        return StitchCopy.confirmationOptions
+    }
+
     /// True when this boundary is a shift tie or a lone reverse, whatever the user has done since.
     var awaitsConfirmation: Bool {
         pendingTitle != nil || !candidateLines.isEmpty || reversed
@@ -888,6 +894,20 @@ public struct ScrollAssembly: Equatable {
         return StitchCopy.overLimit(height: height, pixels: pixels, maxHeight: maxHeight, maxPixels: maxPixels)
     }
 
+    /// ML6b 「确认当前位移」. Same as `alignToSuggestion(seam:)`; kept only because existing tests call this name.
+    public mutating func confirmCurrentShift(seam index: Int) {
+        alignToSuggestion(seam: index)
+    }
+
+    /// ML6c 「− 底栏 F · 顶栏 H」 while bars are kept once; ML6d 「固定栏已接回」 after restore.
+    /// Nil when the capture has no sticky bars.
+    public var stickyBandLabel: String? {
+        let repeats = segments.flatMap(\.stickyRepeats).filter { $0.header.height > 0 || $0.footer.height > 0 }
+        guard let first = repeats.first else { return nil }
+        guard dedupeStickyBars else { return StitchCopy.stickyReattached }
+        return StitchCopy.dedupedBand(footer: first.footer.height, header: first.header.height)
+    }
+
     /// Turns dedupe off when the restored image fits in one capture. Over the cap, leaves dedupe on.
     public mutating func restoreStickyBars(
         maxHeight: Int = ScrollOutputLimit.maxHeight,
@@ -991,7 +1011,8 @@ public struct ScrollAssembly: Equatable {
         seams[index].alignedShift = shift
     }
 
-    /// 「按此对齐」 on the suggestion. A tie or lone reverse aligns on its signed shift;
+    /// 「按此对齐」 / ML6b 「确认当前位移」: the one way to align on the suggestion (PRD v0.3.43).
+    /// A tie or lone reverse aligns on its signed shift (the one marked 「当前」);
     /// any other seam uses the suggested overlap.
     public mutating func alignToSuggestion(seam index: Int) {
         guard seams.indices.contains(index) else { return }
