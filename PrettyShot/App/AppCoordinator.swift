@@ -34,6 +34,7 @@ final class AppCoordinator: ObservableObject {
     private var appBeforeCapture: NSRunningApplication?
     /// Frontmost app sampled right before the popover activated PrettyShot (by then `frontmostApplication` is us).
     private var appBeforePopover: NSRunningApplication?
+    private var hotkeyFailureCancellable: AnyCancellable?
 
     static var isRunningTests: Bool {
         ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
@@ -45,6 +46,20 @@ final class AppCoordinator: ObservableObject {
         hotkeys.onTrigger = { [weak self] action in self?.perform(action) }
         hotkeys.onEscape = { [weak self] in self?.handleEscape() }
         hotkeys.registerAll()
+        hotkeyFailureCancellable = hotkeys.registrationFailures
+            .removeDuplicates()
+            .sink { [weak self] ids in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    guard !ids.isEmpty, let content = self.hotkeys.failureNoticeContent() else {
+                        HotkeyFailureNoticePresenter.shared.hide()
+                        return
+                    }
+                    HotkeyFailureNoticePresenter.shared.show(content) { [weak self] in
+                        self?.showSettings()
+                    }
+                }
+            }
         permissions.refresh()
     }
 

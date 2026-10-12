@@ -2,52 +2,64 @@ import AppKit
 import SwiftUI
 
 /// Click → press a new combo. Esc cancels, ⌫ clears (disables) the action.
-/// Global hotkeys are suspended while recording so the current combo can be re-recorded.
+/// Global hotkeys are suspended while a new combo is being captured, so the current one can be entered again.
 @MainActor
 struct ShortcutRecorder: View {
-    let action: HotkeyAction
+    let id: HotkeyBindingID
     @ObservedObject var hotkeys: HotkeyManager
 
-    @State private var isRecording = false
+    @State private var isListening = false
     @State private var monitor: Any?
     @State private var message: String?
+    @State private var messageIncludesHint = false
+
+    init(action: HotkeyAction, hotkeys: HotkeyManager) {
+        self.id = .builtin(action)
+        self.hotkeys = hotkeys
+    }
+
+    init(id: HotkeyBindingID, hotkeys: HotkeyManager) {
+        self.id = id
+        self.hotkeys = hotkeys
+    }
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 4) {
             HStack(spacing: 6) {
                 Button {
-                    isRecording ? stop() : start()
+                    isListening ? stop() : start()
                 } label: {
                     Text(label)
                         .font(.system(size: 12, weight: .medium, design: .rounded))
-                        .foregroundStyle(isRecording ? Palette.bloomDeep : Palette.charcoal)
+                        .foregroundStyle(isListening ? Palette.bloomDeep : Palette.charcoal)
                         .frame(minWidth: 110)
                         .padding(.vertical, 5)
                         .padding(.horizontal, 8)
                         .background(
                             RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                .fill(isRecording ? Palette.bloomRose.opacity(0.15) : Color.white)
+                                .fill(isListening ? Palette.bloomRose.opacity(0.15) : Color.white)
                         )
                         .overlay(
                             RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                .strokeBorder(isRecording ? Palette.bloomRose : Palette.borderLight, lineWidth: 1)
+                                .strokeBorder(isListening ? Palette.bloomRose : Palette.borderLight, lineWidth: 1)
                         )
                 }
                 .buttonStyle(.plain)
                 .help("点击后按下新的快捷键；Esc 取消，⌫ 清除")
 
-                if hotkeys.shortcut(for: action) != action.defaultShortcut {
+                if hotkeys.shortcut(for: id) != hotkeys.defaultShortcut(for: id) {
                     Button {
-                        message = hotkeys.setShortcut(action.defaultShortcut, for: action)?.errorDescription
+                        stop()
+                        apply(hotkeys.setShortcut(hotkeys.defaultShortcut(for: id), for: id))
                     } label: {
                         Image(systemName: "arrow.uturn.backward")
                     }
                     .buttonStyle(.borderless)
-                    .help("恢复默认 \(action.defaultShortcut.displayString)")
+                    .help("恢复默认 \(hotkeys.defaultShortcut(for: id)?.displayString ?? "")")
                 }
             }
 
-            if let error = message ?? hotkeys.registrationErrors[action] {
+            if let error = displayedError {
                 Text(error)
                     .font(.system(size: 11))
                     .foregroundStyle(Palette.bloomDeep)
@@ -58,13 +70,29 @@ struct ShortcutRecorder: View {
     }
 
     private var label: String {
-        if isRecording { return "请按下快捷键…" }
-        return hotkeys.shortcut(for: action)?.displayString ?? "未设置"
+        if isListening { return "请按下快捷键…" }
+        return hotkeys.shortcut(for: id)?.displayString ?? "未设置"
     }
 
-    private func start() {
-        message = nil
-        isRecording = true
+    private var displayedError: String? {
+        if let message {
+            return messageIncludesHint ? withHint(message) : message
+        }
+        guard let registered = hotkeys.registrationMessage(for: id) else { return nil }
+        return withHint(registered)
+    }
+
+    private func withHint(_ base: String) -> String {
+        guard let hint = hotkeys.inlineFailureHint(for: id), !hint.isEmpty else { return base }
+        return "\(base) \(hint)"
+    }
+
+    private func start(preserveMessage: Bool = false) {
+        if !preserveMessage {
+            message = nil
+            messageIncludesHint = false
+        }
+        isListening = true
         hotkeys.suspend()
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             handle(event)
@@ -73,11 +101,30 @@ struct ShortcutRecorder: View {
     }
 
     private func stop() {
-        guard isRecording else { return }
-        isRecording = false
+        guard isListening else { return }
+        isListening = false
         if let monitor { NSEvent.removeMonitor(monitor) }
         monitor = nil
         hotkeys.resume()
+    }
+
+    private func apply(_ error: ShortcutValidationError?) {
+        guard let error else {
+            message = nil
+            messageIncludesHint = false
+            return
+        }
+        message = error.errorDescription
+        switch error {
+        case .inUseByOtherApp:
+            messageIncludesHint = true
+            NSSound.beep()
+            start(preserveMessage: true)
+        case .registrationFailed:
+            messageIncludesHint = true
+        default:
+            messageIncludesHint = false
+        }
     }
 
     private func handle(_ event: NSEvent) {
@@ -87,19 +134,26 @@ struct ShortcutRecorder: View {
             stop()
             return
         case 51 where flags.isEmpty, 117 where flags.isEmpty: // ⌫ / ⌦
-            hotkeys.setShortcut(nil, for: action)
+            hotkeys.setShortcut(nil, for: id)
             stop()
             return
         default:
             break
         }
         let candidate = Shortcut(event: event)
-        if let error = ShortcutValidator.validate(candidate, for: action, existing: hotkeys.bindings) {
+        if let error = ShortcutValidator.validate(
+            candidate,
+            for: id,
+            builtin: hotkeys.bindings,
+            external: hotkeys.externalBindings,
+            titleOf: { hotkeys.title(of: $0) }
+        ) {
             message = error.errorDescription
+            messageIncludesHint = false
             NSSound.beep()
             return // keep listening so the user can try another combo
         }
         stop()
-        message = hotkeys.setShortcut(candidate, for: action)?.errorDescription
+        apply(hotkeys.setShortcut(candidate, for: id))
     }
 }
