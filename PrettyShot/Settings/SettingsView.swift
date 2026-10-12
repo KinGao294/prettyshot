@@ -105,7 +105,7 @@ private struct GeneralSettings: View {
 }
 
 @MainActor
-private struct ShortcutSettings: View {
+struct ShortcutSettings: View {
     @ObservedObject var hotkeys: HotkeyManager
 
     var body: some View {
@@ -129,12 +129,57 @@ private struct ShortcutSettings: View {
                 .foregroundStyle(.secondary)
             }
 
+            // No external actions → this branch is absent, so the page keeps its current sections.
+            if !hotkeys.externalSettingsGroups.isEmpty {
+                ForEach(hotkeys.externalSettingsGroups) { group in
+                    externalSection(group)
+                }
+            }
+
             HStack {
                 Spacer()
                 Button("全部恢复默认") { hotkeys.resetToDefaults() }
             }
         }
         .formStyle(.grouped)
+    }
+
+    @ViewBuilder
+    private func externalSection(_ group: HotkeySettingsGroup) -> some View {
+        if let footnote = group.footnote, !footnote.isEmpty {
+            Section {
+                externalRows(group)
+            } header: {
+                Text(group.title)
+            } footer: {
+                Text(footnote)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        } else {
+            Section {
+                externalRows(group)
+            } header: {
+                Text(group.title)
+            }
+        }
+    }
+
+    private func externalRows(_ group: HotkeySettingsGroup) -> some View {
+        ForEach(group.rows) { row in
+            LabeledContent {
+                ShortcutRecorder(id: row.id, hotkeys: hotkeys)
+            } label: {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(row.title)
+                    if let subtitle = row.subtitle, !subtitle.isEmpty {
+                        Text(subtitle)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
     }
 }
 

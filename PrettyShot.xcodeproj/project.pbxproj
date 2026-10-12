@@ -7,6 +7,30 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		1C90C0618AE3CFFED6FEB009 = {
+			isa = PBXBuildFile;
+			fileRef = BACA483A67F7356938B7B1E7;
+		};
+		5EB2E808A7424920F95C2578 = {
+			isa = PBXBuildFile;
+			fileRef = A3C3773DD3DDB361379DB604;
+		};
+		612394C05EB2F27F8444FAF0 = {
+			isa = PBXBuildFile;
+			fileRef = 2AE2E95B42A219E145593EA1;
+		};
+		AEC9EAE323D67E455BDA557D = {
+			isa = PBXBuildFile;
+			fileRef = C6701691791C773FFD4C3E9E;
+		};
+		B772D2019678C3620F1AAD33 = {
+			isa = PBXBuildFile;
+			fileRef = 907F9B7BB13DA21327CD6D4D;
+		};
+		E1F67C609E0A6BB56A7DB162 = {
+			isa = PBXBuildFile;
+			fileRef = E6A3EFC406C077BA231619BB;
+		};
 		01EC79B68740FB25E2D855C3 = {
 			isa = PBXBuildFile;
 			fileRef = C3FBC4CE5DACF98C03308180;
@@ -382,6 +406,42 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		2AE2E95B42A219E145593EA1 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = HotkeyRegistry.swift;
+			sourceTree = "<group>";
+		};
+		907F9B7BB13DA21327CD6D4D = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = HotkeySettingsLayoutTests.swift;
+			sourceTree = "<group>";
+		};
+		A3C3773DD3DDB361379DB604 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = ShortcutValidatorExternalTests.swift;
+			sourceTree = "<group>";
+		};
+		BACA483A67F7356938B7B1E7 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = HotkeyRegistryTests.swift;
+			sourceTree = "<group>";
+		};
+		C6701691791C773FFD4C3E9E = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = HotkeyFailureNotice.swift;
+			sourceTree = "<group>";
+		};
+		E6A3EFC406C077BA231619BB = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = HotkeyRegistrar.swift;
+			sourceTree = "<group>";
+		};
 		03F7D58B23001A083BC52C6A = {
 			isa = PBXFileReference;
 			lastKnownFileType = text.xcconfig;
@@ -950,6 +1010,9 @@
 				990EC1215F39696F63A29C22,
 				AED36A62FB3B05E8688DC85B,
 				F76C95108D24842533E0E923,
+				907F9B7BB13DA21327CD6D4D,
+				BACA483A67F7356938B7B1E7,
+				A3C3773DD3DDB361379DB604,
 			);
 			path = PrettyShotTests;
 			sourceTree = "<group>";
@@ -1012,7 +1075,10 @@
 		6AA1FA958FD909308C312142 = {
 			isa = PBXGroup;
 			children = (
+				C6701691791C773FFD4C3E9E,
 				8AD45DAC24F4F6234A3D6148,
+				E6A3EFC406C077BA231619BB,
+				2AE2E95B42A219E145593EA1,
 				E52791757A2D876935E5D25C,
 				9D00959E0136C01C7D4F6375,
 			);
@@ -1386,6 +1452,9 @@
 				87A3FE4F8E1AF2D84206B46E,
 				5D84D885D4E35CD62989427E,
 				94BF62E5113FDE160442A2AD,
+				AEC9EAE323D67E455BDA557D,
+				E1F67C609E0A6BB56A7DB162,
+				612394C05EB2F27F8444FAF0,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1401,6 +1470,9 @@
 				3063DB780D8B79EFCBE9FADE,
 				82D06AA773806FC09C30243B,
 				A603EF62DE40A87260876E77,
+				1C90C0618AE3CFFED6FEB009,
+				5EB2E808A7424920F95C2578,
+				B772D2019678C3620F1AAD33,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -125,6 +125,11 @@ enum ShortcutValidationError: Error, Equatable, LocalizedError {
     case needsModifier
     case reservedBySystem
     case duplicate(HotkeyAction)
+    /// Another registered external action already owns this combo. `title` is the other action's name.
+    case duplicateExternal(title: String)
+    /// Carbon reported `eventHotKeyExistsErr` while applying a manual change. The previous combo stays saved.
+    case inUseByOtherApp
+    case registrationFailed(OSStatus)
 
     var errorDescription: String? {
         switch self {
@@ -134,6 +139,12 @@ enum ShortcutValidationError: Error, Equatable, LocalizedError {
             return "⌘⇧3 / ⌘⇧4 / ⌘⇧5 / ⌘⇧6 是系统截图快捷键，PrettyShot 不会占用"
         case .duplicate(let action):
             return "已被「\(action.title)」使用"
+        case .duplicateExternal(let title):
+            return "已被「\(title)」使用"
+        case .inUseByOtherApp:
+            return "被其他 App 占用，没有保存，请换一个"
+        case .registrationFailed(let status):
+            return "注册失败（\(status)）"
         }
     }
 }
@@ -148,6 +159,26 @@ enum ShortcutValidator {
         if !shortcut.hasCommandOptionOrControl && !shortcut.isFunctionKey { return .needsModifier }
         if let other = existing.first(where: { $0.key != action && $0.value == shortcut })?.key {
             return .duplicate(other)
+        }
+        return nil
+    }
+
+    /// Same three checks as `validate(_:for:existing:)`, against built-in and external combos together.
+    /// The original method is unchanged so existing callers keep their behavior.
+    static func validate(
+        _ shortcut: Shortcut,
+        for id: HotkeyBindingID,
+        builtin: [HotkeyAction: Shortcut],
+        external: [String: Shortcut],
+        titleOf: (HotkeyBindingID) -> String
+    ) -> ShortcutValidationError? {
+        if shortcut.isSystemScreenshotShortcut { return .reservedBySystem }
+        if !shortcut.hasCommandOptionOrControl && !shortcut.isFunctionKey { return .needsModifier }
+        if let other = builtin.first(where: { id != .builtin($0.key) && $0.value == shortcut })?.key {
+            return .duplicate(other)
+        }
+        if let other = external.first(where: { id != .external($0.key) && $0.value == shortcut })?.key {
+            return .duplicateExternal(title: titleOf(.external(other)))
         }
         return nil
     }

@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 
 /// Owns the menu bar icon and the F1 popover.
@@ -23,6 +24,38 @@ final class StatusItemController: NSObject {
         popover.animates = true
         popover.appearance = NSAppearance(named: .darkAqua)
         popover.contentViewController = NSHostingController(rootView: MenuPopoverView(coordinator: coordinator))
+        failureCancellable = coordinator.hotkeys.registrationFailures
+            .removeDuplicates()
+            .sink { [weak self] ids in
+                MainActor.assumeIsolated {
+                    self?.setHotkeyAttention(!ids.isEmpty)
+                }
+            }
+    }
+
+    private var failureCancellable: AnyCancellable?
+    private var attentionBadge: NSView?
+
+    /// Amber dot on the menu-bar icon while any hotkey failed to register. Stays until the combo works.
+    private func setHotkeyAttention(_ on: Bool) {
+        guard let button = statusItem.button else { return }
+        if on {
+            guard attentionBadge == nil else { return }
+            let size: CGFloat = 6
+            let badge = NSView(frame: NSRect(x: 0, y: 0, width: size, height: size))
+            badge.wantsLayer = true
+            badge.layer?.backgroundColor = NSColor(srgbRed: 227.0 / 255.0, green: 178.0 / 255.0, blue: 107.0 / 255.0, alpha: 1).cgColor
+            badge.layer?.cornerRadius = size / 2
+            let x = max(0, button.bounds.width - size - 1)
+            let y = button.isFlipped ? 1 : max(0, button.bounds.height - size - 1)
+            badge.frame = NSRect(x: x, y: y, width: size, height: size)
+            badge.autoresizingMask = [.minXMargin, .minYMargin]
+            button.addSubview(badge)
+            attentionBadge = badge
+        } else {
+            attentionBadge?.removeFromSuperview()
+            attentionBadge = nil
+        }
     }
 
     @objc private func togglePopover(_ sender: Any?) {
@@ -75,7 +108,7 @@ struct MenuPopoverView: View {
 
             section {
                 ForEach(CaptureMode.allCases) { mode in
-                    MenuRow(symbol: mode.symbol, title: mode.menuTitle, hint: hotkeys.displayString(for: action(for: mode))) {
+                    MenuRow(symbol: mode.symbol, title: mode.menuTitle, hint: hotkeys.menuHint(for: action(for: mode))) {
                         coordinator.startCapture(mode, trigger: .popover)
                     }
                 }
@@ -84,10 +117,10 @@ struct MenuPopoverView: View {
             divider
 
             section {
-                MenuRow(symbol: "clock.arrow.circlepath", title: "历史", hint: hotkeys.displayString(for: .openHistory)) {
+                MenuRow(symbol: "clock.arrow.circlepath", title: "历史", hint: hotkeys.menuHint(for: .openHistory)) {
                     coordinator.showHistory()
                 }
-                MenuRow(symbol: "pin", title: "Pin 最近一张", hint: hotkeys.displayString(for: .pinLatest),
+                MenuRow(symbol: "pin", title: "Pin 最近一张", hint: hotkeys.menuHint(for: .pinLatest),
                         disabled: history.latest == nil) {
                     coordinator.pinLatest()
                 }
